@@ -36,6 +36,7 @@ pub fn sanitize_project_name(name: &str) -> String {
 pub enum DetectedFramework {
     Express,
     Koa,
+    Astro,
     Fastify,
     React,
     Next,
@@ -59,6 +60,7 @@ impl DetectedFramework {
         match self {
             DetectedFramework::Express
             | DetectedFramework::Koa
+            | DetectedFramework::Astro
             | DetectedFramework::Fastify
             | DetectedFramework::React
             | DetectedFramework::Next => "javascript",
@@ -225,6 +227,15 @@ fn read_bounded(path: &Path) -> Option<String> {
 /// `'sinatra'`). Only the first 8 KiB of the file are inspected, imports /
 /// requires live at the top. Returns an empty list for languages without a
 /// framework detection policy here.
+/// True when the file reads request data through `this.ctx.get(`, the shape
+/// of Koa's own `lib/response.js` / `lib/request.js` prototype objects, which
+/// never import `koa` (the package is the framework itself).  Checked over the
+/// whole file because the helpers sit well past the 8 KiB import window.
+fn is_koa_context_prototype(bytes: &[u8]) -> bool {
+    const NEEDLE: &[u8] = b"this.ctx.get(";
+    bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE)
+}
+
 pub fn detect_in_file_frameworks(bytes: &[u8], lang_slug: &str) -> Vec<DetectedFramework> {
     let head_len = bytes.len().min(8 * 1024);
     let head = match std::str::from_utf8(&bytes[..head_len]) {
@@ -248,8 +259,14 @@ pub fn detect_in_file_frameworks(bytes: &[u8], lang_slug: &str) -> Vec<DetectedF
             if matches_module("koa")
                 || matches_module("@koa/router")
                 || matches_module("koa-router")
+                || is_koa_context_prototype(bytes)
             {
                 fws.push(DetectedFramework::Koa);
+            }
+            // Astro is detected from the file's own import only: a manifest
+            // hit would also reshape which route extractors run.
+            if matches_module("astro") {
+                fws.push(DetectedFramework::Astro);
             }
         }
         "go" => {
@@ -841,4 +858,23 @@ fn detect_frameworks_reads_next_from_package_json() {
     let ctx = detect_frameworks(dir.path());
     assert!(ctx.has(DetectedFramework::Next));
     assert!(ctx.has(DetectedFramework::React));
+}
+
+#[test]
+fn detect_in_file_frameworks_koa_context_prototype() {
+    // Koa's own response prototype never imports `koa`.
+    let src =
+        b"module.exports = {\n  back (alt) {\n    const r = this.ctx.get('Referrer')\n  },\n}\n";
+    let fws = detect_in_file_frameworks(src, "javascript");
+    assert!(fws.contains(&DetectedFramework::Koa));
+    let plain = b"module.exports = { a () { return this.ctx.other('x') } }\n";
+    assert!(detect_in_file_frameworks(plain, "javascript").is_empty());
+}
+
+#[test]
+fn detect_in_file_frameworks_astro_import() {
+    let src = b"import type { APIRoute } from 'astro';\nexport const GET = () => {};\n";
+    let fws = detect_in_file_frameworks(src, "typescript");
+    assert!(fws.contains(&DetectedFramework::Astro));
+    assert!(!fws.contains(&DetectedFramework::Koa));
 }

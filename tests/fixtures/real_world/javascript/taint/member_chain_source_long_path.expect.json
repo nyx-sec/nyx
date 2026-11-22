@@ -1,0 +1,58 @@
+{
+  "description": "Member sources spelled with a receiver chain of four or more segments (event.node.req.url, ctx.node.req.url) are still matched on their `req.url` suffix; lookalike chains stay clean.",
+  "tags": [
+    "taint",
+    "ssrf",
+    "member-chain",
+    "h3"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow",
+    "taint-open-redirect"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        4,
+        4
+      ],
+      "evidence_contains": [],
+      "notes": "event.node.req.url reaches fetch"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        9,
+        9
+      ],
+      "evidence_contains": [],
+      "notes": "ctx.node.req.url reaches fetch"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        17,
+        17
+      ],
+      "notes": "req.urlBuilder is not req.url"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        18,
+        18
+      ],
+      "notes": "a.b.cfg.endpoint is not a request path"
+    }
+  ]
+}

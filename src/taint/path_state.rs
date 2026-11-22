@@ -2004,6 +2004,78 @@ fn is_comparison_literal(s: &str) -> bool {
     is_numeric_literal(s)
 }
 
+/// A comparison of a parsed URL's authority against another value:
+/// `u.host === X`, `u.hostname != X`, `u.origin == X`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UrlHostCompare {
+    /// The identifier holding the parsed URL (`u`).
+    pub subject: String,
+    /// True for `==` / `===`, false for `!=` / `!==`.
+    pub is_eq: bool,
+    /// Text of the other operand.
+    pub rhs: String,
+}
+
+/// True when the `(` at the start of `text` closes at its last byte.
+fn outer_parens_wrap(text: &str) -> bool {
+    let mut depth = 0i32;
+    for (i, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i == text.len() - 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Recognise `<ident>.host|hostname|origin <op> <expr>` as a whole condition.
+///
+/// Text only: the caller must confirm `subject` really holds a parsed URL
+/// (`const u = new URL(..)`), because `.host` on any other object is just a
+/// field comparison.  Compound conditions, a leading `!` or `(`, and a
+/// left-hand side that is not a plain `ident.accessor` return `None`.
+pub fn url_host_compare(text: &str) -> Option<UrlHostCompare> {
+    let mut text = text.trim();
+    // `if (a.host === b)` may reach us with the parentheses still on.
+    while text.starts_with('(') && text.ends_with(')') && outer_parens_wrap(text) {
+        text = text[1..text.len() - 1].trim();
+    }
+    if text.contains("&&") || text.contains("||") || text.contains('?') {
+        return None;
+    }
+    let (pos, op) = ["!==", "===", "!=", "=="]
+        .iter()
+        .filter_map(|op| text.find(op).map(|i| (i, *op)))
+        .min_by_key(|(i, op)| (*i, std::cmp::Reverse(op.len())))?;
+    let lhs = text[..pos].trim();
+    let rhs = text[pos + op.len()..].trim();
+    if rhs.is_empty() {
+        return None;
+    }
+    let (subject, accessor) = lhs.split_once('.')?;
+    if !matches!(accessor, "host" | "hostname" | "origin") {
+        return None;
+    }
+    let mut chars = subject.chars();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_' || first == '$')
+        || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    {
+        return None;
+    }
+    Some(UrlHostCompare {
+        subject: subject.to_string(),
+        is_eq: op.starts_with('=') || op == "==",
+        rhs: rhs.to_string(),
+    })
+}
+
 /// A single equality test of a bare variable against a constant literal:
 /// `dir === 'asc'`, `order != "desc"`, `$n === 5`, `'asc' == dir`.
 ///
@@ -3650,6 +3722,34 @@ mod tests {
     fn bounded_length_accepts_small_bounds() {
         assert!(is_bounded_length_check("x.len() > 2"));
         assert!(is_bounded_length_check("x.len() <= 256"));
+    }
+
+    // ── UrlHostCompare ────────────────────────────────────────────────────
+
+    #[test]
+    fn url_host_compare_parses_eq_and_neq() {
+        let c = url_host_compare("url.host === this.ctx.host").unwrap();
+        assert_eq!(c.subject, "url");
+        assert!(c.is_eq);
+        assert_eq!(c.rhs, "this.ctx.host");
+        let c = url_host_compare("apiUrl.host !== new URL(apiEndPoint).host").unwrap();
+        assert_eq!(c.subject, "apiUrl");
+        assert!(!c.is_eq);
+        assert_eq!(c.rhs, "new URL(apiEndPoint).host");
+        let c = url_host_compare("(target.origin == base.origin)").unwrap();
+        assert_eq!(c.subject, "target");
+        assert!(c.is_eq);
+    }
+
+    #[test]
+    fn url_host_compare_rejects_other_shapes() {
+        assert!(url_host_compare("a.port === 80").is_none());
+        assert!(url_host_compare("a.b.host === x").is_none());
+        assert!(url_host_compare("a.host === x && ok").is_none());
+        assert!(url_host_compare("a.host === x || ok").is_none());
+        assert!(url_host_compare("!a.host").is_none());
+        assert!(url_host_compare("a.host ===").is_none());
+        assert!(url_host_compare("(a).host === x").is_none());
     }
 
     // ── HostAllowlistValidated ────────────────────────────────────────────

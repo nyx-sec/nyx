@@ -66,9 +66,9 @@ use decorators::{extract_auth_decorators, extract_route_path_captures};
 pub(crate) use helpers::{
     HeaderExpr, RmwAssign, ValidSourceGuard, collect_idents, collect_idents_with_paths,
     control_header_expr, find_condition_subtree, find_constructor_type_child, first_call_ident,
-    has_call_descendant, has_function_descendant, member_expr_text, node_str, rmw_assignment,
-    rmw_statement, rmw_target_define, rmw_target_reads, root_receiver_text, slice_str,
-    subtree_has_call, text_of,
+    has_call_descendant, has_function_descendant, member_expr_text, member_expr_text_full,
+    node_str, rmw_assignment, rmw_statement, rmw_target_define, rmw_target_reads,
+    root_receiver_text, slice_str, subtree_has_call, text_of,
 };
 use imports::{
     collect_python_noreturn_imports, extract_import_bindings, extract_local_import_view,
@@ -4163,6 +4163,7 @@ pub(super) fn push_node<'a>(
         && !is_koa_json_body_node(ast, lang, code, &found)
     {
         let hoisted_is_sink = matches!(found, DataLabel::Sink(_));
+        let hoisted_is_source = matches!(found, DataLabel::Source(_));
         labels.push(found);
         // When the hoisted label is a Sink contributed from inside a
         // callback-argument function literal (the `sequelize.transaction(async
@@ -4197,7 +4198,7 @@ pub(super) fn push_node<'a>(
         // The Source label still attaches, so the resolved-value taint
         // flows from the inner `Promise.resolve(req.body)`.
         if !outer_is_promise_callback {
-            if let Some(member_text) = first_member_text(ast, code) {
+            if let Some(member_text) = first_member_text(ast, code, hoisted_is_source) {
                 if outer_callee.is_none() && text != member_text {
                     outer_callee = Some(text.clone());
                 }
@@ -8794,10 +8795,12 @@ fn collect_rhs_member_sources<'a>(
             {
                 return;
             }
-            if let Some(full) = member_expr_text(n, code) {
+            if let Some(full) = member_expr_text_full(n, code) {
                 let mut candidate = full.as_str();
                 loop {
-                    if let Some(DataLabel::Source(caps)) = classify(lang, candidate, extra) {
+                    if let Some(DataLabel::Source(caps)) = classify(lang, candidate, extra)
+                        && helpers::long_source_path_ok(candidate)
+                    {
                         out.push((n, caps, candidate.to_string()));
                         return;
                     }
@@ -8813,7 +8816,7 @@ fn collect_rhs_member_sources<'a>(
         }
         "subscript_expression" => {
             if let Some(DataLabel::Source(caps)) = first_member_label(n, lang, code, extra) {
-                let text = first_member_text(n, code).unwrap_or_default();
+                let text = first_member_text(n, code, true).unwrap_or_default();
                 out.push((n, caps, text));
             } else if let Some(obj) = n.child_by_field_name("object") {
                 collect_rhs_member_sources(obj, lang, code, extra, out);
@@ -8999,7 +9002,7 @@ fn pre_emit_arg_source_nodes(
             // Use the *current* node count as a unique token, it equals the
             // index the new Source node will receive.
             let synth_name = format!("__nyx_src_{}_{}", g.node_count(), pos);
-            let member_text = first_member_text(*child, code);
+            let member_text = first_member_text(*child, code, true);
             let span = (child.start_byte(), child.end_byte());
 
             let mut src_labels: SmallVec<[DataLabel; 2]> = SmallVec::new();
@@ -9125,7 +9128,7 @@ fn pre_emit_arg_source_nodes(
             let src_label = first_member_label(arg, lang, code, extra);
             if let Some(DataLabel::Source(caps)) = src_label {
                 let synth_name = format!("__nyx_chainsrc_{}_{}", g.node_count(), uses_only.len());
-                let member_text = first_member_text(arg, code);
+                let member_text = first_member_text(arg, code, true);
                 let span = (arg.start_byte(), arg.end_byte());
 
                 let mut src_labels: SmallVec<[DataLabel; 2]> = SmallVec::new();

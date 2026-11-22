@@ -1476,6 +1476,9 @@ struct BranchCondClass {
     /// [`crate::taint::path_state::equality_literal_guard`]).  Only set for
     /// [`PredicateKind::Comparison`].
     eq_guard: Option<(String, bool)>,
+    /// `u.host === X` on a variable that may hold a parsed URL (see
+    /// [`crate::taint::path_state::url_host_compare`]).
+    host_compare: Option<crate::taint::path_state::UrlHostCompare>,
     path: PathBranchClass,
 }
 
@@ -1542,6 +1545,7 @@ fn classify_branch_cond(cond_text: &str) -> BranchCondClass {
         bit_negated,
         sentinel,
         eq_guard,
+        host_compare: crate::taint::path_state::url_host_compare(cond_text),
         path: classify_path_branch(cond_text),
     }
 }
@@ -1736,6 +1740,20 @@ fn compute_succ_states(
                         *op_is_eq,
                         cond_info,
                         transfer.interner,
+                    );
+                }
+
+                if let Some(hc) = &class.host_compare {
+                    apply_url_host_compare_narrowing(
+                        &mut true_state,
+                        &mut false_state,
+                        exit_state,
+                        hc,
+                        cond_info,
+                        ssa,
+                        cfg,
+                        block.id,
+                        transfer,
                     );
                 }
 
@@ -2680,6 +2698,260 @@ fn apply_input_validator_branch_narrowing(
             success_state.validated_must.insert(sym);
         }
     }
+}
+
+/// Same-host guard on a parsed URL: `const u = new URL(x, base); if (u.host
+/// === Y) { sink(x) }`.
+///
+/// On the edge where the hosts are equal, the parsed URL resolves to the host
+/// `Y`, so neither `u` nor the string `x` it was parsed from can steer a
+/// request or a redirect to another host.  Clears `Cap::OPEN_REDIRECT` and
+/// `Cap::SSRF` from both there; every other capability keeps its taint.
+///
+/// The guard only counts when
+/// * the subject's reaching definition is a call to the `URL` constructor
+///   (a bare `.host` field comparison proves nothing), and
+/// * the compared operand `Y` cannot be attacker data: no tainted variable
+///   in it and no source-labelled member path (`req.query.host`).
+///
+/// The narrowing is skipped when either condition is unproven.
+fn apply_url_host_compare_narrowing(
+    true_state: &mut SsaTaintState,
+    false_state: &mut SsaTaintState,
+    exit_state: &SsaTaintState,
+    hc: &crate::taint::path_state::UrlHostCompare,
+    cond_info: &NodeInfo,
+    ssa: &SsaBody,
+    cfg: &Cfg,
+    block: BlockId,
+    transfer: &SsaTaintTransfer,
+) {
+    const CAPS: Cap = Cap::OPEN_REDIRECT.union(Cap::SSRF);
+    let Some(subject_val) = reaching_def_at_block_end(&hc.subject, ssa, block) else {
+        return;
+    };
+    let Some(def_inst) = find_inst_for_value(subject_val, ssa) else {
+        return;
+    };
+    let SsaOp::Call { callee, args, .. } = &def_inst.op else {
+        return;
+    };
+    if !matches!(
+        callee.as_str(),
+        "URL" | "new URL" | "window.URL" | "globalThis.URL" | "self.URL" | "URL.parse"
+    ) {
+        return;
+    }
+
+    // The other operand must not be attacker-controlled.
+    let lang = transfer.lang.as_str();
+    for word in hc
+        .rhs
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '.')))
+        .filter(|w| !w.is_empty())
+    {
+        let mut candidate = word;
+        loop {
+            if matches!(
+                crate::labels::classify(lang, candidate, transfer.extra_labels),
+                Some(DataLabel::Source(_))
+            ) {
+                return;
+            }
+            match candidate.rsplit_once('.') {
+                Some((prefix, _)) => candidate = prefix,
+                None => break,
+            }
+        }
+        let root = word.split('.').next().unwrap_or(word);
+        if let Some(v) = reaching_def_at_block_end(root, ssa, block)
+            && exit_state.get(v).is_some_and(|t| !t.caps.is_empty())
+        {
+            return;
+        }
+    }
+
+    // Edge on which the comparison held.
+    let eq_on_true = hc.is_eq != cond_info.condition_negated;
+    let state = if eq_on_true { true_state } else { false_state };
+
+    let mut targets: SmallVec<[SsaValue; 4]> = smallvec::smallvec![subject_val];
+    // The string the URL was parsed from is pinned only when it is passed as
+    // a bare name: `new URL('./' + basename(x), base)` says nothing about x.
+    if let Some(parsed) = bare_name_arg(&cfg[def_inst.cfg_node], callee, args, 0) {
+        targets.push(parsed);
+    }
+    if !host_pinned_uses_are_forwarding(&targets, def_inst.value, ssa, cfg, CAPS) {
+        return;
+    }
+    for val in targets {
+        if let Some(name) = ssa
+            .value_defs
+            .get(val.0 as usize)
+            .and_then(|vd| vd.var_name.as_deref())
+        {
+            clear_cap_alias_aware(state, name, CAPS, ssa, transfer.base_aliases);
+        }
+        if let Some(taint) = state.get(val).cloned() {
+            let caps = taint.caps & !CAPS;
+            if caps.is_empty() {
+                state.remove(val);
+            } else {
+                state.set(val, VarTaint { caps, ..taint });
+            }
+        }
+    }
+}
+
+/// Whether `seed`, or any value computed from it, is an argument or receiver
+/// of a call labelled as a sink for `caps`.
+fn value_reaches_sink(seed: SsaValue, ssa: &SsaBody, cfg: &Cfg, caps: Cap) -> bool {
+    let mut derived: HashSet<SsaValue> = HashSet::new();
+    derived.insert(seed);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for b in &ssa.blocks {
+            for inst in b.phis.iter().chain(b.body.iter()) {
+                if derived.contains(&inst.value)
+                    || !inst.uses_iter().iter().any(|v| derived.contains(v))
+                {
+                    continue;
+                }
+                if matches!(inst.op, SsaOp::Call { .. })
+                    && cfg[inst.cfg_node]
+                        .taint
+                        .labels
+                        .iter()
+                        .any(|l| matches!(l, DataLabel::Sink(c) if c.intersects(caps)))
+                {
+                    return true;
+                }
+                derived.insert(inst.value);
+                changed = true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether every later use of the host-checked values only forwards them
+/// unchanged to a request or redirect.
+///
+/// The host check pins the string that was parsed, not strings built from it:
+/// `raw + '@evil.com'` after `new URL(raw)` passed the check can name another
+/// host.  Because the narrowing clears taint on the checked values, any value
+/// derived from them afterwards would inherit the cleared state.  So the
+/// narrowing holds only when each use of a checked value (or of another SSA
+/// value of the same variable) is one of
+/// * the `URL` constructor call that parsed it,
+/// * a phi (it only selects an operand),
+/// * a property read of the parsed URL itself (`u.href`), or
+/// * a call argument spelled as the checked variable's own name (never the
+///   receiver) of a call that is a redirect/SSRF sink, or whose result
+///   nothing consumes.
+/// Concatenation, templates, method calls on the value and helper calls whose
+/// result is used keep the taint.
+fn host_pinned_uses_are_forwarding(
+    targets: &[SsaValue],
+    url_value: SsaValue,
+    ssa: &SsaBody,
+    cfg: &Cfg,
+    caps: Cap,
+) -> bool {
+    let mut names: SmallVec<[&str; 4]> = SmallVec::new();
+    for t in targets {
+        if let Some(n) = ssa
+            .value_defs
+            .get(t.0 as usize)
+            .and_then(|d| d.var_name.as_deref())
+            && !names.contains(&n)
+        {
+            names.push(n);
+        }
+    }
+    let is_checked = |v: SsaValue| {
+        targets.contains(&v)
+            || ssa
+                .value_defs
+                .get(v.0 as usize)
+                .and_then(|d| d.var_name.as_deref())
+                .is_some_and(|n| names.contains(&n))
+    };
+    let result_consumed = |res: SsaValue| {
+        ssa.blocks.iter().any(|b| {
+            b.phis
+                .iter()
+                .chain(b.body.iter())
+                .any(|i| i.uses_iter().contains(&res))
+        })
+    };
+    for b in &ssa.blocks {
+        for inst in b.phis.iter().chain(b.body.iter()) {
+            if inst.value == url_value || !inst.uses_iter().iter().any(|v| is_checked(*v)) {
+                continue;
+            }
+            match &inst.op {
+                // A phi only selects one of its operands.
+                SsaOp::Phi(_) => {}
+                // A property of the parsed URL (`u.href`) stays on its host.
+                SsaOp::FieldProj { receiver, .. } if *receiver == url_value => {}
+                SsaOp::Call {
+                    callee,
+                    args,
+                    receiver,
+                    ..
+                } => {
+                    if *receiver == Some(url_value) {
+                        // A method on the parsed URL (`u.searchParams.get(k)`)
+                        // yields data read from it; that data must not end up
+                        // as a redirect or request target.
+                        if value_reaches_sink(inst.value, ssa, cfg, caps) {
+                            return false;
+                        }
+                        continue;
+                    }
+                    if receiver.is_some_and(&is_checked) {
+                        return false;
+                    }
+                    let info = &cfg[inst.cfg_node];
+                    // Each checked value must be passed as a bare name that is
+                    // the checked variable itself.  A copy-propagated
+                    // `const x = raw + '@evil.com'` shows up as the value of
+                    // `raw` but is spelled `x` at the call.
+                    for (i, group) in args.iter().enumerate() {
+                        if !group.iter().any(|v| is_checked(*v)) {
+                            continue;
+                        }
+                        let is_bare = i < 64
+                            && info.call.arg_bare_names & (1u64 << i) != 0
+                            && node_describes_call(info, callee);
+                        let spelled_checked = info.call.arg_uses.get(i).is_some_and(|u| {
+                            u.first().is_some_and(|first| {
+                                names.contains(&first.split('.').next().unwrap_or(first))
+                            })
+                        });
+                        if !is_bare || !spelled_checked {
+                            return false;
+                        }
+                    }
+                    let is_sink = info
+                        .taint
+                        .labels
+                        .iter()
+                        .any(|l| matches!(l, DataLabel::Sink(c) if c.intersects(caps)));
+                    if !is_sink
+                        && (info.kind == crate::cfg::StmtKind::Return
+                            || result_consumed(inst.value))
+                    {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+    }
+    true
 }
 
 /// Look up the path-confinement positions of a callee by bare name in the

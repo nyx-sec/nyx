@@ -900,20 +900,52 @@ pub(crate) fn find_inner_gated_sink_call<'a>(
 
 /// Build the dot-joined text of a member_expression / attribute / selector_expression.
 /// E.g. for `process.env.CMD` this returns `"process.env.CMD"`.
-/// Field paths are capped at 3 segments (2 dots) to bound state size.
+/// Field paths are capped at 3 segments (2 dots) to bound state size.  Use
+/// [`member_expr_text_full`] when the text only feeds label classification.
 pub(crate) fn member_expr_text(n: Node, code: &[u8]) -> Option<String> {
-    let path = member_expr_text_inner(n, code)?;
-    // Depth limit: keep at most 3 segments (2 dots)
+    let mut path = member_expr_text_inner(n, code)?;
+    path.truncate(capped_path_len(&path));
+    Some(path)
+}
+
+/// Byte length of `path` once capped at 3 segments (2 dots).
+fn capped_path_len(path: &str) -> usize {
     let mut dots = 0;
     for (i, c) in path.char_indices() {
         if c == '.' {
             dots += 1;
-        }
-        if dots >= 3 {
-            return Some(path[..i].to_string());
+            if dots >= 3 {
+                return i;
+            }
         }
     }
-    Some(path)
+    path.len()
+}
+
+/// Whether a Source match on a member path longer than the 3-segment cap may
+/// stand.  Short paths always may.  A longer path is a request chain only when
+/// it hangs off a receiver that conventionally carries the request (`ctx`,
+/// `event`, `this`, ...): `ctx.node.req.url` is, `cfg.x.y.req.url` or a local
+/// object literal `o.a.b.req.url` is merely a path that ends in `req.url`.
+pub(crate) fn long_source_path_ok(path: &str) -> bool {
+    if path.bytes().filter(|&b| b == b'.').count() < 3 {
+        return true;
+    }
+    let root = path.split('.').next().unwrap_or("");
+    [
+        "ctx", "context", "event", "evt", "this", "req", "request", "c",
+    ]
+    .iter()
+    .any(|r| root.eq_ignore_ascii_case(r))
+}
+
+/// Like [`member_expr_text`] but without the 3-segment cap.  Label rules are
+/// suffix-anchored on `.`, so classifying the untruncated path adds matches
+/// for sources spelled with a longer receiver chain (`ctx.node.req.url`,
+/// `ctx.url.searchParams`).  Callers use it for Source matching only;
+/// variable-name state and sink matching keep the capped form.
+pub(crate) fn member_expr_text_full(n: Node, code: &[u8]) -> Option<String> {
+    member_expr_text_inner(n, code)
 }
 
 pub(crate) fn member_expr_text_inner(n: Node, code: &[u8]) -> Option<String> {
@@ -988,7 +1020,7 @@ pub(crate) fn first_member_label(
 ) -> Option<DataLabel> {
     match n.kind() {
         "member_expression" | "attribute" | "selector_expression" => {
-            if let Some(full) = member_expr_text(n, code) {
+            if let Some(full) = member_expr_text_full(n, code) {
                 // Try the full text first, then progressively strip the last segment
                 // to match rules like "process.env" from "process.env.CMD".
                 //
@@ -1002,15 +1034,24 @@ pub(crate) fn first_member_label(
                 // accept any label on a full-text match (the behaviour callers
                 // already depend on for Source/Sink labels alike), but only
                 // accept Source labels after segment stripping.
+                //
+                // `full` is the untruncated path so a source with a long
+                // receiver chain (`ctx.node.req.url`) still matches its
+                // `req.url` suffix.  Sinks and sanitizers keep matching only
+                // on the 3-segment capped text they always saw: a longer path
+                // such as `global.strapi.db.query` would otherwise start to
+                // classify as `db.query`.
+                let capped_len = capped_path_len(&full);
                 let mut candidate = full.as_str();
-                let mut first = true;
                 loop {
                     if let Some(lbl) = classify(lang, candidate, extra_labels) {
-                        if first || matches!(lbl, DataLabel::Source(_)) {
+                        if candidate.len() == capped_len
+                            || (matches!(lbl, DataLabel::Source(_))
+                                && long_source_path_ok(candidate))
+                        {
                             return Some(lbl);
                         }
                     }
-                    first = false;
                     match candidate.rsplit_once('.') {
                         Some((prefix, _)) => candidate = prefix,
                         None => break,
@@ -1237,9 +1278,18 @@ pub(crate) fn nested_member_sink_calls<'a>(
 }
 
 /// Return the text of the first member expression found in `n`.
-pub(crate) fn first_member_text(n: Node, code: &[u8]) -> Option<String> {
+///
+/// `full` keeps the untruncated path; pass it only for a node whose label is a
+/// Source (see [`member_expr_text_full`]).
+pub(crate) fn first_member_text(n: Node, code: &[u8], full: bool) -> Option<String> {
     match n.kind() {
-        "member_expression" | "attribute" | "selector_expression" => member_expr_text(n, code),
+        "member_expression" | "attribute" | "selector_expression" => {
+            if full {
+                member_expr_text_full(n, code)
+            } else {
+                member_expr_text(n, code)
+            }
+        }
         "subscript_expression" | "subscript" | "element_reference" => n
             .child_by_field_name("object")
             .or_else(|| n.child_by_field_name("value"))
@@ -1248,7 +1298,7 @@ pub(crate) fn first_member_text(n: Node, code: &[u8]) -> Option<String> {
         _ => {
             let mut cursor = n.walk();
             for child in n.children(&mut cursor) {
-                if let Some(t) = first_member_text(child, code) {
+                if let Some(t) = first_member_text(child, code, full) {
                     return Some(t);
                 }
             }
