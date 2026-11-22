@@ -489,9 +489,22 @@ pub fn arg_propagation(lang: &str, callee: &str) -> Option<&'static ArgPropagati
         .rsplit('.')
         .next()
         .unwrap_or(callee);
-    registry
-        .iter()
-        .find(|p| p.callee.eq_ignore_ascii_case(normalized))
+    let find = |name: &str| {
+        registry
+            .iter()
+            .find(|p| p.callee.eq_ignore_ascii_case(name))
+    };
+    find(normalized).or_else(|| {
+        // Arity-suffixed wrapper macros (`SNPRINTF2(dst, n, fmt, a, b)`) keep
+        // the argument layout of the function they wrap.  Tree-sitter does no
+        // preprocessing, so the macro name is all that is visible; only
+        // all-caps names qualify, which keeps `memcpy2` style functions out.
+        let base = normalized.trim_end_matches(|c: char| c.is_ascii_digit());
+        let all_caps = !base.is_empty()
+            && base != normalized
+            && base.bytes().all(|b| b.is_ascii_uppercase() || b == b'_');
+        if all_caps { find(base) } else { None }
+    })
 }
 
 static REGISTRY: Lazy<HashMap<&'static str, &'static [LabelRule]>> = Lazy::new(|| {

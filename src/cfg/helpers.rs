@@ -1676,6 +1676,18 @@ pub(crate) fn control_header_expr<'a>(ast: Node<'a>, lang: &str) -> Option<Heade
     if matches!(ast.kind(), "elif_clause" | "else_if_clause") {
         return cond(ast.child_by_field_name("condition"));
     }
+    // A C / C++ short-circuit operand that assigns, `(x = getenv("V")) == NULL`
+    // in `if (a || (x = getenv("V")) == NULL)`, is lowered as a branch node of
+    // its own and evaluates like a condition header.
+    if matches!(lang, "c" | "cpp")
+        && matches!(
+            ast.kind(),
+            "binary_expression" | "parenthesized_expression" | "unary_expression"
+        )
+        && super::literals::condition_assignment(ast).is_some()
+    {
+        return Some(HeaderExpr::Condition(ast));
+    }
     match lookup(lang, ast.kind()) {
         Kind::If | Kind::While => cond(find_condition_subtree(ast, lang)),
         Kind::For => {
@@ -2401,6 +2413,20 @@ fn return_escape_walk(n: Node, lang: &str, code: &[u8], out: &mut ReturnEscapes,
                     return_escape_walk(last, lang, code, out, depth + 1);
                 }
             }
+        }
+        // C++ `return this;` / `return *this;`: the receiver itself escapes.
+        // Recorded as the pseudo-variable `this` so a summary can tell a
+        // fluent method (`Builder &host(const char *h) { h_ = h; return *this; }`)
+        // from one that returns an unrelated value.
+        "this" if lang == "cpp" => out.idents.push("this".to_string()),
+        "pointer_expression" | "unary_expression"
+            if lang == "cpp"
+                && n.child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "*")
+                && n.child_by_field_name("argument")
+                    .is_some_and(|a| a.kind() == "this") =>
+        {
+            out.idents.push("this".to_string());
         }
         // Address-of / casts / type assertions: the operand escapes.
         "unary_expression" | "pointer_expression" | "reference_expression" => {

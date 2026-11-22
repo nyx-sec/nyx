@@ -1,0 +1,38 @@
+{
+  "description": "A condition assignment copies a tainted value into its target.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "c"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "c.cmdi.system",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        8,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        8,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "cmd takes a tainted value through the condition assignment"
+    }
+  ]
+}

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 1142
+    "corpus_size": 1166
   },
   "cases": [
     {
@@ -36420,6 +36420,802 @@
       ],
       "disabled": false,
       "notes": "Safe twin of echo_ternary_coalesce."
+    },
+    {
+      "case_id": "c-cmdi-recall-c-001",
+      "file": "c/cmdi/ptr_return_wrapper.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "c.cmdi.popen",
+        "c.cmdi.system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          17,
+          17
+        ],
+        [
+          22,
+          22
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          16,
+          16
+        ],
+        [
+          21,
+          21
+        ]
+      ],
+      "tags": [
+        "recall-c",
+        "ptr_return_wrapper"
+      ],
+      "disabled": false,
+      "notes": "Pointer-returning wrappers (FILE *f(char *x), char *f(char *x)) keep their parameter list; getenv flows through them to popen/system"
+    },
+    {
+      "case_id": "c-safe-recall-c-001",
+      "file": "c/safe/ptr_return_wrapper_safe.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "recall-c",
+        "ptr_return_wrapper",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Constant inputs on the same code shape: no taint flow expected"
+    },
+    {
+      "case_id": "c-cmdi-recall-c-002",
+      "file": "c/cmdi/cond_assign_source.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "c.cmdi.system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ],
+        [
+          16,
+          16
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ],
+        [
+          14,
+          14
+        ],
+        [
+          24,
+          24
+        ]
+      ],
+      "tags": [
+        "recall-c",
+        "cond_assign_source"
+      ],
+      "disabled": false,
+      "notes": "Sources assigned inside if/while conditions (getenv in `if ((x = getenv(..)) == NULL)`, read() in a while condition) define the target"
+    },
+    {
+      "case_id": "c-safe-recall-c-002",
+      "file": "c/safe/cond_assign_source_safe.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "recall-c",
+        "cond_assign_source",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Constant inputs on the same code shape: no taint flow expected"
+    },
+    {
+      "case_id": "c-cmdi-recall-c-003",
+      "file": "c/cmdi/preproc_group.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "c.cmdi.system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ],
+        [
+          18,
+          18
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ],
+        [
+          16,
+          16
+        ]
+      ],
+      "tags": [
+        "recall-c",
+        "preproc_group"
+      ],
+      "disabled": false,
+      "notes": "Code inside #ifndef / #if / #else groups, including a whole function definition, is lowered into the CFG"
+    },
+    {
+      "case_id": "c-safe-recall-c-003",
+      "file": "c/safe/preproc_group_safe.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "recall-c",
+        "preproc_group",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Constant inputs on the same code shape: no taint flow expected"
+    },
+    {
+      "case_id": "c-cmdi-recall-c-004",
+      "file": "c/cmdi/arity_macro_format.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "c.cmdi.system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "tags": [
+        "recall-c",
+        "arity_macro_format"
+      ],
+      "disabled": false,
+      "notes": "Arity-suffixed format macro SNPRINTF2 propagates a tainted template into the command buffer like snprintf"
+    },
+    {
+      "case_id": "c-safe-recall-c-004",
+      "file": "c/safe/arity_macro_format_safe.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "recall-c",
+        "arity_macro_format",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Constant inputs on the same code shape: no taint flow expected"
+    },
+    {
+      "case_id": "cve-c-2022-48624-vulnerable",
+      "file": "cve_corpus/c/CVE-2022-48624/vulnerable.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "c.cmdi.popen"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          91,
+          91
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "less",
+        "lessclose",
+        "cmdi"
+      ],
+      "disabled": false,
+      "notes": "CVE-2022-48624: less close_altfile() substitutes the displayed file name into the LESSCLOSE template without shell quoting and runs it through popen. Detected through the getenv(LESSCLOSE) template flow (assignment in an if condition, pointer-returning shellcmd, SNPRINTF2 macro, #if HAVE_POPEN body); the argv file-name source is not modelled. GPL-3.0-or-later or Less License (dual)"
+    },
+    {
+      "case_id": "cve-c-2022-48624-patched",
+      "file": "cve_corpus/c/CVE-2022-48624/patched.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-78",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "less",
+        "patched",
+        "negative"
+      ],
+      "disabled": true,
+      "notes": "CVE-2022-48624 patched counterpart (shell_quote on both file names). Disabled: the getenv(LESSCLOSE) template still reaches popen in the fixed code, so the taint finding is the same true flow as in the vulnerable file; the CVE itself is the unquoted argv file name, an unmodelled source"
+    },
+    {
+      "case_id": "cve-cpp-2026-85439-vulnerable",
+      "file": "cve_corpus/cpp/CVE-2026-85439/vulnerable.cpp",
+      "language": "cpp",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "cpp.cmdi.system"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          79,
+          79
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "moos-ivp",
+        "cmdi",
+        "system"
+      ],
+      "disabled": false,
+      "notes": "CVE-2026-85439: MOOS-IvP SplitHandler builds `mkdir <dir>` from a command-line directory name and passes it to system(). Structural rule only: argv is not a taint source. GPL-3.0-or-later (per-file header)"
+    },
+    {
+      "case_id": "cve-cpp-2026-85439-patched",
+      "file": "cve_corpus/cpp/CVE-2026-85439/patched.cpp",
+      "language": "cpp",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-78",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cpp.cmdi.system",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "moos-ivp",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2026-85439 patched counterpart: mkdir(2) syscall replaces the shell; no system() call remains"
+    },
+    {
+      "case_id": "cve-cpp-2026-112049-vulnerable",
+      "file": "cve_corpus/cpp/CVE-2026-112049/vulnerable.cpp",
+      "language": "cpp",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          41,
+          41
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "vita3k",
+        "zip-slip",
+        "path-traversal"
+      ],
+      "disabled": true,
+      "notes": "CVE-2026-112049: Vita3K archive extraction joins a miniz entry name onto the output directory without containment checks (zip-slip). Disabled: no miniz entry-name source (mz_zip_reader_file_stat out-param field), no std::filesystem / ofstream FILE_IO sinks, no path operator/ propagation. GPL-2.0-or-later (per-file header)"
+    },
+    {
+      "case_id": "cve-cpp-2026-112049-patched",
+      "file": "cve_corpus/cpp/CVE-2026-112049/patched.cpp",
+      "language": "cpp",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "vita3k",
+        "patched",
+        "negative"
+      ],
+      "disabled": true,
+      "notes": "CVE-2026-112049 patched counterpart: lexically_relative + '..' containment check on the entry path"
+    },
+    {
+      "case_id": "cve-c-2026-8274-vulnerable",
+      "file": "cve_corpus/c/CVE-2026-8274/vulnerable.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          114,
+          114
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "cramfs-tools",
+        "path-traversal"
+      ],
+      "disabled": true,
+      "notes": "CVE-2026-8274: cramfsck copies an archive entry name read into a file-scope buffer into the extraction path passed to open(). Disabled: taint written to a file-scope variable by a read() out-param is not an SSA def (no global cell model), and argv is not a source. GPL-2.0-or-later"
+    },
+    {
+      "case_id": "cve-c-2026-8274-patched",
+      "file": "cve_corpus/c/CVE-2026-8274/patched.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "cramfs-tools",
+        "patched",
+        "negative"
+      ],
+      "disabled": true,
+      "notes": "CVE-2026-8274 patched counterpart: entry name is validated before use"
+    },
+    {
+      "case_id": "cve-c-2026-25554-vulnerable",
+      "file": "cve_corpus/c/CVE-2026-25554/vulnerable.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          128,
+          128
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "opensips",
+        "sqli"
+      ],
+      "disabled": true,
+      "notes": "CVE-2026-25554: OpenSIPS auth_jwt formats a JWT grant claim into a raw SQL query with snprintf and runs it through a database function pointer. Disabled: C has no SQL sink rules, the sink is a function-pointer field call, and the source is a library return value. GPL-2.0-or-later"
+    },
+    {
+      "case_id": "cve-c-2026-25554-patched",
+      "file": "cve_corpus/c/CVE-2026-25554/patched.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-89",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "opensips",
+        "patched",
+        "negative"
+      ],
+      "disabled": true,
+      "notes": "CVE-2026-25554 patched counterpart: claim escaped with escape_common before formatting"
+    },
+    {
+      "case_id": "c-cmdi-recall-c-005",
+      "file": "c/cmdi/short_circuit_cond_assign.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "c.cmdi.system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "recall-c",
+        "short_circuit_cond_assign"
+      ],
+      "disabled": false,
+      "notes": "Source assigned in a short-circuit condition operand defines its target."
+    },
+    {
+      "case_id": "c-safe-recall-c-005",
+      "file": "c/safe/short_circuit_cond_assign_safe.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "recall-c",
+        "short_circuit_cond_assign",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Same condition shape, the value only reaches printf and system gets a constant: no taint flow expected."
+    },
+    {
+      "case_id": "c-cmdi-recall-c-006",
+      "file": "c/cmdi/preproc_alt_functions.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "c.cmdi.system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "tags": [
+        "recall-c",
+        "preproc_alt_functions"
+      ],
+      "disabled": false,
+      "notes": "Two #if arms define the same function name; the flow into the arm that reaches system is kept."
+    },
+    {
+      "case_id": "c-safe-recall-c-006",
+      "file": "c/safe/preproc_alt_functions_safe.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "recall-c",
+        "preproc_alt_functions",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Same #if arms, neither passes its parameter to system: no taint flow expected."
+    },
+    {
+      "case_id": "c-cmdi-recall-c-007",
+      "file": "c/cmdi/cond_assign_forwards_taint.c",
+      "language": "c",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "c.cmdi.system"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "tags": [
+        "recall-c",
+        "cond_assign_forwards_taint"
+      ],
+      "disabled": false,
+      "notes": "A condition assignment copies a tainted value into its target."
+    },
+    {
+      "case_id": "c-safe-recall-c-007",
+      "file": "c/safe/cond_assign_overwrites_taint_safe.c",
+      "language": "c",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "recall-c",
+        "cond_assign_overwrites_taint",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A condition assignment overwrites a tainted target with a constant: no taint flow expected."
     }
   ]
 }

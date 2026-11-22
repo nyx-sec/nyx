@@ -1,0 +1,38 @@
+{
+  "description": "Same wrappers called with constant commands: no taint flow.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "c"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "c.cmdi.popen",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        5,
+        5
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern is syntactic and fires on the wrapper"
+    },
+    {
+      "rule_id": "c.cmdi.system",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        9,
+        9
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern is syntactic and fires on the wrapper"
+    }
+  ]
+}

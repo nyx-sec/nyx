@@ -1,0 +1,38 @@
+{
+  "description": "An arity-suffixed wrapper macro (SNPRINTF2) propagates its format and arguments into the buffer like snprintf.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "c"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "c.cmdi.system",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        13,
+        13
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        13,
+        13
+      ],
+      "evidence_contains": [],
+      "notes": "getenv template is formatted into cmd by SNPRINTF2 and reaches system"
+    }
+  ]
+}

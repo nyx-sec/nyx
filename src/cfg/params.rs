@@ -18,6 +18,39 @@ fn lookup_dto_class(class_name: &str) -> Option<TypeKind> {
     DTO_CLASSES.with(|cell| cell.borrow().get(class_name).cloned().map(TypeKind::Dto))
 }
 
+/// Descend a C / C++ `function_definition` declarator chain to the
+/// `function_declarator` that owns the parameter list and the name.  Pointer
+/// returns (`char *f(char *x)`, `FILE *f(...)`), parenthesized and attributed
+/// declarators wrap it in extra layers.  Returns `None` for other shapes.
+pub(super) fn c_function_declarator(func_node: Node<'_>) -> Option<Node<'_>> {
+    let mut d = func_node.child_by_field_name("declarator")?;
+    for _ in 0..16 {
+        match d.kind() {
+            // The declarator that names the function holds its parameters.  A
+            // function returning a function pointer
+            // (`void *(*pick(int sel))(void)`) nests another one inside a
+            // parenthesized declarator; the inner one is the definition's own.
+            "function_declarator" => match d.child_by_field_name("declarator") {
+                Some(inner) if inner.kind() == "parenthesized_declarator" => d = inner,
+                _ => return Some(d),
+            },
+            "pointer_declarator"
+            | "reference_declarator"
+            | "parenthesized_declarator"
+            | "attributed_declarator"
+            | "array_declarator" => {
+                d = d.child_by_field_name("declarator").or_else(|| {
+                    let mut c = d.walk();
+                    d.named_children(&mut c)
+                        .find(|n| n.kind().ends_with("declarator"))
+                })?;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// Extract parameter names + per-position [`TypeKind`] from a function
 /// AST node.  Each entry's second slot is `Some(TypeKind)` when the
 /// parameter's decorator, attribute, or static type annotation maps to
@@ -55,13 +88,11 @@ pub(super) fn extract_param_meta<'a>(
         }
     };
     // Try the params_field directly on the function node first.
-    // For C/C++, the parameter list is nested inside the declarator
-    // (function_definition > declarator:function_declarator > parameters:parameter_list),
-    // so fall back to looking one level deeper via the "declarator" field.
+    // For C/C++ the parameter list lives inside the declarator chain
+    // (function_definition > declarator: [pointer_declarator >]* function_declarator
+    // > parameters), so descend it with the shared helper.
     let params = func_node.child_by_field_name(cfg.params_field).or_else(|| {
-        func_node
-            .child_by_field_name("declarator")
-            .and_then(|d| d.child_by_field_name(cfg.params_field))
+        c_function_declarator(func_node).and_then(|d| d.child_by_field_name(cfg.params_field))
     });
     let Some(params) = params else {
         // Single-param arrow shorthand (`uri => ...` in JS/TS): tree-sitter

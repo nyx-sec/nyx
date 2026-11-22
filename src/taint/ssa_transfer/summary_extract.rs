@@ -2306,6 +2306,25 @@ pub fn extract_ssa_func_summary_full(
     // static-buffer/param-fallback shape otherwise defeats.
     let confines_path_return = detect_path_confined_return(ssa, cfg, ssa_summaries, lang);
 
+    // A C++ method that returns `*this` / `this` hands back the receiver, which
+    // now holds whatever the parameters were stored into (`host_ = h`).  The
+    // probe cannot see object state, so record every parameter as flowing to
+    // the return, as a call on an unsummarised fluent method would.
+    if lang == Lang::Cpp
+        && ssa.blocks.iter().any(|b| {
+            matches!(b.terminator, Terminator::Return(_))
+                && b.body
+                    .iter()
+                    .any(|i| cfg[i.cfg_node].returned_idents.iter().any(|r| r == "this"))
+        })
+    {
+        for &(idx, _, _) in &param_info {
+            if !param_to_return.iter().any(|(i, _)| *i == idx) {
+                param_to_return.push((idx, TaintTransform::Identity));
+            }
+        }
+    }
+
     SsaFuncSummary {
         param_to_return,
         param_to_sink,

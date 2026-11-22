@@ -14555,6 +14555,38 @@ fn resolve_lfk_query_from(all: &[&FuncKey], q: &CalleeQuery<'_>) -> Option<FuncK
     None
 }
 
+/// Free functions of one name (and call arity, when known) defined in a C
+/// file.  More than one means preprocessor alternatives, since C has no
+/// overloading and a plain redefinition does not compile.
+fn c_preproc_alternatives(
+    local_summaries: &FuncSummaries,
+    name: &str,
+    arity: Option<usize>,
+) -> Vec<FuncKey> {
+    let pick = |k: &FuncKey| {
+        k.container.is_empty()
+            && k.lang == Lang::C
+            && match arity {
+                Some(a) => k.arity == Some(a),
+                None => true,
+            }
+    };
+    if let Some(res) = with_indexed_local_candidates(name, Lang::C, |keys| {
+        keys.iter()
+            .copied()
+            .filter(|k| pick(k))
+            .cloned()
+            .collect::<Vec<_>>()
+    }) {
+        return res;
+    }
+    local_summaries
+        .keys()
+        .filter(|k| k.name == name && pick(k))
+        .cloned()
+        .collect()
+}
+
 pub(crate) fn resolve_local_func_key(
     local_summaries: &FuncSummaries,
     lang: Lang,
@@ -15152,6 +15184,49 @@ fn resolve_callee_steps(
         receiver_var,
         arity: arity_hint,
     };
+
+    // 0a) C `#if` / `#else` alternatives: two free functions of one name and
+    // arity in a file are the arms of a preprocessor group, and either arm can
+    // be the one compiled.  Union their summaries (any-impl) so a flow into
+    // the vulnerable arm is kept whichever arm comes first.
+    if let Some(ssa_sums) = transfer.ssa_summaries
+        && transfer.lang == Lang::C
+        && namespace_qualifier.is_none()
+        && receiver_var.is_none()
+        && receiver_type.is_none()
+    {
+        let alts = c_preproc_alternatives(transfer.local_summaries, normalized, arity_hint);
+        if alts.len() > 1 {
+            let mut accum: Option<ResolvedSummary> = None;
+            let mut covered = 0usize;
+            for key in &alts {
+                let found = ssa_sums.get(key).or_else(|| {
+                    ssa_sums
+                        .iter()
+                        .find(|(k, _)| {
+                            k.lang == key.lang
+                                && k.container == key.container
+                                && k.name == key.name
+                                && k.arity == key.arity
+                                && k.disambig == key.disambig
+                                && k.kind == key.kind
+                        })
+                        .map(|(_, v)| v)
+                });
+                if let Some(ssa_sum) = found {
+                    let r = convert_ssa_to_resolved(ssa_sum);
+                    accum = Some(match accum {
+                        None => r,
+                        Some(a) => merge_resolved_summaries_fanout(a, r),
+                    });
+                    covered += 1;
+                }
+            }
+            if covered == alts.len() {
+                return accum;
+            }
+        }
+    }
 
     // 0) Precise SSA summaries (intra-file, per-parameter transforms).
     //

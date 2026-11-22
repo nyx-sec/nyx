@@ -1,0 +1,38 @@
+{
+  "description": "Two #if arms define the same function name; the flow into the arm that reaches system is kept.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "c"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "c.cmdi.system",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        9,
+        9
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        15,
+        15
+      ],
+      "evidence_contains": [],
+      "notes": "the tainted argument reaches system through run_job, reported at the call"
+    }
+  ]
+}

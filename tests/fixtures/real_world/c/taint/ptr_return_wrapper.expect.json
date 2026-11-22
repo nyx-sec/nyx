@@ -1,0 +1,60 @@
+{
+  "description": "Pointer-returning C wrappers (FILE *f(char *), char *f(char *)) keep their parameter list, so getenv flows through them into popen/system.",
+  "tags": [
+    "taint",
+    "cmdi",
+    "c"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "c.cmdi.popen",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        7,
+        7
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern on popen in the wrapper"
+    },
+    {
+      "rule_id": "c.cmdi.system",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        11,
+        11
+      ],
+      "evidence_contains": [],
+      "notes": "AST pattern on system in the wrapper"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        17,
+        17
+      ],
+      "evidence_contains": [],
+      "notes": "getenv at line 16 reaches popen through open_pipe(cmd)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        22,
+        22
+      ],
+      "evidence_contains": [],
+      "notes": "getenv at line 21 reaches system through run_shell(cmd)"
+    }
+  ]
+}
