@@ -1,0 +1,37 @@
+{
+  "description": "A collection that is mutated with environment data, or a parameter interpolated next to a constant loop variable, must keep firing.",
+  "tags": [
+    "sqli",
+    "sequelize",
+    "migration",
+    "const-collection",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        7,
+        7
+      ],
+      "evidence_contains": [],
+      "notes": "A collection that is mutated with environment data, or a parameter interpolated next to a constant loop variable, must keep firing."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        13,
+        13
+      ],
+      "evidence_contains": [],
+      "notes": "A collection that is mutated with environment data, or a parameter interpolated next to a constant loop variable, must keep firing."
+    }
+  ]
+}

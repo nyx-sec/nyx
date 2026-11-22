@@ -1051,6 +1051,49 @@ pub(crate) fn first_callback_sink_call<'a>(
     walk(n, lang, code, extra_labels, false)
 }
 
+/// Every call in `n` whose callee is a member expression that classifies as a
+/// `Sink`, when that is the only way the statement mentions such a sink.
+///
+/// Returns `None` as soon as a sink-classifying member expression is not the
+/// callee of a call (a bare reference, an assignment target), because no call
+/// provenance describes it.  The callee test uses the same full-text
+/// classification [`first_member_label`] applies to a member expression, so a
+/// `Sink` label hoisted from a member expression always has its call listed.
+/// Function-literal bodies are walked too: a nested constant sink must not hide
+/// a tainted one in a callback, and the caller keeps the first non-constant
+/// call.
+pub(crate) fn nested_member_sink_calls<'a>(
+    n: Node<'a>,
+    lang: &str,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> Option<Vec<Node<'a>>> {
+    let mut calls = Vec::new();
+    let mut stack = vec![n];
+    while let Some(cur) = stack.pop() {
+        if matches!(
+            cur.kind(),
+            "member_expression" | "attribute" | "selector_expression"
+        ) && let Some(full) = member_expr_text(cur, code)
+            && matches!(classify(lang, &full, extra), Some(DataLabel::Sink(_)))
+        {
+            let call = cur.parent().filter(|p| {
+                matches!(lookup(lang, p.kind()), Kind::CallFn | Kind::CallMethod)
+                    && p.child_by_field_name("function").map(|f| f.id()) == Some(cur.id())
+            })?;
+            calls.push(call);
+        }
+        let mut cursor = cur.walk();
+        for child in cur.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    // Source order, so the recorded call is deterministic.
+    calls.sort_by_key(|c| c.start_byte());
+    calls.dedup_by_key(|c| c.id());
+    Some(calls)
+}
+
 /// Return the text of the first member expression found in `n`.
 pub(crate) fn first_member_text(n: Node, code: &[u8]) -> Option<String> {
     match n.kind() {

@@ -295,7 +295,7 @@ fn payload_position_absent(lang: Lang, pos: usize, arity: usize) -> bool {
 /// payload): every recorded argument must be a `Some(literal)` — mirroring
 /// `is_all_args_constant` — and there must be at least one recorded argument
 /// (an empty list is unproven → not suppressed).
-fn payload_positions_all_literal(
+pub(crate) fn payload_positions_all_literal(
     payload_args: &Option<Vec<usize>>,
     lits: &[Option<String>],
 ) -> bool {
@@ -3394,6 +3394,28 @@ fn sink_arg_is_source_derived(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
     false
 }
 
+/// Whether `info` is a loop header that binds its variable from a file-scope
+/// literal collection (`for (const n of NAMES)` with `const NAMES = ["a",
+/// "b"]`), so the variable only ever holds one of those literals.  The
+/// collection name must not be shadowed or taken as a parameter in the body.
+fn loop_binds_literal_collection(
+    ctx: &AnalysisContext,
+    sink_func: Option<&str>,
+    info: &crate::cfg::NodeInfo,
+) -> bool {
+    let (crate::cfg::StmtKind::Loop, [iterable]) = (info.kind, info.taint.uses.as_slice()) else {
+        return false;
+    };
+    ctx.module_constant_collections
+        .is_some_and(|m| m.contains(iterable.as_str()))
+        && !ctx.scope_param_names().any(|p| p == iterable)
+        && !ctx.cfg.node_indices().map(|i| &ctx.cfg[i]).any(|n| {
+            n.ast.enclosing_func.as_deref() == sink_func
+                && (n.taint.defines.as_deref() == Some(iterable.as_str())
+                    || n.taint.extra_defines.iter().any(|d| d == iterable))
+        })
+}
+
 /// Whether `name`, read in the body under analysis, is bound to a literal:
 /// every assignment of it in this body is a constant (and there is at least
 /// one), or the body neither assigns it nor takes it as a parameter and it is
@@ -3408,8 +3430,8 @@ fn ident_bound_to_constant(ctx: &AnalysisContext, sink_func: Option<&str>, name:
     for info in local_defs.by_ref() {
         any_local = true;
         let constant = info.taint.defines.as_deref() == Some(name)
-            && info.taint.uses.is_empty()
-            && !node_introduces_untrusted_data(info);
+            && ((info.taint.uses.is_empty() && !node_introduces_untrusted_data(info))
+                || loop_binds_literal_collection(ctx, sink_func, info));
         if !constant {
             return false;
         }
@@ -3614,11 +3636,48 @@ fn sink_arg_is_parameter_only(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
         }
     }
 
+    // Callback arguments are code, not data: the names read inside a function
+    // literal passed to the sink (`exec(cmd, (error, stdout) => { ... })`)
+    // and the name of a file-level function passed by reference
+    // (`exec(cmd, done)`) never reach the sink's payload.  A name that also
+    // appears in a non-callback argument keeps counting there.
+    let mut callback_only: SmallVec<[&str; 8]> = SmallVec::new();
+    for (pos, callee) in sink_info.arg_callees.iter().enumerate() {
+        if callee.as_deref().is_some_and(crate::cfg::is_anon_fn_name)
+            && let Some(uses) = sink_info.call.arg_uses.get(pos)
+        {
+            for u in uses {
+                let elsewhere = sink_info
+                    .call
+                    .arg_uses
+                    .iter()
+                    .enumerate()
+                    .any(|(i, us)| i != pos && us.contains(u));
+                if !elsewhere && !callback_only.contains(&u.as_str()) {
+                    callback_only.push(u.as_str());
+                }
+            }
+        }
+    }
+    let names_file_function = |u: &str| {
+        !param_names.contains(&u)
+            && ctx.func_summaries.keys().any(|k| k.name == u)
+            && !ctx.cfg.node_indices().any(|i| {
+                let n = &ctx.cfg[i];
+                n.ast.enclosing_func.as_deref() == sink_func
+                    && (n.taint.defines.as_deref() == Some(u)
+                        || n.taint.extra_defines.iter().any(|d| d == u))
+            })
+    };
+
     sink_uses.iter().all(|u| {
         if callee_fragments.contains(&u.as_str()) || u == callee_desc {
             return true;
         }
         if param_names.contains(&u.as_str()) {
+            return true;
+        }
+        if callback_only.contains(&u.as_str()) || names_file_function(u) {
             return true;
         }
         // One-hop transitive local trace: when a sink use names a body

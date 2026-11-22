@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 977
+    "corpus_size": 985
   },
   "cases": [
     {
@@ -31150,6 +31150,309 @@
       ],
       "disabled": false,
       "notes": "A project class with an eval() method that wraps the builtin, a pandas style df.eval(input()) and a direct eval(sys.argv[1]) must keep firing."
+    },
+    {
+      "case_id": "go-safe-ctx-leading-sql-exec-001",
+      "file": "go/safe/safe_ctx_leading_sql_exec.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "sqli",
+        "context",
+        "payload-position",
+        "cfg-unguarded",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "db.Exec(ctx, literalSQL, args...) passes the context first; the literal SQL at arg 1 is the payload, so bind values and the context must not make it an unguarded sink."
+    },
+    {
+      "case_id": "go-sqli-ctx-leading-sql-exec-001",
+      "file": "go/sqli/sqli_ctx_leading_sql_exec.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "go.sqli.query_concat",
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ],
+        [
+          18,
+          18
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ],
+        [
+          17,
+          17
+        ]
+      ],
+      "tags": [
+        "sqli",
+        "context",
+        "payload-position",
+        "cfg-unguarded"
+      ],
+      "disabled": false,
+      "notes": "db.Exec(ctx, \"...\"+name) with request data concatenated into the SQL at arg 1 must still fire, and taint now reaches it."
+    },
+    {
+      "case_id": "ja-safe-const-collection-loop-sql-001",
+      "file": "javascript/safe/safe_const_collection_loop_sql.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "sqli",
+        "sequelize",
+        "migration",
+        "const-collection",
+        "cfg-unguarded",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A loop variable over a file-scope const array of string literals that nothing else touches only takes those literals, so interpolating it into raw SQL is not attacker controlled."
+    },
+    {
+      "case_id": "ja-sqli-const-collection-loop-sql-001",
+      "file": "javascript/sqli/sqli_const_collection_loop_sql.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ],
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "tags": [
+        "sqli",
+        "sequelize",
+        "migration",
+        "const-collection",
+        "cfg-unguarded"
+      ],
+      "disabled": false,
+      "notes": "A collection that is mutated with environment data, or a parameter interpolated next to a constant loop variable, must keep firing."
+    },
+    {
+      "case_id": "ty-safe-nested-sequelize-literal-001",
+      "file": "typescript/safe/safe_nested_sequelize_literal.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "sqli",
+        "sequelize",
+        "literal",
+        "nested-sink",
+        "cfg-unguarded",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Sequelize.literal with an interpolation-free template, nested inside findAll options, is a constant; the named :replacements carry the user value."
+    },
+    {
+      "case_id": "ty-sqli-nested-sequelize-literal-001",
+      "file": "typescript/sqli/sqli_nested_sequelize_literal.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "sqli",
+        "sequelize",
+        "literal",
+        "nested-sink",
+        "cfg-unguarded"
+      ],
+      "disabled": false,
+      "notes": "Sequelize.literal with an interpolated request value must fire, also when a constant literal sits beside it in the same statement."
+    },
+    {
+      "case_id": "ja-safe-exec-callback-wrapper-001",
+      "file": "javascript/safe/safe_exec_callback_wrapper.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cmdi",
+        "exec",
+        "callback",
+        "wrapper",
+        "cfg-unguarded",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A thin exec wrapper whose callback reads error/stdout, or passes a named function, has only the command parameter as payload; callback names must not defeat the parameter-only check."
+    },
+    {
+      "case_id": "ja-cmdi-exec-callback-wrapper-001",
+      "file": "javascript/cmdi/cmdi_exec_callback_wrapper.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ],
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ],
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "cmdi",
+        "exec",
+        "callback",
+        "wrapper",
+        "cfg-unguarded"
+      ],
+      "disabled": false,
+      "notes": "exec on request data with a callback, inline or by name, must still fire."
     }
   ]
 }

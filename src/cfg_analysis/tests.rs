@@ -38,6 +38,7 @@ fn parse_and_analyse<A: CfgAnalysis>(
         body_params: &file_cfg.first_body().meta.params,
         captured_params: &[],
         module_constants: None,
+        module_constant_collections: None,
     };
     analysis.run(&ctx)
 }
@@ -71,6 +72,7 @@ fn parse_and_run_all(src: &[u8], lang_str: &str, ts_lang: Language) -> Vec<CfgFi
         body_params: &file_cfg.first_body().meta.params,
         captured_params: &[],
         module_constants: None,
+        module_constant_collections: None,
     };
     run_all(&ctx)
 }
@@ -109,6 +111,7 @@ fn parse_and_run_all_with_taint(
         body_params: &file_cfg.first_body().meta.params,
         captured_params: &[],
         module_constants: None,
+        module_constant_collections: None,
     };
     run_all(&ctx)
 }
@@ -231,6 +234,7 @@ fn parse_and_analyse_with_ssa<A: CfgAnalysis>(
         body_params: &file_cfg.first_body().meta.params,
         captured_params: &[],
         module_constants: None,
+        module_constant_collections: None,
     };
     analysis.run(&ctx)
 }
@@ -366,6 +370,7 @@ fn unguarded_sink_file(
     let file_cfg = build_cfg(&tree, src, lang_str, "test.rs", None);
     let lang = Lang::from_slug(lang_str).unwrap();
     let module_constants = module_constant_names(&file_cfg.bodies);
+    let module_constant_collections = module_constant_collection_names(&file_cfg.bodies);
     let mut out = Vec::new();
     for body in &file_cfg.bodies {
         let facts = build_body_const_facts(body, lang);
@@ -398,6 +403,7 @@ fn unguarded_sink_file(
             body_params: &body.meta.params,
             captured_params: &captured,
             module_constants: Some(&module_constants),
+            module_constant_collections: Some(&module_constant_collections),
         };
         for f in guards::UnguardedSink.run(&ctx) {
             let line = src[..f.span.0].iter().filter(|&&b| b == b'\n').count() + 1;
@@ -2026,6 +2032,7 @@ fn config_sanitizer_suppresses_unguarded_sink() {
         body_params: &file_cfg.first_body().meta.params,
         captured_params: &[],
         module_constants: None,
+        module_constant_collections: None,
     };
     let findings = run_all(&ctx);
 
@@ -2509,6 +2516,7 @@ fn cfg_only_no_taint_produces_low_severity() {
         body_params: &file_cfg.first_body().meta.params,
         captured_params: &[],
         module_constants: None,
+        module_constant_collections: None,
     };
     let findings = guards::UnguardedSink.run(&ctx);
 

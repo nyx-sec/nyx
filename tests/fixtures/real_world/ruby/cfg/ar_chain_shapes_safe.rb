@@ -1,16 +1,16 @@
-class RepliesController < ApplicationController
-  def set_replies
-    @replies = only_other ? Status.where.not(account_id: @account.id).joins(:account).merge(Account.without_suspended) : @account.statuses
-    @replies = @replies.where(in_reply_to_id: @status.id)
+class Replies
+  def set_replies(only_other, account, status)
+    replies = only_other ? Status.where.not(account_id: account.id).joins(:account).merge(Account.without_suspended) : account.statuses
+    replies = replies.where(in_reply_to_id: status.id)
+    replies
   end
 
-  def total
-    domain = params[:domain]
+  def total(domain)
     MediaAttachment.joins(:account).merge(Account.where(domain: domain)).sum(:size)
   end
 
-  def pluck_ids(account, limit)
-    base_account_scope(account).merge(cond).limit(limit).pluck(:id).zip([key].cycle)
+  def pluck_ids(scope, limit)
+    scope.merge(cond).limit(limit).pluck(:id).zip([key].cycle)
   end
 
   def cleanup(to_delete)
