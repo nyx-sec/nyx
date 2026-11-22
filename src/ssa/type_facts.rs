@@ -1250,6 +1250,60 @@ pub(crate) fn url_builder_appends_path(lang: Lang) -> bool {
     lang == Lang::Go
 }
 
+/// Callee texts at least this long are memoised by
+/// [`normalized_callee_head`].
+const CALLEE_MEMO_MIN_LEN: usize = 192;
+/// Per-thread byte budget for memoised callee texts (keys plus values).
+const CALLEE_MEMO_MAX_BYTES: usize = 4 << 20;
+
+#[derive(Default)]
+struct CalleeMemo {
+    map: rustc_hash::FxHashMap<Box<str>, Box<str>>,
+    bytes: usize,
+}
+
+thread_local! {
+    static CALLEE_MEMO: std::cell::RefCell<CalleeMemo> = std::cell::RefCell::new(CalleeMemo::default());
+}
+
+/// Chained-call normalization of `callee`, cut at the first remaining `(`.
+///
+/// Callee texts of chained JS calls can embed whole callback bodies
+/// (`wrap(function(){...}).then`), and every call instruction asks several
+/// predicates (`is_int_producing_callee`, `is_safe_string_producing_callee`,
+/// the constructor matchers) about the same text, each of which re-scans it
+/// in full.  The result is a pure function of the text, so long texts are
+/// memoised per thread; short texts, the common case, skip the table.
+fn normalized_callee_head(callee: &str) -> String {
+    fn compute(callee: &str) -> String {
+        let mut cur = crate::labels::normalize_chained_call_for_classify(callee);
+        if let Some(p) = cur.find('(') {
+            cur.truncate(p);
+        }
+        cur
+    }
+    if callee.len() < CALLEE_MEMO_MIN_LEN {
+        return compute(callee);
+    }
+    CALLEE_MEMO.with(|m| {
+        let Ok(mut memo) = m.try_borrow_mut() else {
+            return compute(callee);
+        };
+        if let Some(hit) = memo.map.get(callee) {
+            return hit.to_string();
+        }
+        let value = compute(callee);
+        let cost = callee.len() + value.len();
+        if memo.bytes + cost > CALLEE_MEMO_MAX_BYTES {
+            memo.map.clear();
+            memo.bytes = 0;
+        }
+        memo.bytes += cost;
+        memo.map.insert(callee.into(), value.as_str().into());
+        value
+    })
+}
+
 /// Check if a callee is a known integer/numeric-producing function.
 ///
 /// Conservative list: only includes functions whose return type is unambiguously
@@ -1277,12 +1331,10 @@ pub fn peel_identity_suffix(callee: &str) -> String {
 /// methods, for consumers that see through more adapters than the type facts
 /// do (`map_err`, `context`).
 pub fn peel_suffix_with(callee: &str, peelable: impl Fn(&str) -> bool) -> String {
-    let mut cur = crate::labels::normalize_chained_call_for_classify(callee);
-    // Also strip any trailing paren group (e.g. `Connection::open("app.db")`
-    // with no subsequent segment) so the base text ends at the constructor.
-    if let Some(p) = cur.find('(') {
-        cur.truncate(p);
-    }
+    // Normalize, then strip any trailing paren group (e.g.
+    // `Connection::open("app.db")` with no subsequent segment) so the base
+    // text ends at the constructor.
+    let mut cur = normalized_callee_head(callee);
     while let Some(dot_idx) = cur.rfind('.') {
         let tail = &cur[dot_idx + 1..];
         if !peelable(tail) {
