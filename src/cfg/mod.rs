@@ -1200,6 +1200,13 @@ pub struct NodeInfo {
     /// constant; cleared there either way, so it is never serialized.
     #[serde(skip)]
     pub string_prefix_ident: Option<(String, String)>,
+    /// For If nodes whose condition is a prefix test against a bare
+    /// identifier (`p.startswith(ROOT)`): true when that identifier resolves
+    /// to a constant that is provably not separator-terminated, so the test
+    /// also admits a sibling directory sharing the prefix.  Set at the end of
+    /// `build_cfg` by `module_consts::resolve_root_idents`.
+    #[serde(skip)]
+    pub root_unterminated: bool,
     /// True when this node is a binary equality/inequality expression whose
     /// operator is `==` / `!=` / `===` / `!==` and exactly one operand is a
     /// syntactic literal (string / number / null / boolean). The SSA taint
@@ -5287,6 +5294,7 @@ pub(super) fn push_node<'a>(
         parameterized_query_interpolated,
         string_prefix,
         string_prefix_ident,
+        root_unterminated: false,
         is_eq_with_const: rmw.is_none() && detect_eq_with_const(ast, lang),
         is_numeric_length_access: rmw.is_none() && detect_numeric_length_access(ast, lang, code),
         member_field: if rmw.is_none() {
@@ -10864,6 +10872,7 @@ pub(crate) fn build_cfg<'a>(
     // Leading identifiers of URL-building strings (`API + id`) resolve against
     // the file's module-level string constants, now that every body exists.
     module_consts::resolve_prefix_idents(&mut bodies);
+    module_consts::resolve_root_idents(&mut bodies, lang, code);
 
     // Extract import alias bindings for JS/TS files.
     let import_bindings = if matches!(

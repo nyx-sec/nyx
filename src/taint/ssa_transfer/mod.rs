@@ -1311,6 +1311,66 @@ struct PathBranchClass {
     rejection_axes: SmallVec<[crate::abstract_interp::path_domain::PathRejection; 3]>,
     assertion: crate::abstract_interp::path_domain::PathAssertion,
     rejection_pre_negated: bool,
+    /// The prefix test is Python's `is_relative_to`, which compares path
+    /// components, so any root is a containment proof.
+    component_wise_test: bool,
+    /// The receiver of the prefix test is visibly converted to a string
+    /// (`p.to_str().unwrap().starts_with(..)`, `p.toString().startsWith(..)`),
+    /// so the test is a byte-prefix test even in Java and Rust.
+    receiver_stringified: bool,
+}
+
+/// Conversions that turn a path object into a plain string.
+const PATH_TO_STRING_CONVERSIONS: [&str; 10] = [
+    ".to_str(",
+    ".to_string(",
+    ".to_string_lossy(",
+    ".as_str(",
+    ".toString(",
+    ".getPath(",
+    ".getAbsolutePath(",
+    ".getCanonicalPath(",
+    ".getName(",
+    ".display(",
+];
+
+/// Decide whether a literal or resolved root really proves containment, and
+/// drop the lock when it does not.
+///
+/// A byte-prefix test against a root without a trailing separator also admits
+/// a sibling directory (`/srv/data-x` starts with `/srv/data`), so such a
+/// root is not a containment proof.  Unresolvable roots stay accepted: the
+/// bytes are unknown.  A component-wise test (`Path.startsWith`,
+/// `Path::starts_with`, `is_relative_to`) is exact for any root.
+fn root_checked_path_class<'c>(
+    class: &'c PathBranchClass,
+    root_unterminated: bool,
+    lang: Lang,
+    receiver_is_string: impl FnOnce() -> bool,
+) -> std::borrow::Cow<'c, PathBranchClass> {
+    use crate::abstract_interp::path_domain::{
+        OPAQUE_PREFIX_LOCK, PathAssertion, root_ends_with_separator,
+    };
+    let (PathAssertion::PrefixLock(root) | PathAssertion::PrefixLockUnless(root)) =
+        &class.assertion
+    else {
+        return std::borrow::Cow::Borrowed(class);
+    };
+    let proves_containment_if_unterminated = class.component_wise_test
+        || (matches!(lang, Lang::Java | Lang::Rust)
+            && !class.receiver_stringified
+            && !receiver_is_string());
+    let keeps_lock = if root == OPAQUE_PREFIX_LOCK {
+        !root_unterminated || proves_containment_if_unterminated
+    } else {
+        root_ends_with_separator(root) || proves_containment_if_unterminated
+    };
+    if keeps_lock {
+        return std::borrow::Cow::Borrowed(class);
+    }
+    let mut dropped = class.clone();
+    dropped.assertion = PathAssertion::None;
+    std::borrow::Cow::Owned(dropped)
 }
 
 /// Classify a branch condition's text against the PathFact rejection /
@@ -1319,10 +1379,28 @@ fn classify_path_branch(cond_text: &str) -> PathBranchClass {
     use crate::abstract_interp::path_domain::{
         classify_path_assertion, classify_path_rejection_axes, cond_has_pre_negated_islocal_clause,
     };
+    let assertion = classify_path_assertion(cond_text);
+    let has_root_lock = !matches!(
+        assertion,
+        crate::abstract_interp::path_domain::PathAssertion::None
+    );
+    let receiver_stringified = has_root_lock && {
+        let call_at = [".starts_with(", ".startsWith("]
+            .iter()
+            .filter_map(|m| cond_text.find(m))
+            .min();
+        call_at.is_some_and(|at| {
+            PATH_TO_STRING_CONVERSIONS
+                .iter()
+                .any(|c| cond_text[..at].contains(c))
+        })
+    };
     PathBranchClass {
         rejection_axes: classify_path_rejection_axes(cond_text),
-        assertion: classify_path_assertion(cond_text),
         rejection_pre_negated: cond_has_pre_negated_islocal_clause(cond_text),
+        component_wise_test: has_root_lock && cond_text.contains(".is_relative_to("),
+        receiver_stringified,
+        assertion,
     }
 }
 
@@ -1646,10 +1724,32 @@ fn compute_succ_states(
                 // Rust positive-assertion `prefix_lock` recognition still
                 // fires regardless of language; for non-Rust languages the
                 // assertion classifier returns `None` for unfamiliar shapes.
+                let path_class = root_checked_path_class(
+                    &class.path,
+                    cond_info.root_unterminated,
+                    transfer.lang,
+                    || {
+                        // A receiver the type analysis knows is a `String`
+                        // is tested byte-wise, not component-wise.
+                        // Only a lone condition variable is known to be the
+                        // receiver.
+                        effective_vars
+                            .iter()
+                            .next()
+                            .filter(|_| effective_vars.len() == 1)
+                            .is_some_and(|var| {
+                                reaching_def_at_block_end(var, ssa, block.id).is_some_and(|v| {
+                                    transfer.type_facts.is_some_and(|tf| {
+                                        tf.is_type(v, &crate::ssa::type_facts::TypeKind::String)
+                                    })
+                                })
+                            })
+                    },
+                );
                 apply_path_fact_branch_narrowing_with_aliases(
                     &mut true_state,
                     &mut false_state,
-                    &class.path,
+                    &path_class,
                     &effective_vars,
                     ssa,
                     block.id,

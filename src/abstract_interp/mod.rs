@@ -19,6 +19,7 @@
 pub mod bit_domain;
 pub mod interval;
 pub mod path_domain;
+pub mod sentinel;
 pub mod string_domain;
 
 pub use bit_domain::BitFact;

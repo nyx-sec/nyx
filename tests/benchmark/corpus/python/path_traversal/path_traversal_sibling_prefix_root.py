@@ -1,7 +1,7 @@
-# py-safe-canonicalise-rooted: os.path.realpath + .startswith with a
-# non-literal root variable (an opaque prefix-lock).  Combined with
-# realpath's dotdot=No proof, is_path_traversal_safe should suppress the
-# FILE_IO sink even though the canonicalised path is absolute.
+# py-path-traversal-sibling-prefix: os.path.realpath + .startswith against a
+# root constant that ends without a separator.  "/srv/uploads-old/x" starts
+# with "/srv/uploads", so the guard admits a sibling directory and the sink is
+# reached by a path outside the upload directory.
 import os
 from flask import Flask, request
 

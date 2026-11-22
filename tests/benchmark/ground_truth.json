@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 973
+    "corpus_size": 983
   },
   "cases": [
     {
@@ -13989,33 +13989,43 @@
       "notes": "Pathlib relative_to(base) raise-on-escape pattern recognised as a receiver-side FILE_IO validator; canonical Python path-containment idiom (CVE-2024-23334 patched fixture)"
     },
     {
-      "case_id": "py-safe-022",
-      "file": "python/safe/safe_canonicalise_rooted_startswith.py",
+      "case_id": "py-path_traversal-sibling-prefix-root-001",
+      "file": "python/path_traversal/path_traversal_sibling_prefix_root.py",
       "language": "python",
-      "is_vulnerable": false,
-      "vuln_class": "safe",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
       "cwe": "CWE-22",
       "provenance": "synthetic",
       "equivalence_tier": "exact",
       "match_mode": "rule_match",
-      "expected_rule_ids": [],
-      "allowed_alternative_rule_ids": [],
-      "forbidden_rule_ids": [
+      "expected_rule_ids": [
         "taint-unsanitised-flow"
       ],
-      "expected_severity": null,
-      "expected_category": null,
-      "expected_sink_lines": null,
-      "expected_source_lines": null,
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          18,
+          18
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          14,
+          14
+        ]
+      ],
       "tags": [
         "pathfact-cross-language",
-        "path-sanitizer",
-        "canonicalise-and-rooted",
-        "opaque-prefix-lock",
-        "negated-form"
+        "path-guard",
+        "sibling-prefix",
+        "unterminated-root",
+        "regression"
       ],
       "disabled": false,
-      "notes": "Pins `os.path.realpath` + `if not target.startswith(<non-literal>)` shape (rswag CVE-2023-38337 sibling). Combined dotdot=No (from realpath) + opaque PrefixLock (from non-literal startswith guard) suppresses FILE_IO under is_path_traversal_safe with the negated-form polarity flip."
+      "notes": "UPLOAD_ROOT = '/srv/uploads' has no trailing separator, so `target.startswith(UPLOAD_ROOT)` also admits /srv/uploads-old/x. Previously pinned as safe through an opaque prefix lock; the root resolves to a literal with no trailing separator, so the lock is not a containment proof. Safe twin: py-safe-canonicalise-rooted-sep-001."
     },
     {
       "case_id": "py-safe-016",
@@ -14072,33 +14082,43 @@
       "notes": "JS direct-return sanitiser.  Standalone `nyx scan --index off` is clean, but the benchmark harness (single-thread + state/auth analysis enabled) reproduces a FP — diverges from production scan path.  Disabled until benchmark/binary parity is re-established."
     },
     {
-      "case_id": "js-safe-021",
-      "file": "javascript/safe/safe_canonicalise_rooted_startsWith.js",
+      "case_id": "js-path_traversal-sibling-prefix-root-001",
+      "file": "javascript/path_traversal/path_traversal_sibling_prefix_root.js",
       "language": "javascript",
-      "is_vulnerable": false,
-      "vuln_class": "safe",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
       "cwe": "CWE-22",
       "provenance": "synthetic",
       "equivalence_tier": "exact",
       "match_mode": "rule_match",
-      "expected_rule_ids": [],
-      "allowed_alternative_rule_ids": [],
-      "forbidden_rule_ids": [
+      "expected_rule_ids": [
         "taint-unsanitised-flow"
       ],
-      "expected_severity": null,
-      "expected_category": null,
-      "expected_sink_lines": null,
-      "expected_source_lines": null,
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          17,
+          17
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
       "tags": [
         "pathfact-cross-language",
-        "path-sanitizer",
-        "canonicalise-and-rooted",
-        "opaque-prefix-lock",
-        "negated-form"
+        "path-guard",
+        "sibling-prefix",
+        "unterminated-root",
+        "regression"
       ],
       "disabled": false,
-      "notes": "Pins `path.resolve` + `if (!target.startsWith(<non-literal>))` shape (rswag CVE-2023-38337 sibling). Combined dotdot=No (from path.resolve) + opaque PrefixLock (from non-literal startsWith guard) suppresses FILE_IO under is_path_traversal_safe with the negated-form polarity flip."
+      "notes": "path.resolve drops a trailing separator, so `target.startsWith(UPLOAD_ROOT)` with UPLOAD_ROOT = path.resolve('/srv/uploads') also admits /srv/uploads-old/x. Previously pinned as safe through an opaque prefix lock; the root resolves to a constant with no trailing separator, so the lock is not a containment proof. Safe twin: js-safe-canonicalise-rooted-sep-001."
     },
     {
       "case_id": "js-safe-022",
@@ -30961,6 +30981,330 @@
       ],
       "disabled": false,
       "notes": "File.basename keeps only the final component."
+    },
+    {
+      "case_id": "js-safe-canonicalise-rooted-sep-001",
+      "file": "javascript/safe/safe_canonicalise_rooted_sep_startsWith.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "pathfact-cross-language",
+        "path-guard",
+        "canonicalise-and-rooted",
+        "separator-terminated-root",
+        "negated-form"
+      ],
+      "disabled": false,
+      "notes": "path.resolve + `!target.startsWith(UPLOAD_ROOT)` where UPLOAD_ROOT = path.resolve('/srv/uploads') + path.sep: the root ends with a separator, so a sibling directory fails the test."
+    },
+    {
+      "case_id": "py-safe-canonicalise-rooted-sep-001",
+      "file": "python/safe/safe_canonicalise_rooted_sep_startswith.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "pathfact-cross-language",
+        "path-guard",
+        "canonicalise-and-rooted",
+        "separator-terminated-root",
+        "negated-form"
+      ],
+      "disabled": false,
+      "notes": "os.path.realpath + `not target.startswith(UPLOAD_ROOT)` where UPLOAD_ROOT = '/srv/uploads/': the root ends with a separator, so a sibling directory fails the test."
+    },
+    {
+      "case_id": "js-path_traversal-startswith-eq-false-001",
+      "file": "javascript/path_traversal/path_traversal_startswith_eq_false_branch.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "pathfact-cross-language",
+        "path-guard",
+        "sentinel-comparison",
+        "regression"
+      ],
+      "disabled": false,
+      "notes": "The sink is inside `if (target.startsWith(ROOT) === false)`, the branch where the path is outside the root. The comparison against false moves the locked edge; it was previously read as a containment lock on the wrong edge and the finding was dropped. Safe twin: js-safe-startswith-eq-false-reject-001."
+    },
+    {
+      "case_id": "js-safe-startswith-eq-false-reject-001",
+      "file": "javascript/safe/safe_startswith_eq_false_reject.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "pathfact-cross-language",
+        "path-guard",
+        "sentinel-comparison",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Rejecting on `target.startsWith(ROOT) === false` leaves only paths inside the root for the sink."
+    },
+    {
+      "case_id": "py-path_traversal-startswith-eq-false-001",
+      "file": "python/path_traversal/path_traversal_startswith_eq_false_branch.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "tags": [
+        "pathfact-cross-language",
+        "path-guard",
+        "sentinel-comparison",
+        "regression"
+      ],
+      "disabled": false,
+      "notes": "The sink is inside `if target.startswith(ROOT) is False`, the branch where the path is outside the root. The comparison against False moves the locked edge; it was previously read as a containment lock on the wrong edge and the finding was dropped. Safe twin: py-safe-startswith-eq-false-reject-001."
+    },
+    {
+      "case_id": "py-safe-startswith-eq-false-reject-001",
+      "file": "python/safe/safe_startswith_eq_false_reject.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "pathfact-cross-language",
+        "path-guard",
+        "sentinel-comparison",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Rejecting on `target.startswith(ROOT) == False` leaves only paths inside the root for the sink."
+    },
+    {
+      "case_id": "rust-path_traversal-str-starts-with-bare-root-001",
+      "file": "rust/path_traversal/path_traversal_str_starts_with_bare_root.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "pathfact",
+        "path-guard",
+        "sibling-prefix",
+        "string-vs-path",
+        "regression"
+      ],
+      "disabled": false,
+      "notes": "`target.to_str().unwrap().starts_with(\"/srv/files\")` is a byte-wise string test, so /srv/files-old/x passes it. Path::starts_with is component-wise and stays accepted. Safe twin: rust-safe-str-starts-with-dir-root-001."
+    },
+    {
+      "case_id": "rust-safe-str-starts-with-dir-root-001",
+      "file": "rust/safe/safe_str_starts_with_dir_root.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "pathfact",
+        "path-guard",
+        "separator-terminated-root",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A string prefix test against a root that ends with '/' rejects sibling directories."
+    },
+    {
+      "case_id": "java-path_traversal-string-starts-with-bare-root-001",
+      "file": "java/path_traversal/PathTraversalStringStartsWithBareRoot.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          18,
+          18
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "tags": [
+        "pathfact",
+        "path-guard",
+        "sibling-prefix",
+        "string-vs-path",
+        "regression"
+      ],
+      "disabled": false,
+      "notes": "`p.toString().startsWith(\"/srv/data\")` is a byte-wise String test, so /srv/data-old/x passes it. Path.startsWith is component-wise and stays accepted. Safe twin: java-safe-string-starts-with-dir-root-001."
+    },
+    {
+      "case_id": "java-safe-string-starts-with-dir-root-001",
+      "file": "java/safe/SafeStringStartsWithDirRoot.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "pathfact",
+        "path-guard",
+        "separator-terminated-root",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A String prefix test against a root that ends with '/' rejects sibling directories."
     }
   ]
 }

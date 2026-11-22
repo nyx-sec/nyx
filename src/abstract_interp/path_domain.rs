@@ -27,6 +27,7 @@
 //! Per-language extension slots live alongside those transfer rules; this
 //! file defines only the lattice and its laws.
 
+use super::sentinel::{SentinelPolarity, sentinel_comparison_polarity, split_single_comparison};
 use crate::state::lattice::{AbstractDomain, Lattice};
 use serde::{Deserialize, Serialize};
 
@@ -488,6 +489,17 @@ pub fn classify_path_rejection_axes(text: &str) -> smallvec::SmallVec<[PathRejec
     for clause in clauses {
         let clause = strip_outer_parens(clause.trim());
         if has_top_level_and(clause) {
+            continue;
+        }
+        // The axes below hold on the false edge of the bare atom.  A
+        // comparison against a sentinel (`x.includes("..") === false`) or a
+        // doubled `!` moves or blurs that edge, so such a clause proves
+        // nothing rather than risk the wrong one.
+        match sentinel_comparison_polarity(clause) {
+            SentinelPolarity::NoComparison | SentinelPolarity::Same => {}
+            SentinelPolarity::Flip | SentinelPolarity::Opaque => continue,
+        }
+        if strip_leading_not(clause).is_some_and(|r| strip_leading_not(r).is_some()) {
             continue;
         }
         // Multi-axis special case: `!filepath.IsLocal(p)` (Go).
@@ -1004,6 +1016,47 @@ pub fn classify_path_assertion(text: &str) -> PathAssertion {
     if let Some(a) = classify_strpos_prefix_check(trimmed) {
         return a;
     }
+    // A comparison against a sentinel decides which edge the test holds on:
+    // `p.startsWith(ROOT) === false` is true when `p` is outside the root.
+    // Any `!` bound to the atom is counted by the sentinel classifier; the
+    // single `!` the CFG reports as `condition_negated` is the caller's.
+    let (polarity, extra_not) = match sentinel_comparison_polarity(trimmed) {
+        SentinelPolarity::NoComparison => {
+            // `!!p.startsWith(R)`: the caller folds one `!`, the rest are ours.
+            let mut nots = 0usize;
+            let mut rest = trimmed;
+            while let Some(r) = strip_leading_not(rest) {
+                nots += 1;
+                rest = r;
+            }
+            // A comparison the sentinel table does not know (`=== 0`,
+            // `== other`) proves nothing about the root test.
+            if split_single_comparison(rest).is_some() {
+                return PathAssertion::None;
+            }
+            (SentinelPolarity::Same, nots >= 2 && nots % 2 == 0)
+        }
+        other => (other, false),
+    };
+    let assertion = classify_starts_with_atom(trimmed);
+    match (polarity, extra_not) {
+        (SentinelPolarity::Opaque, _) => PathAssertion::None,
+        (SentinelPolarity::Flip, _) | (_, true) => flip_assertion(assertion),
+        _ => assertion,
+    }
+}
+
+/// Swap the edge a root lock holds on.
+fn flip_assertion(a: PathAssertion) -> PathAssertion {
+    match a {
+        PathAssertion::PrefixLock(root) => PathAssertion::PrefixLockUnless(root),
+        PathAssertion::PrefixLockUnless(root) => PathAssertion::PrefixLock(root),
+        PathAssertion::None => PathAssertion::None,
+    }
+}
+
+/// Lock for a single `starts_with`-style call, ignoring any wrapper around it.
+fn classify_starts_with_atom(trimmed: &str) -> PathAssertion {
     match extract_starts_with_arg(trimmed) {
         Some(needle) if needle.len() >= 2 => PathAssertion::PrefixLock(needle),
         // Single-char literal (`"/"`, `"\\"`) is an absolute-axis
@@ -1558,6 +1611,39 @@ fn extract_starts_with_arg(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The raw text of the root argument of the first `starts_with`-style call in
+/// `text` (`ROOT` in `p.startsWith(ROOT)` and `strings.HasPrefix(p, ROOT)`).
+pub fn starts_with_root_arg(text: &str) -> Option<&str> {
+    for method in STARTS_WITH_METHODS {
+        if let Some(idx) = text.find(method) {
+            let after = &text[idx + method.len()..];
+            let close = closing_paren_of_open_call(after)?;
+            let inner = &after[..close];
+            let end = top_level_comma(inner).unwrap_or(inner.len());
+            return Some(inner[..end].trim());
+        }
+    }
+    for func in STARTS_WITH_FUNCTIONS {
+        if let Some(idx) = text.find(func) {
+            let after = &text[idx + func.len()..];
+            let close = closing_paren_of_open_call(after)?;
+            let inner = &after[..close];
+            let comma = top_level_comma(inner)?;
+            let rest = &inner[comma + 1..];
+            let end = top_level_comma(rest).unwrap_or(rest.len());
+            return Some(rest[..end].trim());
+        }
+    }
+    None
+}
+
+/// True when `root` ends with a path separator, so that a path starting with
+/// it is inside the root directory rather than a sibling sharing the prefix
+/// (`/srv/data-x` starts with `/srv/data` but not with `/srv/data/`).
+pub fn root_ends_with_separator(root: &str) -> bool {
+    root.ends_with('/') || root.ends_with('\\')
 }
 
 /// Method spellings of "this path starts with that root".
@@ -2776,6 +2862,96 @@ mod tests {
         assert!(axes.contains(&PathRejection::LeadingDotDot));
         assert!(axes.contains(&PathRejection::AbsoluteSlash));
         assert!(!axes.contains(&PathRejection::DotDot));
+    }
+
+    #[test]
+    fn sentinel_comparison_moves_the_locked_edge() {
+        let lock = |r: &str| PathAssertion::PrefixLock(r.to_string());
+        let unless = |r: &str| PathAssertion::PrefixLockUnless(r.to_string());
+        // Comparisons that keep the polarity of the prefix test.
+        for cond in [
+            "p.startsWith(ROOT) === true",
+            "p.startsWith(ROOT) !== false",
+            "p.startsWith(ROOT) != false",
+            "p.startswith(ROOT) == True",
+            "p.startswith(ROOT) is True",
+            "p.startswith(ROOT) is not False",
+            "true === p.startsWith(ROOT)",
+            "!p.startsWith(ROOT) === false",
+            // A whole-condition `!( ... )` is the caller's `condition_negated`.
+            "!(p.startsWith(ROOT) === true)",
+        ] {
+            assert_eq!(
+                classify_path_assertion(cond),
+                lock(OPAQUE_PREFIX_LOCK),
+                "{cond}"
+            );
+        }
+        // Comparisons that invert it: the lock holds on the false edge.
+        for cond in [
+            "p.startsWith(ROOT) === false",
+            "p.startsWith(ROOT) == false",
+            "p.startsWith(ROOT) !== true",
+            "p.startsWith(ROOT) != true",
+            "p.startswith(ROOT) == False",
+            "p.startswith(ROOT) is False",
+            "p.startswith(ROOT) != True",
+            "p.startswith(ROOT) is not True",
+            "false === p.startsWith(ROOT)",
+            "target.starts_with(base) == false",
+            // The CFG reports one `!` as `condition_negated`; the second is ours.
+            "!!p.startsWith(ROOT)",
+        ] {
+            assert_eq!(
+                classify_path_assertion(cond),
+                unless(OPAQUE_PREFIX_LOCK),
+                "{cond}"
+            );
+        }
+        // An unknown sentinel locks neither edge.
+        for cond in [
+            "p.startsWith(ROOT) === 0",
+            "p.startsWith(ROOT) === undefined",
+            "p.startsWith(ROOT) === other",
+        ] {
+            assert_eq!(classify_path_assertion(cond), PathAssertion::None, "{cond}");
+        }
+        // Clauses of a compound condition carry their own polarity.
+        assert_eq!(
+            classify_path_assertion("p.startsWith(ROOT) === false && ok"),
+            PathAssertion::None
+        );
+        assert_eq!(
+            classify_path_assertion("p.startsWith(ROOT) === false || bad"),
+            unless(OPAQUE_PREFIX_LOCK)
+        );
+    }
+
+    #[test]
+    fn sentinel_comparison_drops_misdirected_rejection_axes() {
+        // `x.includes("..") === false` is true when there is no `..`, so the
+        // axis holds on the true edge, not the false edge the table assumes.
+        for cond in [
+            "x.includes('..') === false",
+            "x.includes('..') == false",
+            "x.includes('..') !== true",
+            "x.__contains__('..') == False",
+            "!!x.includes('..')",
+        ] {
+            assert!(classify_path_rejection_axes(cond).is_empty(), "{cond}");
+        }
+        for cond in [
+            "x.includes('..') === true",
+            "x.includes('..') !== false",
+            "x.includes('..')",
+            "!x.includes('..')",
+        ] {
+            assert_eq!(
+                classify_path_rejection_axes(cond).as_slice(),
+                &[PathRejection::DotDot],
+                "{cond}"
+            );
+        }
     }
 
     #[test]
