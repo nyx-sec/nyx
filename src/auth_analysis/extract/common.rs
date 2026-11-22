@@ -4502,16 +4502,19 @@ fn detect_ownership_equality_check(if_node: Node<'_>, bytes: &[u8], state: &mut 
         Some((row, nearest))
     });
     let (check_line, mut subjects) = match nearest_binding {
-        Some((row, (row_line, arg_refs))) => {
-            let mut subjects = arg_refs.clone();
-            subjects.push(ValueRef {
+        // Only the row itself is a subject. The ids the row was fetched with
+        // are covered through the row-population reverse-walk; listing them
+        // here would let the `data` base of `data.message_id` match any other
+        // request field (`data.second_id`) as related.
+        Some((row, (row_line, _))) => {
+            let subjects = vec![ValueRef {
                 source_kind: ValueSourceKind::Identifier,
                 name: row.clone(),
                 base: None,
                 field: None,
                 index: None,
                 span: if_span,
-            });
+            }];
             (*row_line, subjects)
         }
         None => match row_binding.as_ref() {

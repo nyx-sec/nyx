@@ -2,7 +2,6 @@
   "description": "The row is fetched and updated by request id without comparing its creator to the caller",
   "tags": [
     "auth",
-    "auth",
     "positive",
     "owner-compare"
   ],

@@ -2,7 +2,6 @@
   "description": "An admin gate on a value other than the acting user does not guard the delete",
   "tags": [
     "auth",
-    "auth",
     "positive",
     "admin-gate"
   ],

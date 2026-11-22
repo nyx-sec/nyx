@@ -2,7 +2,6 @@
   "description": "No admin gate, a gate on one branch only, a discarded is_ok() result and a gate placed after the delete all leave the operations unguarded",
   "tags": [
     "auth",
-    "auth",
     "positive",
     "admin-gate"
   ],

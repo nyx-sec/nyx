@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 1259
+    "corpus_size": 1263
   },
   "cases": [
     {
@@ -40403,6 +40403,132 @@
       ],
       "disabled": false,
       "notes": "The row is fetched and updated by request id without comparing its creator to the caller"
+    },
+    {
+      "case_id": "rs-auth-r2-005",
+      "file": "rust/auth/owner_compare_other_id_missing.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ],
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "owner-compare"
+      ],
+      "disabled": false,
+      "notes": "The owner comparison proves ownership of the row fetched by message_id only; the fetch and update of a different request id (other_id) stay unauthorised"
+    },
+    {
+      "case_id": "rs-auth-r2-006",
+      "file": "rust/auth/owner_compare_same_id_safe.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "owner-compare"
+      ],
+      "disabled": false,
+      "notes": "The same request id that fetched the compared row is updated and deleted after the owner comparison"
+    },
+    {
+      "case_id": "rs-auth-r2-007",
+      "file": "rust/auth/sibling_row_check_missing.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ],
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "derived-row"
+      ],
+      "disabled": false,
+      "notes": "The mod check runs on a sibling tag fetched through tag.sibling_id, which is a peer link and not an owner, so the request tag id is unauthorised"
+    },
+    {
+      "case_id": "rs-auth-r2-008",
+      "file": "rust/auth/parent_row_check_safe.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "derived-row"
+      ],
+      "disabled": false,
+      "notes": "The mod check runs on the community fetched through tag.community_id, the parent of the tag, which covers the request tag id"
     }
   ]
 }

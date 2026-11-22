@@ -1,0 +1,21 @@
+{
+  "description": "The mod check runs on the community fetched through tag.community_id, the parent of the tag, which covers the request tag id",
+  "tags": [
+    "auth",
+    "negative",
+    "derived-row"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "evidence_contains": [],
+      "notes": "The mod check runs on the community fetched through tag.community_id, the parent of the tag, which covers the request tag id"
+    }
+  ]
+}

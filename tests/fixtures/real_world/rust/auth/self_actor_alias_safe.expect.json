@@ -2,7 +2,6 @@
   "description": "`local_user_view.person.id` alias and a *View::read that takes the signed-in viewer scope the lookup to the caller",
   "tags": [
     "auth",
-    "auth",
     "negative",
     "self-actor"
   ],

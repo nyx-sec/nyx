@@ -2,7 +2,6 @@
   "description": "Both rows are fetched but no check runs on either, so the tag update by request id is unauthorised",
   "tags": [
     "auth",
-    "auth",
     "positive",
     "derived-row"
   ],

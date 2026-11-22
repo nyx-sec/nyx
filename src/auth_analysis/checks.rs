@@ -705,10 +705,11 @@ fn rows_with_derived<'a>(unit: &'a AnalysisUnit, seed: Vec<&'a str>) -> Vec<&'a 
             if rows.contains(&row_var.as_str()) {
                 continue;
             }
-            let derived = bindings
-                .iter()
-                .flat_map(|(_line, args)| args)
-                .any(|arg| arg.base.is_some() && rows.contains(&chain_root(arg)));
+            let derived = bindings.iter().flat_map(|(_line, args)| args).any(|arg| {
+                arg.base.is_some()
+                    && rows.contains(&chain_root(arg))
+                    && is_parent_link(row_var, arg)
+            });
             if derived {
                 rows.push(row_var.as_str());
             }
@@ -717,6 +718,29 @@ fn rows_with_derived<'a>(unit: &'a AnalysisUnit, seed: Vec<&'a str>) -> Vec<&'a 
             return rows;
         }
     }
+}
+
+/// Whether `arg` (`child.<field>`) reads like the foreign key to the row
+/// bound as `row_var`: the field stem (`community_id` -> `community`) must be
+/// the row variable's name or its trailing word (`parent_community`).  A field
+/// such as `sibling_id` fetched into `sib` names a peer, not an owner, so a
+/// check on that peer does not authorise the child.  When the naming does not
+/// line up the derivation is not followed and the finding stays.
+fn is_parent_link(row_var: &str, arg: &ValueRef) -> bool {
+    let field = arg.name.rsplit('.').next().unwrap_or(arg.name.as_str());
+    let lower = field.to_ascii_lowercase();
+    let stem = lower
+        .strip_suffix("_id")
+        .or_else(|| lower.strip_suffix("id"))
+        .unwrap_or(lower.as_str())
+        .trim_end_matches('_');
+    if stem.is_empty() {
+        return false;
+    }
+    let row = row_var.to_ascii_lowercase();
+    let norm = |v: &str| v.replace('_', "");
+    let (row_n, stem_n) = (norm(&row), norm(stem));
+    row_n == stem_n || row_n.ends_with(&stem_n)
 }
 
 /// Walk `unit.row_field_vars` transitively from `start` (inclusive)

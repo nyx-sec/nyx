@@ -2,7 +2,6 @@
   "description": "The community is fetched through the tag row's own foreign key and then checked, which authorises the tag id too",
   "tags": [
     "auth",
-    "auth",
     "negative",
     "derived-row"
   ],

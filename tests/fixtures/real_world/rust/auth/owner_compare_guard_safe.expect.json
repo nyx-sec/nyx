@@ -2,7 +2,6 @@
   "description": "`if local_user_view.person.id != orig.creator_id { return Err }` after the fetch is an ownership check on the row",
   "tags": [
     "auth",
-    "auth",
     "negative",
     "owner-compare"
   ],
