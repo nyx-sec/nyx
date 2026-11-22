@@ -14258,7 +14258,16 @@ fn resolve_lfk_query_from(all: &[&FuncKey], q: &CalleeQuery<'_>) -> Option<FuncK
         return None;
     }
 
+    // Exact arity first.  When no candidate has the call's arity, tolerate
+    // under-application (`param_count >= call_arity`): the surplus parameters
+    // are default-valued or optional, a routine call shape in Python, JS/TS,
+    // PHP and Ruby.  Mirrors the global resolver's widening so a same-file
+    // callee with optional parameters resolves like a cross-file one.
+    let widened = q
+        .arity
+        .is_some_and(|a| !all.iter().any(|k| k.arity == Some(a)));
     let arity_matches = |k: &FuncKey| match q.arity {
+        Some(a) if widened => matches!(k.arity, Some(p) if p >= a),
         Some(a) => k.arity == Some(a),
         None => true,
     };

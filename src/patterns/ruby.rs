@@ -43,8 +43,10 @@ pub const PATTERNS: &[Pattern] = &[
     // ── Tier A: Command execution ──────────────────────────────────────
     Pattern {
         id: "rb.cmdi.backtick",
-        description: "Backtick shell execution",
-        query: r#"(subshell) @vuln"#,
+        description: "Backtick shell execution with interpolation",
+        // A backtick string with no `#{...}` is a fixed command and carries no
+        // caller-controlled data.
+        query: r#"(subshell (interpolation)) @vuln"#,
         severity: Severity::High,
         tier: PatternTier::A,
         category: PatternCategory::CommandExec,
@@ -53,15 +55,26 @@ pub const PATTERNS: &[Pattern] = &[
     // ── Tier A: Shell execution ─────────────────────────────────────────
     Pattern {
         id: "rb.cmdi.system_interp",
-        description: "system/exec call runs a command",
+        description: "system/exec call runs a shell command",
         // `!receiver` restricts the match to the receiver-less Kernel#system /
         // Kernel#exec primitives.  A same-named method on a typed receiver
         // (`conn.exec(sql)` on a `PG::Connection`, `obj.system(...)`) is not a
         // shell-execution sink and must not fire this cmdi rule — it is routed
         // by its receiver type instead.  Motivated by CVE-2026-42087.
+        //
+        // The `arguments` alternatives keep only the single-command-string
+        // shape (optionally after an environment hash and before option
+        // pairs).  Two or more command words is the argv form, which execs the
+        // program directly and never starts a shell.
         query: r#"(call
                      !receiver
-                     method: (identifier) @m (#match? @m "^(system|exec)$"))
+                     method: (identifier) @m (#match? @m "^(system|exec)$")
+                     arguments: [
+                       (argument_list . (_) .)
+                       (argument_list . (_) . (pair))
+                       (argument_list . (hash) . (_) .)
+                       (argument_list . (hash) . (_) . (pair))
+                     ])
                    @vuln"#,
         severity: Severity::High,
         tier: PatternTier::A,

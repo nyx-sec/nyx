@@ -1277,6 +1277,7 @@ fn clone_preserves_all_sub_structs() {
                 }],
             })),
             receiver_decl_type: Some(crate::ssa::type_facts::TypeKind::JdbcTemplate),
+            kw_arg_positions: Vec::new(),
         },
         taint: TaintMeta {
             labels: {
@@ -8542,4 +8543,95 @@ fn rust_unwrap_rebind_never_counts_as_all_literal() {
         .find(|(c, _)| c.contains("unwrap"))
         .expect("unwrap call node");
     assert!(!unwrapped.1, "peeled call must stay not-all-literal");
+}
+
+fn ruby_call_node(file_cfg: &FileCfg, body: usize, callee_suffix: &str) -> NodeInfo {
+    file_cfg.bodies[body]
+        .graph
+        .node_weights()
+        .find(|n| {
+            n.kind == StmtKind::Call
+                && n.call
+                    .callee
+                    .as_deref()
+                    .is_some_and(|c| c.ends_with(callee_suffix))
+        })
+        .unwrap_or_else(|| panic!("call to {callee_suffix} should exist"))
+        .clone()
+}
+
+/// A block argument (`&blk`) is not a positional argument, so it must not
+/// change the call's arity or add an `arg_uses` group.
+#[test]
+fn ruby_block_argument_is_not_positional() {
+    let src = b"
+def outer(p, blk)
+  inner(p, &blk)
+end
+";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "ruby", ts_lang);
+    let call = ruby_call_node(&file_cfg, 1, "inner");
+    assert_eq!(call.call.arg_uses, vec![vec!["p".to_string()]]);
+}
+
+/// Keyword arguments aimed at a same-file method move to the slot of the
+/// parameter of that name; omitted parameters leave an empty slot.
+#[test]
+fn ruby_keyword_args_follow_callee_parameter_order() {
+    let src = b"
+def target(a, dir: '.', name: 'x')
+  use(a, dir, name)
+end
+def outer(p, q)
+  target(p, name: q)
+end
+";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "ruby", ts_lang);
+    let call = ruby_call_node(&file_cfg, 2, "target");
+    assert_eq!(
+        call.call.arg_uses,
+        vec![vec!["p".to_string()], vec![], vec!["q".to_string()]]
+    );
+}
+
+/// A keyword the callee does not declare leaves the call in syntactic order.
+#[test]
+fn ruby_unknown_keyword_keeps_syntactic_order() {
+    let src = b"
+def target(a, dir: '.')
+  use(a, dir)
+end
+def outer(p, q)
+  target(p, other: q)
+end
+";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "ruby", ts_lang);
+    let call = ruby_call_node(&file_cfg, 2, "target");
+    assert_eq!(
+        call.call.arg_uses,
+        vec![vec!["p".to_string()], vec!["q".to_string()]]
+    );
+}
+
+/// Optional and keyword parameters count as parameters; splat and block
+/// parameters do not.
+#[test]
+fn ruby_param_kinds_cover_optional_and_keyword() {
+    let src = b"
+def target(a, b = 1, *rest, c:, d: 2, &blk)
+  use(a)
+end
+";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "ruby", ts_lang);
+    let names: Vec<_> = file_cfg
+        .summaries
+        .iter()
+        .find(|(k, _)| k.name == "target")
+        .map(|(_, s)| s.param_names.clone())
+        .expect("summary for target");
+    assert_eq!(names, vec!["a", "b", "c", "d"]);
 }

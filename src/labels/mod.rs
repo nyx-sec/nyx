@@ -4448,10 +4448,19 @@ mod tests {
     }
 
     #[test]
-    fn gated_sink_python_popen_no_shell_conservative() {
-        // `Popen(cmd)` uses the single-kwarg / positional gate path: no `shell`
-        // literal available → unknown activation → ALL_ARGS_PAYLOAD sentinel.
+    fn gated_sink_python_popen_no_shell_suppresses() {
+        // `Popen(cmd)` without a `shell` keyword is argv form, the same as
+        // `subprocess.Popen` and `subprocess.run`: no shell starts, so the gate
+        // does not fire.  The inline shell array `Popen(["sh", "-c", x])` is
+        // recognised from the call's arguments instead.
         let result = classify_gated_sink("python", "Popen", |_| None, |_| None, no_kw_present);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn gated_sink_python_popen_shell_dynamic_conservative() {
+        // `shell=flag` is present but not a literal: cannot be proven safe.
+        let result = classify_gated_sink("python", "Popen", |_| None, |_| None, |kw| kw == "shell");
         assert_eq!(
             result.as_slice(),
             &[GateMatch {

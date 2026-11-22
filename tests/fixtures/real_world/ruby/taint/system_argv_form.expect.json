@@ -1,0 +1,50 @@
+{
+  "description": "Two or more command words exec the program directly without a shell",
+  "tags": [
+    "taint",
+    "cmdi",
+    "ruby",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rb.cmdi.system_interp",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        6
+      ],
+      "evidence_contains": [],
+      "notes": "argv form never starts a shell"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        6
+      ],
+      "evidence_contains": [],
+      "notes": "argv form never starts a shell"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        6
+      ],
+      "evidence_contains": [],
+      "notes": "argv form never starts a shell"
+    }
+  ]
+}

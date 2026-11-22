@@ -632,7 +632,11 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
 
 pub static PARAM_CONFIG: ParamConfig = ParamConfig {
     params_field: "parameters",
-    param_node_kinds: &["identifier"],
+    // `optional_parameter` is `a = 1` and `keyword_parameter` is `a:` / `a: 1`.
+    // Splat (`*a`, `**o`) and block (`&b`) parameters are not counted: they
+    // bind a variable number of arguments or a block, so no single call-site
+    // argument maps to them.
+    param_node_kinds: &["identifier", "optional_parameter", "keyword_parameter"],
     self_param_kinds: &[],
     ident_fields: &["name"],
 };
@@ -807,4 +811,26 @@ mod file_write_tests {
             assert_eq!(gate.payload_args, &[0], "{callee}");
         }
     }
+}
+
+/// True when a Ruby `system` / `exec` call passes two or more command words
+/// (`system("git", "log", path)`), the argv form that execs the program
+/// directly without a shell.  A leading environment hash, trailing option
+/// pairs (`chdir: dir`), a block argument and comments are not command words.
+/// A splat makes the word count unknown, so it is never argv form.
+pub fn kernel_exec_is_argv_form(call: tree_sitter::Node) -> bool {
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let mut words = 0usize;
+    for (i, child) in args.named_children(&mut cursor).enumerate() {
+        match child.kind() {
+            "splat_argument" | "hash_splat_argument" => return false,
+            "pair" | "block_argument" | "comment" => {}
+            "hash" if i == 0 => {}
+            _ => words += 1,
+        }
+    }
+    words >= 2
 }

@@ -1075,6 +1075,54 @@ pub(super) fn find_orm_query_chain_call<'a>(
     None
 }
 
+/// Gated-sink matches for the call `call` whose callee text is `callee`,
+/// reading the activation arguments (constants, keywords, presence) from the
+/// call itself.  Shared by the chain rebinding and hoisted-sink paths so a
+/// gate keyed on `shell=True` is judged against the call that carries it.
+pub(super) fn classify_gates_at_call(
+    lang: &str,
+    callee: &str,
+    call: Node,
+    code: &[u8],
+) -> SmallVec<[crate::labels::GateMatch; 2]> {
+    crate::labels::classify_gated_sink_with_presence(
+        lang,
+        callee,
+        |idx| {
+            extract_const_string_arg(call, idx, code).or_else(|| {
+                if matches!(lang, "c" | "cpp" | "c++" | "php" | "ruby" | "rb") {
+                    extract_const_macro_arg(call, idx, code)
+                } else {
+                    None
+                }
+            })
+        },
+        |kw| {
+            extract_const_keyword_arg(call, kw, code).or_else(|| {
+                if matches!(lang, "javascript" | "typescript") {
+                    extract_object_arg_property(call, 1, kw, code)
+                } else {
+                    None
+                }
+            })
+        },
+        |kw| {
+            has_keyword_arg(call, kw, code)
+                || (matches!(lang, "javascript" | "typescript")
+                    && has_object_arg_property(call, 1, kw, code))
+        },
+        |idx| call_has_arg_at(call, idx),
+    )
+}
+
+/// Whether `callee` is a gated sink at the chain level `call`: either a gate
+/// that fires without inspecting arguments, or one whose activation
+/// arguments on `call` itself select it.
+pub(super) fn chain_level_is_gated(lang: &str, callee: &str, call: Node, code: &[u8]) -> bool {
+    !crate::labels::classify_gated_sink(lang, callee, |_| None, |_| None, |_| false).is_empty()
+        || !classify_gates_at_call(lang, callee, call, code).is_empty()
+}
+
 /// For a chained method call (`a.b().c().d()`), walk down the receiver
 /// chain (`function.object`) and return the innermost call_expression
 /// alongside its callee text (e.g. `"http.get"`).
@@ -1236,10 +1284,15 @@ pub(super) fn find_chained_gated_sink_call<'a>(
         // to the inner gate, so we must NOT claim the outer application call
         // here — skip it and let the `find_chained_inner_call` fallback bind
         // the real inner call.
+        //
+        // A Python call through a bare imported name (`Popen(..)` after
+        // `from subprocess import Popen`) has an identifier callee, which is
+        // the whole callee of this level.
         let has_own_method = function.child_by_field_name("property").is_some()
             || function.child_by_field_name("field").is_some()
             || function.child_by_field_name("attribute").is_some()
-            || function.child_by_field_name("name").is_some();
+            || function.child_by_field_name("name").is_some()
+            || (matches!(lang, "python" | "py") && function.kind() == "identifier");
         // Callee text of THIS chain level: the call's `function`/`method`
         // field text, whitespace-stripped (mirrors `find_chained_inner_call`
         // so the gate's suffix matchers hit on both single- and multi-line
@@ -1248,9 +1301,7 @@ pub(super) fn find_chained_gated_sink_call<'a>(
             && let Some(raw) = super::helpers::call_fn_callee_text(function, lang, code)
         {
             let callee: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
-            if !crate::labels::classify_gated_sink(lang, &callee, |_| None, |_| None, |_| false)
-                .is_empty()
-            {
+            if chain_level_is_gated(lang, &callee, cur, code) {
                 return Some((cur, callee));
             }
         }
@@ -1989,7 +2040,7 @@ pub(super) fn extract_arg_uses(call_node: Node, code: &[u8]) -> Vec<Vec<String>>
         {
             return Vec::new();
         }
-        if kind == "keyword_argument" || kind == "named_argument" {
+        if kind == "keyword_argument" || kind == "named_argument" || kind == "block_argument" {
             continue;
         }
         let mut idents = Vec::new();
@@ -2001,6 +2052,42 @@ pub(super) fn extract_arg_uses(call_node: Node, code: &[u8]) -> Vec<Vec<String>>
         result.push(combined);
     }
     result
+}
+
+/// Ruby keyword arguments written at the call site (`f(a, dir: x)`), as
+/// `(name, position)` pairs where `position` indexes the call's positional
+/// argument list as [`extract_arg_uses`] numbers it.  Ruby passes keywords as
+/// a trailing `pair` in the argument list, so each one occupies a positional
+/// slot there.  Braced hash literals (`f({dir: x})`) are not keywords and are
+/// not listed.  Empty when a splat makes positions unreliable.
+pub(super) fn extract_ruby_kw_arg_positions(call_node: Node, code: &[u8]) -> Vec<(String, usize)> {
+    let Some(args_node) = call_node.child_by_field_name("arguments") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut cursor = args_node.walk();
+    for (pos, child) in args_node.named_children(&mut cursor).enumerate() {
+        match child.kind() {
+            "splat_argument" | "hash_splat_argument" => return Vec::new(),
+            "pair" => {
+                let Some(key) = child.child_by_field_name("key") else {
+                    continue;
+                };
+                let name = match key.kind() {
+                    "hash_key_symbol" => text_of(key, code),
+                    "simple_symbol" => {
+                        text_of(key, code).map(|t| t.trim_start_matches(':').to_string())
+                    }
+                    _ => None,
+                };
+                if let Some(name) = name {
+                    out.push((name, pos));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// `tokio::join!` / `futures::join!` (and their `try_*` variants) bundle
@@ -2494,7 +2581,7 @@ pub(super) fn extract_arg_string_literals(call_node: Node, code: &[u8]) -> Vec<O
         // Named / keyword arguments are tracked separately in `kwargs` and
         // don't participate in positional indexing, skip them here so this
         // vector stays aligned with `arg_uses`.
-        if kind == "keyword_argument" || kind == "named_argument" {
+        if kind == "keyword_argument" || kind == "named_argument" || kind == "block_argument" {
             continue;
         }
         // PHP wraps each call argument in an `argument` node whose first
@@ -2604,7 +2691,7 @@ pub(super) fn extract_arg_string_prefixes(
         {
             return Vec::new();
         }
-        if kind == "keyword_argument" || kind == "named_argument" {
+        if kind == "keyword_argument" || kind == "named_argument" || kind == "block_argument" {
             continue;
         }
         result.push(super::arg_prefix_of_expression(child, lang, code));
@@ -2638,7 +2725,7 @@ pub(super) fn extract_arg_bare_name_mask(call_node: Node) -> u64 {
         ) {
             return 0;
         }
-        if kind == "keyword_argument" || kind == "named_argument" {
+        if kind == "keyword_argument" || kind == "named_argument" || kind == "block_argument" {
             continue;
         }
         if pos < 64 && is_bare_name(child) {
@@ -2716,6 +2803,9 @@ pub(super) fn extract_arg_callees(call_node: Node, lang: &str, code: &[u8]) -> V
     for child in args_node.named_children(&mut cursor) {
         // Bail on spread/splat like extract_arg_uses does
         let kind = child.kind();
+        if kind == "block_argument" {
+            continue;
+        }
         if kind == "spread_element"
             || kind == "dictionary_splat"
             || kind == "list_splat"
@@ -3188,6 +3278,35 @@ fn header_uses(cond: Option<Node>, code: &[u8]) -> Vec<String> {
     paths
 }
 
+/// The calls whose results a method chain passes through, innermost last:
+/// for `Popen([...]).wait()` called on `.wait()`, the `Popen([...])` call.
+/// Empty when `outer` is not a call on a call.
+pub(super) fn chain_receiver_calls<'a>(outer: Node<'a>, lang: &str) -> Vec<Node<'a>> {
+    let mut out = Vec::new();
+    let mut cur = outer;
+    while matches!(lookup(lang, cur.kind()), Kind::CallFn | Kind::CallMethod) {
+        let Some(function) = cur
+            .child_by_field_name("function")
+            .or_else(|| cur.child_by_field_name("method"))
+        else {
+            break;
+        };
+        let Some(object) = function
+            .child_by_field_name("object")
+            .or_else(|| function.child_by_field_name("value"))
+            .or_else(|| function.child_by_field_name("operand"))
+        else {
+            break;
+        };
+        if !matches!(lookup(lang, object.kind()), Kind::CallFn | Kind::CallMethod) {
+            break;
+        }
+        out.push(object);
+        cur = object;
+    }
+    out
+}
+
 /// One match from [`extract_shell_array_payload_idents`].
 ///
 /// `arg_position` is the positional argument index of the call where the
@@ -3310,7 +3429,7 @@ pub(super) fn extract_shell_array_payload_idents(
 /// — caller should still skip emitting a sink (no taint can reach a literal).
 fn shell_array_payload_idents_of(node: Node, code: &[u8]) -> Option<Vec<String>> {
     let node = unwrap_parens(node);
-    if node.kind() != "array" {
+    if !matches!(node.kind(), "array" | "list") {
         return None;
     }
     // Walk named children to skip commas and other trivia.
@@ -3971,7 +4090,7 @@ fn js_object_enables_shell(obj: Node, code: &[u8]) -> bool {
 /// Returns the identifiers in the elements after the flag.
 fn shell_argv_payload_idents_of(shell: &str, node: Node, code: &[u8]) -> Option<Vec<String>> {
     let node = unwrap_parens(node);
-    if node.kind() != "array" {
+    if !matches!(node.kind(), "array" | "list") {
         return None;
     }
     let mut cursor = node.walk();
@@ -4018,8 +4137,19 @@ fn const_string_value(node: Node, code: &[u8]) -> Option<String> {
     match node.kind() {
         "string" | "string_literal" | "interpreted_string_literal" | "raw_string_literal" => {
             let raw = text_of(node, code)?;
-            if raw.len() >= 2 {
-                Some(raw[1..raw.len() - 1].to_string())
+            // A Python string may carry a prefix (`r"x"`, `b'x'`) and an
+            // f-string holds `{...}` fields; only a fixed literal has a
+            // constant value.
+            let mut c = node.walk();
+            if node
+                .named_children(&mut c)
+                .any(|ch| ch.kind() == "interpolation")
+            {
+                return None;
+            }
+            let body = raw.trim_start_matches(|ch: char| ch.is_ascii_alphabetic());
+            if body.len() >= 2 {
+                Some(body[1..body.len() - 1].to_string())
             } else {
                 None
             }
