@@ -1,0 +1,44 @@
+{
+  "description": "Bytes read from an open File through read_to_end / read_to_string are a source: the buffer argument carries them to a command name, through a typed File formal and through a File::open local.",
+  "tags": [
+    "taint",
+    "rust",
+    "cmdi",
+    "stream-read"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        16,
+        16
+      ],
+      "notes": "read_to_end on a File formal fills data, returned to the caller"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        23,
+        23
+      ],
+      "notes": "read_to_string on a File::open local fills text"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        33,
+        33
+      ],
+      "notes": "the buffer was a fresh Vec; the read overwrites what that allocation implied"
+    }
+  ]
+}

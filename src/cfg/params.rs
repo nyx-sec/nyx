@@ -1233,6 +1233,20 @@ fn classify_param_type_rust<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeK
     rust_type_to_kind(&type_text)
 }
 
+/// The receiver type a Rust formal brings to its body: a `File` is a
+/// [`TypeKind::FileHandle`], so `file.read_to_end(&mut buf)` resolves to the
+/// type-qualified read source; a `rusqlite` connection is a
+/// [`TypeKind::DatabaseConnection`] ([`rust_db_connection_type`]).
+fn rust_receiver_type(t: &str) -> Option<TypeKind> {
+    if matches!(
+        strip_rust_ref_markers(t),
+        "File" | "std::fs::File" | "fs::File"
+    ) {
+        return Some(TypeKind::FileHandle);
+    }
+    rust_db_connection_type(t)
+}
+
 /// A `rusqlite` connection formal (`conn: &Connection`, `&mut rusqlite::Connection`)
 /// is a [`TypeKind::DatabaseConnection`], the same type `Connection::open(..)`
 /// produces for a local, so `conn.execute(sql, params)` resolves to the
@@ -1278,7 +1292,7 @@ pub(super) fn rust_receiver_alias_frame(
             continue;
         };
         let prefix = rust_param_type_text(param, code)
-            .and_then(|t| rust_db_connection_type(&t))
+            .and_then(|t| rust_receiver_type(&t))
             .and_then(|k| k.label_prefix());
         frame.push((name, prefix));
     }

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 981
+    "corpus_size": 985
   },
   "cases": [
     {
@@ -31034,75 +31034,6 @@
       "notes": "CVE-2025-71405 patched counterpart (file as of 6eb3588, which completes 1be7ad9): backslashes are rewritten to '/', then '/' + strings.Trim(path, \"/\") leaves a first character that is neither '/' nor '\\'. Locks the origin through the string domain's character exclusions. The 1be7ad9 file alone trims only '/' and still allows /\\evil.example (CVE-2025-69725), which the engine rightly keeps flagging. MIT."
     },
     {
-      "case_id": "go-redirect-trim-forward-only-001",
-      "file": "go/open_redirect/redirect_trim_forward_slash_only.go",
-      "language": "go",
-      "is_vulnerable": true,
-      "vuln_class": "open_redirect",
-      "cwe": "CWE-601",
-      "provenance": "synthetic",
-      "equivalence_tier": "exact",
-      "match_mode": "rule_match",
-      "expected_rule_ids": [
-        "taint-open-redirect"
-      ],
-      "allowed_alternative_rule_ids": [
-        "taint-unsanitised-flow"
-      ],
-      "forbidden_rule_ids": [],
-      "expected_severity": "MEDIUM",
-      "expected_category": "Security",
-      "expected_sink_lines": [
-        [
-          12,
-          12
-        ]
-      ],
-      "expected_source_lines": [
-        [
-          11,
-          11
-        ]
-      ],
-      "tags": [
-        "open_redirect",
-        "string-domain",
-        "trim"
-      ],
-      "disabled": false,
-      "notes": "\"/\" + strings.Trim(r.URL.Path, \"/\") keeps a possible leading backslash, so /\\evil.example still redirects off-site."
-    },
-    {
-      "case_id": "go-safe-redirect-trim-both-001",
-      "file": "go/safe/safe_redirect_trim_both_separators.go",
-      "language": "go",
-      "is_vulnerable": false,
-      "vuln_class": "safe",
-      "cwe": "N/A",
-      "provenance": "synthetic",
-      "equivalence_tier": "exact",
-      "match_mode": "file_presence",
-      "expected_rule_ids": [],
-      "allowed_alternative_rule_ids": [],
-      "forbidden_rule_ids": [
-        "taint-open-redirect",
-        "taint-unsanitised-flow"
-      ],
-      "expected_severity": null,
-      "expected_category": "Security",
-      "expected_sink_lines": [],
-      "expected_source_lines": [],
-      "tags": [
-        "open_redirect",
-        "string-domain",
-        "trim",
-        "safe",
-        "negative"
-      ],
-      "disabled": false,
-      "notes": "Safe twin of go-redirect-trim-forward-only-001: the cutset holds both '/' and '\\\\', so the character after the leading '/' is neither, and the redirect stays on this origin."
-    },
-    {
       "case_id": "cve-go-2025-6023-vulnerable",
       "file": "cve_corpus/go/CVE-2025-6023/vulnerable.go",
       "language": "go",
@@ -31175,6 +31106,143 @@
       "notes": "CVE-2025-6023 patched counterpart (file as of 0ba0b99): path.Clean on the request path, then the slash/regexp fix-ups. DISABLED (precision deferred): the redirect stays flagged because the abstract domain cannot prove the origin lock. path.Clean can return a path that starts with a backslash, and the branch that prefixes '/' (reached only when the cleaned path does not start with '/') is guarded by strings.HasPrefix, which the string domain does not narrow on. Proving it needs path-sensitive string narrowing, not a blanket path.Clean sanitiser. The vulnerable counterpart (recall) is active and detects. AGPL-3.0."
     },
     {
+      "case_id": "cve-rs-2026-46671-vulnerable",
+      "file": "cve_corpus/rust/CVE-2026-46671/vulnerable.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          56,
+          56
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          63,
+          63
+        ]
+      ],
+      "tags": [
+        "cve",
+        "onenote",
+        "path_traversal",
+        "iterator-closure"
+      ],
+      "disabled": true,
+      "disabled_reason": "Recall deferred: the stream read is now a source (File receiver, read_to_end out-param into the buffer), but two layers still stop the flow. (1) The names reach the sink through iterator adapters, `entries.iter().map(|name| ..).filter(..).map(|path| self.parse_section(&path))`; closure bodies are analysed as standalone bodies and the receiver's element taint is not seeded into the closure parameter (the same family as the callback inline-events gap), which needs a cross-body seeding mechanism, not a stopgap. (2) A buffer returned as `Ok(data)` from the reading helper loses its taint at the call site (a Result-constructor wrap in the callee's return summary; `fs::read` has the same gap). The patched twin is silent today.",
+      "notes": "CVE-2026-46671 (GHSA-4j5m-wc25-pvh7): onenote_parser joins section names read from the .onetoc2 file onto the notebook directory and opens them, so a ../ name reads files outside it. File as of 55b3b47. MPL-2.0. DISABLED, see disabled_reason."
+    },
+    {
+      "case_id": "cve-rs-2026-46671-patched",
+      "file": "cve_corpus/rust/CVE-2026-46671/patched.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "onenote",
+        "path_traversal",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2026-46671 patched counterpart (file as of c9267b2): resolve_entry_path rejects absolute entries and ParentDir/RootDir/Prefix components and requires clean names. Regression guard. MPL-2.0."
+    },
+    {
+      "case_id": "go-redirect-trim-forward-only-001",
+      "file": "go/open_redirect/redirect_trim_forward_slash_only.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "string-domain",
+        "trim"
+      ],
+      "disabled": false,
+      "notes": "\"/\" + strings.Trim(r.URL.Path, \"/\") keeps a possible leading backslash, so /\\evil.example still redirects off-site."
+    },
+    {
+      "case_id": "go-safe-redirect-trim-both-001",
+      "file": "go/safe/safe_redirect_trim_both_separators.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-open-redirect",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "string-domain",
+        "trim",
+        "safe",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Safe twin of go-redirect-trim-forward-only-001: the cutset holds both '/' and '\\\\', so the character after the leading '/' is neither, and the redirect stays on this origin."
+    },
+    {
       "case_id": "go-redirect-struct-field-request-001",
       "file": "go/open_redirect/redirect_struct_field_request.go",
       "language": "go",
@@ -31242,6 +31310,71 @@
       ],
       "disabled": false,
       "notes": "Safe twin of go-redirect-struct-field-request-001: the request value is appended to a fixed /app/ prefix before the redirect."
+    },
+    {
+      "case_id": "rs-cmdi-file-read-to-end-001",
+      "file": "rust/cmdi/file_read_to_end_command.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "tags": [
+        "cmdi",
+        "stream-read",
+        "file"
+      ],
+      "disabled": false,
+      "notes": "Bytes read from an open File with read_to_end (buffer out-param) flow through a helper to Command::new."
+    },
+    {
+      "case_id": "rs-safe-reader-cursor-001",
+      "file": "rust/safe/safe_reader_cursor_constants.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cmdi",
+        "stream-read",
+        "safe",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Safe twin of rs-cmdi-file-read-to-end-001: the reader is a Cursor over a constant, not a file."
     }
   ]
 }

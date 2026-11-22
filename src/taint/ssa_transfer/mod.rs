@@ -6015,7 +6015,12 @@ pub(super) fn transfer_inst(
             // though the default arg-to-return propagation below would copy
             // the now-tainted destination pointer into it.
             let mut binder_error_return = false;
-            if !return_bits.is_empty() {
+            // A Rust read that fills its argument is a method on an open
+            // reader (`file.read_to_end(&mut buf)`); the path call
+            // `fs::read(path)` is a source that returns its bytes and writes
+            // nothing into `path`.
+            let out_param_call = transfer.lang != Lang::Rust || receiver.is_some();
+            if !return_bits.is_empty() && out_param_call {
                 if let Some(positions) =
                     crate::labels::output_param_source_positions(transfer.lang.as_str(), callee)
                 {
@@ -6048,6 +6053,7 @@ pub(super) fn transfer_inst(
                                             uses_summary: false,
                                         },
                                     );
+                                    forget_abstract_value(state, arg_v);
                                 }
                             }
                         }
@@ -6528,6 +6534,36 @@ pub(super) fn transfer_inst(
                                 };
                                 if !return_origins.iter().any(|o| o.node == inst.cfg_node) {
                                     return_origins.push(origin);
+                                }
+                                // A typed read that fills a buffer argument
+                                // (`file.read_to_end(&mut buf)`): the buffer
+                                // carries the bytes, as for a direct Source.
+                                // The call may end in `.unwrap()` / `?`, so the
+                                // read's own name is found past those.
+                                if transfer.lang == Lang::Rust
+                                    && let Some(positions) =
+                                        method_candidates_from_chain(callee, transfer.lang)
+                                            .iter()
+                                            .find_map(|m| {
+                                                crate::labels::output_param_source_positions(
+                                                    transfer.lang.as_str(),
+                                                    m,
+                                                )
+                                            })
+                                {
+                                    for &pos in positions {
+                                        for &arg_v in args.get(pos).into_iter().flatten() {
+                                            state.set(
+                                                arg_v,
+                                                VarTaint {
+                                                    caps: *bits,
+                                                    origins: return_origins.clone(),
+                                                    uses_summary: false,
+                                                },
+                                            );
+                                            forget_abstract_value(state, arg_v);
+                                        }
+                                    }
                                 }
                             }
                             DataLabel::Sanitizer(bits) => {
@@ -8666,6 +8702,15 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
                 abs.set(inst.value, value);
             }
         }
+    }
+}
+
+/// Drop what the abstract domains know about `v`: a call has written into the
+/// buffer it names (`file.read_to_end(&mut buf)`), so the facts of the
+/// allocation that came before (an empty `Vec::new()`) no longer describe it.
+fn forget_abstract_value(state: &mut SsaTaintState, v: SsaValue) {
+    if let Some(abs) = state.abstract_state.as_mut() {
+        Arc::make_mut(abs).set(v, crate::abstract_interp::AbstractValue::top());
     }
 }
 

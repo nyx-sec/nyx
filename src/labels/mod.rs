@@ -460,6 +460,7 @@ pub fn output_param_source_positions(lang: &str, callee: &str) -> Option<&'stati
         "c" => c::OUTPUT_PARAM_SOURCES,
         "cpp" => cpp::OUTPUT_PARAM_SOURCES,
         "go" => go::OUTPUT_PARAM_SOURCES,
+        "rust" | "rs" => rust::OUTPUT_PARAM_SOURCES,
         _ => return None,
     };
     let normalized = callee
