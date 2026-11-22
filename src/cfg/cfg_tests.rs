@@ -7559,6 +7559,40 @@ class T {
     assert_eq!(kind_of("Files.readString"), None);
 }
 
+#[test]
+fn java_response_write_sink_keeps_declared_stream_type() {
+    use crate::ssa::type_facts::TypeKind;
+    let src = br#"
+import java.io.PrintStream;
+import java.io.PrintWriter;
+class T {
+    PrintStream err;
+    PrintWriter out;
+    void f(String m, java.io.DataOutputStream peer) throws Exception {
+        err.println(m);
+        out.println(m);
+        peer.write(m.getBytes());
+    }
+}
+"#;
+    let types = java_receiver_decl_types(src);
+    let kind_of = |callee: &str| {
+        types
+            .iter()
+            .find(|(c, _)| c == callee)
+            .unwrap_or_else(|| panic!("no call node for {callee}: {types:?}"))
+            .1
+            .clone()
+    };
+    assert_eq!(kind_of("err.println"), Some(TypeKind::FileHandle));
+    assert_eq!(kind_of("peer.write"), Some(TypeKind::FileHandle));
+    assert_eq!(
+        kind_of("out.println"),
+        None,
+        "a PrintWriter is the servlet response writer type"
+    );
+}
+
 /// Callee text of every Java call node that carries a `Source` label.
 fn java_source_callees(src: &[u8]) -> Vec<String> {
     let file_cfg = parse_to_file_cfg(src, "java", Language::from(tree_sitter_java::LANGUAGE));

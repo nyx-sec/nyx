@@ -9056,21 +9056,7 @@ fn collect_block_events(
         // `type_facts` are consulted; the static path is what enables
         // closure-captured receivers (parent body → child body via
         // [`crate::taint::inject_external_type_facts`]) to participate.
-        if let SsaOp::Call {
-            receiver: Some(rv), ..
-        } = &inst.op
-        {
-            if let Some(ref env) = state.path_env {
-                if let Some(kind) = env.get(*rv).types.as_singleton() {
-                    sink_caps &= !receiver_incompatible_sink_caps(&kind, sink_caps);
-                }
-            }
-            if let Some(tf) = transfer.type_facts {
-                if let Some(kind) = tf.get_type(*rv) {
-                    sink_caps &= !receiver_incompatible_sink_caps(kind, sink_caps);
-                }
-            }
-        }
+        strip_receiver_incompatible_sink_caps(&mut sink_caps, inst, info, transfer, &state);
 
         // Type-qualified sink resolution: when normal sink resolution found nothing,
         // try using the receiver's inferred type to construct a qualified callee name.
@@ -9108,6 +9094,15 @@ fn collect_block_events(
                         }
                     }
                     tq_filters = tq_args;
+                    // The qualified name (`FileHandle.println`) also matches
+                    // the bare suffix rules the receiver type just ruled out.
+                    strip_receiver_incompatible_sink_caps(
+                        &mut sink_caps,
+                        inst,
+                        info,
+                        transfer,
+                        &state,
+                    );
                 }
             }
         }
@@ -13258,13 +13253,49 @@ fn type_safe_for_taint_sink(kind: &crate::ssa::type_facts::TypeKind, cap: Cap) -
     }
 }
 
+/// Drop sink caps the receiver's type rules out, from every type source: the
+/// flow-sensitive `path_env` type, the static `type_facts` type, and (Java) the
+/// type the receiver's declaration names.
+fn strip_receiver_incompatible_sink_caps(
+    sink_caps: &mut Cap,
+    inst: &SsaInst,
+    info: &NodeInfo,
+    transfer: &SsaTaintTransfer,
+    state: &SsaTaintState,
+) {
+    if let SsaOp::Call {
+        receiver: Some(rv), ..
+    } = &inst.op
+    {
+        if let Some(ref env) = state.path_env {
+            if let Some(kind) = env.get(*rv).types.as_singleton() {
+                *sink_caps &= !receiver_incompatible_sink_caps(&kind, *sink_caps);
+            }
+        }
+        if let Some(tf) = transfer.type_facts {
+            if let Some(kind) = tf.get_type(*rv) {
+                *sink_caps &= !receiver_incompatible_sink_caps(kind, *sink_caps);
+            }
+        }
+    }
+    // A Java receiver typed only by its declaration (an injected field, a
+    // formal) has no SSA type fact; its declared type still proves a
+    // response-write sink does not apply (`PrintStream err; err.println`).
+    if let Some(kind) = info.call.receiver_decl_type.as_ref() {
+        *sink_caps &= !receiver_incompatible_sink_caps(kind, *sink_caps);
+    }
+}
+
 /// Check if a receiver type is incompatible with a sink label's requirements.
 ///
 /// Returns the Cap bits that should be REMOVED because the receiver type
 /// proves the sink doesn't apply. For example, `HTML_ESCAPE` sinks require
 /// an HTTP-response-like receiver, if the receiver is known to be
 /// Int/Bool/String, `HTML_ESCAPE` doesn't apply.
-fn receiver_incompatible_sink_caps(kind: &crate::ssa::type_facts::TypeKind, sink_caps: Cap) -> Cap {
+pub(crate) fn receiver_incompatible_sink_caps(
+    kind: &crate::ssa::type_facts::TypeKind,
+    sink_caps: Cap,
+) -> Cap {
     use crate::ssa::type_facts::TypeKind;
     let mut remove = Cap::empty();
     // HTML_ESCAPE / OPEN_REDIRECT / HEADER_INJECTION all require an HTTP

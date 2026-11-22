@@ -723,6 +723,32 @@ pub(super) fn extract_object_arg_property(
     None
 }
 
+/// True when the object literal at positional argument `arg_index` sets
+/// `prop_name` and holds no spread element, so no spread can override it.
+/// Used where an options object pins a value the callee enforces
+/// (`res.sendFile(p, { root })`).
+pub(super) fn object_arg_sets_property_without_spread(
+    call_node: Node,
+    arg_index: usize,
+    prop_name: &str,
+    code: &[u8],
+) -> bool {
+    if !has_object_arg_property(call_node, arg_index, prop_name, code) {
+        return false;
+    }
+    let Some(args) = call_node.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let Some(arg) = args.named_children(&mut cursor).nth(arg_index) else {
+        return false;
+    };
+    let arg = unwrap_parens(arg);
+    let mut c = arg.walk();
+    !arg.named_children(&mut c)
+        .any(|child| child.kind() == "spread_element")
+}
+
 /// Return `true` if the call node's positional arg at `arg_index` is an
 /// object literal containing a property named `prop_name` (whether the
 /// value is a literal or a dynamic expression).  Used alongside

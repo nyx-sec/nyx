@@ -4537,6 +4537,33 @@ pub(super) fn push_node<'a>(
         labels.retain(|l| !matches!(l, DataLabel::Sink(c) if c.is_empty()));
     }
 
+    // Express `res.sendFile(p, { root })` / `res.download(p, { root })`: the
+    // `send` module resolves `p` under `root` and rejects any path that
+    // climbs out of it, so the call is confined to the root directory and is
+    // not a file-read sink for `p`.
+    if matches!(lang, "javascript" | "typescript" | "tsx")
+        && labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::FILE_IO)))
+        && (text.ends_with("res.sendFile")
+            || text.ends_with("res.download")
+            || text.ends_with("res.sendfile"))
+        && let Some(cn) = call_ast
+        && literals::object_arg_sets_property_without_spread(cn, 1, "root", code)
+    {
+        for label in labels.iter_mut() {
+            if let DataLabel::Sink(c) = label {
+                *c &= !Cap::FILE_IO;
+            }
+        }
+        labels.retain(|l| !matches!(l, DataLabel::Sink(c) if c.is_empty()));
+        if !labels.iter().any(|l| matches!(l, DataLabel::Sink(_))) {
+            sink_payload_args = None;
+            destination_uses = None;
+            gate_filters.clear();
+        }
+    }
+
     // React JSX text-content auto-escape sanitizer synthesis.  When the
     // assignment / wrapper / return AST contains a `{expr}` interpolation as
     // a direct child of a `jsx_element` or `jsx_fragment` (NOT inside a
@@ -5193,9 +5220,12 @@ pub(super) fn push_node<'a>(
 
     // Java receivers typed only by a declaration (injected fields, formals,
     // locals bound to an untyped call).  Skipped when the node already has a
-    // sink: type-qualified resolution only runs on calls with none.
+    // sink: type-qualified resolution only runs on calls with none.  The one
+    // exception is a node whose sinks are all response-write sinks
+    // (`println` / `write`): the declared type lets the taint engine drop the
+    // cap when the receiver is plainly not an HTTP response (a `PrintStream`).
     let receiver_decl_type =
-        if lang == "java" && !labels.iter().any(|l| matches!(l, DataLabel::Sink(_))) {
+        if lang == "java" && labels.iter().all(|l| html_escape_only_sink_or_non_sink(l)) {
             call_ast.and_then(|cn| java_call_receiver_decl_type(cn, code))
         } else {
             None
@@ -5744,6 +5774,17 @@ pub(crate) fn java_declared_receiver_kind(
         // `createNativeQuery` statement API as the Hibernate session.
         "Session" | "StatelessSession" | "EntityManager" => Some(TypeKind::HibernateSession),
         "CallableStatement" => Some(TypeKind::DatabaseConnection),
+        // Output streams and writers that sit on a console, file, socket or
+        // memory buffer.  `PrintWriter` / `Writer` / `OutputStream` /
+        // `ServletOutputStream` / `BufferedWriter` are left out because
+        // servlet code declares the response writer with those types.
+        "PrintStream"
+        | "DataOutputStream"
+        | "ObjectOutputStream"
+        | "FileOutputStream"
+        | "FileWriter"
+        | "ByteArrayOutputStream"
+        | "StringWriter" => Some(TypeKind::FileHandle),
         "ProcessBuilder" => Some(TypeKind::ProcessBuilder),
         // Parser factories: `dbf.newDocumentBuilder().parse(x)` reads as
         // `dbf.parse`, and StAX parses straight off the factory
@@ -5761,6 +5802,16 @@ pub(crate) fn java_declared_receiver_kind(
             | TypeKind::Runtime) => Some(k),
             _ => None,
         },
+    }
+}
+
+/// True for labels that leave a Java call node open to declared-type receiver
+/// resolution: anything that is not a sink, or a sink carrying only
+/// `HTML_ESCAPE`.
+fn html_escape_only_sink_or_non_sink(label: &DataLabel) -> bool {
+    match label {
+        DataLabel::Sink(caps) => *caps == Cap::HTML_ESCAPE,
+        _ => true,
     }
 }
 
