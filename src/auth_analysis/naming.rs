@@ -340,6 +340,7 @@ pub(super) fn is_actor_object(chain: &str) -> bool {
         "current_user"
             | "current_account"
             | "current_member"
+            | "User.current"
             | "g.user"
             | "self.request.user"
             | "req.user"

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 985
+    "corpus_size": 991
   },
   "cases": [
     {
@@ -31301,6 +31301,174 @@
       ],
       "disabled": false,
       "notes": "Recall guard: cart_id, workspace_id and impersonated_user_id session keys, unscoped find and a rebound scope local."
+    },
+    {
+      "case_id": "py-auth-scope-session-003",
+      "file": "python/auth/vuln_session_conditional_and_model_hop.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-scope-session",
+        "session"
+      ],
+      "disabled": false,
+      "notes": "Recall guard: id read from the request on one branch, queryset hopped through .model.objects, local named session holding request input."
+    },
+    {
+      "case_id": "py-auth-scope-session-004",
+      "file": "python/auth/safe_session_alias_and_scoped_chain.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-scope-session",
+        "session"
+      ],
+      "disabled": false,
+      "notes": "Session-only id, scoped queryset extended by exclude, and a real session alias."
+    },
+    {
+      "case_id": "rb-auth-scope-session-003",
+      "file": "ruby/auth/vuln_bare_visible_and_conditional_id.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rb.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-scope-session",
+        "visible-scope"
+      ],
+      "disabled": false,
+      "notes": "Recall guard: bare visible scope, directly and via a local, and an id taken from the request on one branch."
+    },
+    {
+      "case_id": "rb-auth-scope-session-004",
+      "file": "ruby/auth/safe_visible_for_caller_and_session_id.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rb.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-scope-session",
+        "visible-scope"
+      ],
+      "disabled": false,
+      "notes": "visible(current_user) through a local and a session id read."
+    },
+    {
+      "case_id": "go-auth-scope-session-007",
+      "file": "go/auth/vuln_scope_entity_user_fetch_and_conditional_id.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "auth-scope-session",
+        "request-scope"
+      ],
+      "disabled": false,
+      "notes": "Recall guard: user and member fetched by key through the scope entity and an id read from the session on one branch only."
+    },
+    {
+      "case_id": "go-auth-scope-session-008",
+      "file": "go/auth/safe_scope_entity_commit_read.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "auth-scope-session",
+        "request-scope"
+      ],
+      "disabled": false,
+      "notes": "Commit read through the scope entity and a user fetched by the session id."
     }
   ]
 }

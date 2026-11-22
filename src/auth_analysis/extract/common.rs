@@ -1332,6 +1332,16 @@ struct UnitState<'a> {
     /// binding of it is.
     scope_bound_vars: HashSet<String>,
     unscoped_bound_vars: HashSet<String>,
+    /// Names bound to anything but the caller's session id somewhere in the
+    /// unit.  Sticky: a later session read does not make the name trusted,
+    /// since the earlier value may reach the use through the other branch.
+    non_identity_bound_vars: HashSet<String>,
+    /// Bare locals named like a session store (`session`, `sess`) that are
+    /// bound to request input or an HTTP client session, so `.get("user_id")`
+    /// on them reads the request, not the server-side store.
+    foreign_session_names: HashSet<String>,
+    /// Go: names bound at least once to something other than a scope entity.
+    request_scope_rebound: HashSet<String>,
     /// The unit builds JSX somewhere in its body.
     saw_jsx: bool,
 }
@@ -1546,8 +1556,13 @@ fn track_go_request_roots(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
                     }),
                     _ => false,
                 };
+            // Every binding of a name must be a scope entity: an earlier
+            // rebinding keeps the tag off just as a later one removes it.
             for name in &names {
-                if scoped {
+                if !scoped {
+                    state.request_scope_rebound.insert(name.clone());
+                }
+                if scoped && !state.request_scope_rebound.contains(name) {
                     state.request_scope_roots.insert(name.clone());
                 } else {
                     state.request_scope_roots.remove(name);
@@ -2920,7 +2935,7 @@ fn collect_self_actor_id_binding(node: Node<'_>, bytes: &[u8], state: &mut UnitS
         return;
     };
     if value_is_self_actor_id_field(value, bytes, &state.self_actor_vars)
-        || value_is_self_scoped_session_id_chain(value, bytes)
+        || value_is_self_scoped_session_id_chain(value, bytes, &state.foreign_session_names)
     {
         state.self_actor_id_vars.insert(var_name);
     }
@@ -3028,7 +3043,16 @@ fn is_self_actor_id_field_name(field: &str) -> bool {
 /// session.user.id; await repo.get(userId); }`. The use site sees
 /// a plain `userId` subject, so without binding-time recognition the
 /// classifier can't tell it's actor context.
-fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
+fn value_is_self_scoped_session_id_chain(
+    node: Node<'_>,
+    bytes: &[u8],
+    foreign: &HashSet<String>,
+) -> bool {
+    if !foreign.is_empty()
+        && chain_root_name(node, bytes).is_some_and(|root| foreign.contains(&root))
+    {
+        return false;
+    }
     match node.kind() {
         "field_expression" | "member_expression" | "field_access" | "scoped_identifier" => {
             // Build the dotted chain and reuse the same predicate the
@@ -3072,7 +3096,7 @@ fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
                 .child_by_field_name("value")
                 .or_else(|| node.child_by_field_name("expression"));
             if let Some(v) = value
-                && value_is_self_scoped_session_id_chain(v, bytes)
+                && value_is_self_scoped_session_id_chain(v, bytes, foreign)
             {
                 return true;
             }
@@ -3080,7 +3104,7 @@ fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
                 let Some(child) = node.named_child(idx as u32) else {
                     continue;
                 };
-                if value_is_self_scoped_session_id_chain(child, bytes) {
+                if value_is_self_scoped_session_id_chain(child, bytes, foreign) {
                     return true;
                 }
             }
@@ -3095,13 +3119,13 @@ fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
                 .child_by_field_name("function")
                 .or_else(|| node.child_by_field_name("object"));
             if let Some(r) = receiver {
-                if value_is_self_scoped_session_id_chain(r, bytes) {
+                if value_is_self_scoped_session_id_chain(r, bytes, foreign) {
                     return true;
                 }
                 if let Some(inner) = r
                     .child_by_field_name("value")
                     .or_else(|| r.child_by_field_name("object"))
-                    && value_is_self_scoped_session_id_chain(inner, bytes)
+                    && value_is_self_scoped_session_id_chain(inner, bytes, foreign)
                 {
                     return true;
                 }
@@ -3180,12 +3204,14 @@ fn single_binding_sides<'a>(node: Node<'a>, bytes: &[u8]) -> Option<(String, Nod
 
 /// `uid = session['user_id']`, `uid := sess.Get("uid")`, `id := uid.(int64)`:
 /// the local holds the caller's own id from the session store, so it joins
-/// `self_actor_id_vars`.  The walk is flow-insensitive, so a later rebinding of
-/// the same name to anything else takes the name out again.
+/// `self_actor_id_vars`.  The walk is flow-insensitive, so every binding of the
+/// name must be a session identity read: one binding to anything else, before
+/// or after, keeps the name out.
 fn collect_session_identity_alias(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
     let Some((name, mut rhs)) = single_binding_sides(node, bytes) else {
         return;
     };
+    note_foreign_session_name(&name, rhs, bytes, state);
     // A Go type assertion keeps the value: `idSess.(int64)`.
     while matches!(
         rhs.kind(),
@@ -3202,12 +3228,61 @@ fn collect_session_identity_alias(node: Node<'_>, bytes: &[u8], state: &mut Unit
     let identity = if rhs.kind() == "identifier" {
         state.self_actor_id_vars.contains(&text(rhs, bytes))
     } else {
-        value_is_self_scoped_session_id_chain(rhs, bytes)
+        value_is_self_scoped_session_id_chain(rhs, bytes, &state.foreign_session_names)
     };
-    if identity {
+    if identity && !state.non_identity_bound_vars.contains(&name) {
         state.self_actor_id_vars.insert(name);
     } else {
         state.self_actor_id_vars.remove(&name);
+        state.non_identity_bound_vars.insert(name);
+    }
+}
+
+/// Record a session-looking local that is bound to request input
+/// (`session = request.GET`) or to an HTTP client session
+/// (`session = requests.Session()`).
+fn note_foreign_session_name(name: &str, rhs: Node<'_>, bytes: &[u8], state: &mut UnitState) {
+    if !is_session_store_receiver(name) {
+        return;
+    }
+    let chain = member_chain(rhs, bytes);
+    let foreign = if matches!(rhs.kind(), "call" | "call_expression") {
+        matches!(
+            chain.join(".").as_str(),
+            "requests.Session"
+                | "requests.session"
+                | "httpx.Client"
+                | "httpx.AsyncClient"
+                | "aiohttp.ClientSession"
+        )
+    } else {
+        // Anything read off the request object that is not its session.
+        chain.first().is_some_and(|root| {
+            matches!(
+                root.to_ascii_lowercase().as_str(),
+                "request" | "req" | "params" | "ctx" | "r"
+            )
+        }) && classify_member_chain(&chain) != ValueSourceKind::Session
+            && !chain
+                .iter()
+                .any(|seg| matches!(seg.to_ascii_lowercase().as_str(), "session" | "sess"))
+    };
+    if foreign {
+        state.foreign_session_names.insert(name.to_string());
+    }
+}
+
+/// Leftmost identifier of an access chain (`session` in `session.get("k")`,
+/// `session["k"]`).
+fn chain_root_name(mut node: Node<'_>, bytes: &[u8]) -> Option<String> {
+    loop {
+        if node.kind() == "identifier" {
+            return Some(text(node, bytes));
+        }
+        node = ["function", "receiver", "object", "operand", "value"]
+            .iter()
+            .find_map(|f| node.child_by_field_name(f))
+            .or_else(|| node.named_child(0))?;
     }
 }
 
@@ -3314,10 +3389,25 @@ fn collect_authorization_scoped_alias(
     });
     if !scoped {
         // `qs = qs.filter(..)` keeps the scope of the relation it extends.
+        // A hop through `.model` / `.objects` / `_default_manager` leaves the
+        // relation and reaches an unscoped manager again.
         let chain = member_chain(rhs, bytes);
         scoped = chain.len() > 1
             && state.scope_bound_vars.contains(&chain[0])
-            && !state.unscoped_bound_vars.contains(&chain[0]);
+            && !state.unscoped_bound_vars.contains(&chain[0])
+            && !chain[1..].iter().any(|seg| {
+                matches!(
+                    seg.as_str(),
+                    "model"
+                        | "objects"
+                        | "_default_manager"
+                        | "_base_manager"
+                        | "class"
+                        | "klass"
+                        | "constructor"
+                        | "__class__"
+                )
+            });
     }
     if scoped {
         state.scope_bound_vars.insert(name);

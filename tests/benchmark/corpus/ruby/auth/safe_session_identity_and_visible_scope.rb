@@ -13,20 +13,21 @@ class OrdersController < ApplicationController
     render json: @orders
   end
 
-  # `visible` confines the lookup to rows the caller may see.
+  # `viewable_by` confines the lookup to rows the caller may see.
   def issue
-    @issue = Issue.visible.find(params[:id])
+    @issue = Issue.viewable_by(current_user).find(params[:id])
     render json: @issue
   end
 
   def nested
-    @project = Project.visible.where(id: params[:project_id]).first
-    @item = @project.issues.visible.find_by(id: params[:id])
+    @project = Project.viewable_by(current_user).where(id: params[:project_id]).first
+    @item = @project.issues.viewable_by(current_user).find_by(id: params[:id])
     render json: @item
   end
 
+  # `visible(current_user)` names the caller, so the local stays confined.
   def via_local
-    scope = Project.visible
+    scope = Project.visible(current_user)
     @project = scope.find(params[:id])
     render json: @project
   end

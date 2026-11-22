@@ -1,5 +1,5 @@
 {
-  "description": "A package-level lookup by the request id and a removal through the scope entity still fire; only reads through the scope entity are exempt.",
+  "description": "A package-level lookup by the request id, a removal or a keyed user fetch through the scope entity, a rebound scope alias and an id read from the session on one branch only still fire; only reads through the scope entity are exempt.",
   "tags": [
     "auth",
     "go",
@@ -15,8 +15,8 @@
       "severity": null,
       "must_match": true,
       "line_range": [
-        12,
-        12
+        13,
+        13
       ],
       "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
     },
@@ -25,8 +25,48 @@
       "severity": null,
       "must_match": true,
       "line_range": [
-        19,
-        19
+        20,
+        20
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        27,
+        27
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        34,
+        34
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        43,
+        43
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        53,
+        53
       ],
       "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
     }

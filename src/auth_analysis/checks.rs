@@ -1187,7 +1187,12 @@ fn is_owner_scoped_callee(callee: &str, rules: &AuthAnalysisRules) -> bool {
     let mut scoped = false;
     for (idx, segment) in receiver.split('.').enumerate() {
         let name = segment.trim_end_matches("()");
-        if scoped && matches!(name, "class" | "klass" | "constructor" | "__class__") {
+        if scoped
+            && matches!(
+                name,
+                "class" | "klass" | "constructor" | "__class__" | "model" | "_default_manager"
+            )
+        {
             return false;
         }
         if !scoped
@@ -1222,9 +1227,36 @@ fn is_authorization_scoped_var_lookup(callee: &str, unit: &AnalysisUnit) -> bool
     let root = receiver.split('.').next().unwrap_or(receiver);
     unit.authorization_scoped_vars.contains(root)
         && (is_lookup_callee(callee) || receiver.split('.').any(is_lookup_callee))
-        && !receiver
-            .split('.')
-            .any(|seg| matches!(seg, "class" | "klass" | "constructor" | "__class__"))
+        && !receiver.split('.').any(|seg| {
+            matches!(
+                seg,
+                "class" | "klass" | "constructor" | "__class__" | "model" | "_default_manager"
+            )
+        })
+}
+
+/// `GetUserByID`, `FindMemberByName`: a fetch of a user, member or team by key.
+/// Reaching it through a scope entity does not confine it, since the method
+/// reads the entity type's table, not the scope's own rows.
+fn is_keyed_identity_fetch(lower_method: &str) -> bool {
+    let rest = ["get", "find", "load", "fetch", "lookup"]
+        .iter()
+        .find_map(|p| lower_method.strip_prefix(p))
+        .unwrap_or(lower_method);
+    [
+        "user",
+        "member",
+        "team",
+        "org",
+        "account",
+        "collaborator",
+        "owner",
+    ]
+    .iter()
+    .any(|entity| {
+        rest.strip_prefix(entity)
+            .is_some_and(|tail| tail.trim_start_matches('s').starts_with("by"))
+    })
 }
 
 /// Go: a read through the scope entity the request context already holds,
@@ -1246,6 +1278,9 @@ fn is_request_scope_rooted_lookup(callee: &str, unit: &AnalysisUnit) -> bool {
     }
     let lower = method.to_ascii_lowercase();
     if lower.starts_with("delete") || lower.starts_with("destroy") || lower.starts_with("remove") {
+        return false;
+    }
+    if is_keyed_identity_fetch(&lower) {
         return false;
     }
     let mut segments = receiver.split('.');
@@ -2627,20 +2662,26 @@ mod tests {
         assert!(!scoped("find"));
         // The user's name in a later segment does not scope the query.
         assert!(!scoped("Note.current_user.find"));
-        // Redmine's `visible` scope confines the lookup that follows it.
-        assert!(scoped("Issue.visible.find"));
-        assert!(scoped("project.issues.visible.find_by"));
-        assert!(scoped("User.visible.active.find"));
-        assert!(!scoped("Issue.visible"));
+        // An authorization scope confines the lookup that follows it.
+        assert!(scoped("Issue.viewable_by.find"));
+        assert!(scoped("project.issues.readable_by.find_by"));
+        assert!(scoped("User.viewable_by.active.find"));
+        assert!(!scoped("Issue.viewable_by"));
         assert!(!scoped("Issue.find"));
         assert!(!scoped("Issue.where.visible_by.find"));
-        assert!(!scoped("Issue.visible.klass.find"));
+        assert!(!scoped("Issue.viewable_by.klass.find"));
+        assert!(!scoped("Issue.viewable_by.model.find"));
+        // Bare `visible` is usually a publish flag, so it scopes nothing.
+        assert!(!scoped("Issue.visible.find"));
         // Other languages carry no such scope vocabulary.
         let py = crate::auth_analysis::config::build_auth_rules(
             &crate::utils::config::Config::default(),
             "python",
         );
-        assert!(!super::is_owner_scoped_callee("Issue.visible.find", &py));
+        assert!(!super::is_owner_scoped_callee(
+            "Issue.viewable_by.find",
+            &py
+        ));
     }
 
     #[test]

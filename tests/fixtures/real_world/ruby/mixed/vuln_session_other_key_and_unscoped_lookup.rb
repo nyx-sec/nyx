@@ -28,4 +28,24 @@ class OrdersController < ApplicationController
     @project = scope.find(params[:id])
     render json: @project
   end
+
+  # `visible` without the caller is usually a publish flag, not authorization.
+  def bare_visible
+    @note = Note.visible.find(params[:id])
+    render json: @note
+  end
+
+  def bare_visible_local
+    scope = Note.visible
+    @note = scope.find(params[:id])
+    render json: @note
+  end
+
+  # The request id reaches the lookup through the branch that skips the session.
+  def conditional_identity
+    uid = params[:id]
+    uid = session[:user_id] if params[:me]
+    @note = Note.find_by(user_id: uid)
+    render json: @note
+  end
 end

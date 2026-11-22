@@ -1,5 +1,5 @@
 {
-  "description": "Rails session identity reads and Redmine style visible scopes, directly or through a local, are not missing an ownership check.",
+  "description": "Rails session identity reads, viewable_by scopes and visible(current_user), directly or through a local, are not missing an ownership check.",
   "tags": [
     "auth",
     "ruby",

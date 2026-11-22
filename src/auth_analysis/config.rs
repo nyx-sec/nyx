@@ -956,12 +956,11 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
             db_query_builder_roots: Vec::new(),
-            authorization_scope_segments: vec![
-                "visible".into(),
-                "viewable_by".into(),
-                "readable_by".into(),
-            ],
-            actor_scope_segments: Vec::new(),
+            // Bare `visible` is not here: in most Rails apps it is a publish
+            // flag scope, not an authorization scope.  `visible(current_user)`
+            // counts through `actor_scope_segments`.
+            authorization_scope_segments: vec!["viewable_by".into(), "readable_by".into()],
+            actor_scope_segments: vec!["visible".into()],
         }
     } else if matches!(lang_slug, "go") {
         AuthAnalysisRules {
