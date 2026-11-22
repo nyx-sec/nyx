@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 973
+    "corpus_size": 977
   },
   "cases": [
     {
@@ -30961,6 +30961,130 @@
       ],
       "disabled": false,
       "notes": "File.basename keeps only the final component."
+    },
+    {
+      "case_id": "rs-deser-toml-dyn-let-annot",
+      "file": "rust/deser/deser_toml_dyn_let_annot.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "deser",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "toml",
+        "dyn",
+        "let-annotation"
+      ],
+      "disabled": false,
+      "notes": "toml::from_str into a let annotated Box<dyn Plugin> lets the document choose the type"
+    },
+    {
+      "case_id": "rs-deser-ron-dyn-let-annot-try",
+      "file": "rust/deser/deser_ron_dyn_let_annot_try.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "deser",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "ron",
+        "dyn",
+        "let-annotation"
+      ],
+      "disabled": false,
+      "notes": "ron::from_str with a map_err and ? chain into a let annotated Box<dyn Plugin>"
+    },
+    {
+      "case_id": "rs-safe-toml-config-let-annot",
+      "file": "rust/safe/safe_toml_config_let_annot.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "toml",
+        "let-annotation",
+        "config"
+      ],
+      "disabled": false,
+      "notes": "Operator config decoded into a concrete annotated type; not a polymorphic sink"
+    },
+    {
+      "case_id": "rs-safe-ron-boxed-concrete-let-annot",
+      "file": "rust/safe/safe_ron_boxed_concrete_let_annot.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "ron",
+        "let-annotation",
+        "box"
+      ],
+      "disabled": false,
+      "notes": "Box of a concrete struct is not a trait object target"
     }
   ]
 }

@@ -275,9 +275,11 @@ pub static RULES: &[LabelRule] = &[
     // `toml::from_str` and `ron::from_str` into a concrete type are left out on
     // purpose: like `serde_json::from_str` they have no polymorphic
     // instantiation surface, and reporting them would flag every config loader.
-    // A `dyn` turbofish (`toml::from_str::<Box<dyn Plugin>>`) is attacker-chosen
-    // type selection, which the label layer recognises itself
-    // (`labels::is_polymorphic_decode`) and labels like the rule below.
+    // A `dyn` target, as a turbofish (`toml::from_str::<Box<dyn Plugin>>`) or a
+    // let annotation (`let p: Box<dyn Plugin> = toml::from_str(s)?`), is
+    // attacker-chosen type selection. The label layer recognises the turbofish
+    // (`labels::is_polymorphic_decode`) and the CFG builder the annotation
+    // (`labels::rust_target_is_dyn`), and both label it like the rule below.
     LabelRule {
         matchers: &[
             "serde_yaml::from_str",

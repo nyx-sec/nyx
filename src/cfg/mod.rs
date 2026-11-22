@@ -3452,6 +3452,17 @@ pub(super) fn push_node<'a>(
     let extra = analysis_rules.map(|r| r.extra_labels.as_slice());
     let mut labels = classify_all(lang, &text, extra);
 
+    // `let v: Box<dyn Plugin> = toml::from_str(&s)?;` picks the concrete type
+    // from the document exactly like the turbofish form, but the dyn target
+    // sits on the declaration, not in the callee text.
+    if lang == "rust"
+        && crate::labels::is_polymorphic_decode_head(text.split('(').next().unwrap_or("").trim())
+        && !labels.contains(&crate::labels::POLYMORPHIC_DECODE)
+        && rust_let_decodes_into_dyn(ast, code)
+    {
+        labels.push(crate::labels::POLYMORPHIC_DECODE);
+    }
+
     // Java stream accessors are sources only when the stream can carry
     // attacker bytes.  The label belongs to the call `text` came from.
     if lang == "java" && labels.iter().any(|l| matches!(l, DataLabel::Source(_))) {
@@ -6008,6 +6019,35 @@ pub(super) fn connect_all(g: &mut Cfg, froms: &[NodeIndex], to: NodeIndex, kind:
         debug!(target: "cfg", "edge {} → {} ({:?})", f.index(), to.index(), kind);
         g.add_edge(f, to, kind);
     }
+}
+
+/// Whether `ast` is (or holds) a `let` with a trait-object type annotation
+/// whose initialiser starts with the decode call itself, so the annotation is
+/// the decode target (`let v: Box<dyn P> = toml::from_str(s)?`, not a tuple or
+/// a wrapper call that merely contains it).
+fn rust_let_decodes_into_dyn(ast: Node, code: &[u8]) -> bool {
+    let decl = if ast.kind() == "let_declaration" {
+        ast
+    } else {
+        let mut cursor = ast.walk();
+        match ast.children(&mut cursor).find(|c| c.kind() == "let_declaration") {
+            Some(d) => d,
+            None => return false,
+        }
+    };
+    let (Some(ty), Some(value)) = (
+        decl.child_by_field_name("type"),
+        decl.child_by_field_name("value"),
+    ) else {
+        return false;
+    };
+    let (Some(ty_text), Some(value_text)) = (text_of(ty, code), text_of(value, code)) else {
+        return false;
+    };
+    crate::labels::rust_target_is_dyn(&ty_text)
+        && crate::labels::is_polymorphic_decode_head(
+            value_text.split('(').next().unwrap_or("").trim(),
+        )
 }
 
 /// Pre-emit dedicated Source CFG nodes for call arguments that contain source

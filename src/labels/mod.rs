@@ -2533,12 +2533,7 @@ fn strip_turbofish(text: &str) -> std::borrow::Cow<'_, str> {
 /// `stripped` is `text` with its turbofish removed.
 fn is_polymorphic_decode(text: &str, stripped: &str) -> bool {
     let head = stripped.split('(').next().unwrap_or("").trim();
-    if !matches!(
-        head,
-        "toml::from_str" | "toml::from_slice" | "ron::from_str" | "ron::from_bytes"
-    ) && !head.ends_with("::toml::from_str")
-        && !head.ends_with("::ron::from_str")
-    {
+    if !is_polymorphic_decode_head(head) {
         return false;
     }
     let Some(at) = text.find("::<") else {
@@ -2546,13 +2541,29 @@ fn is_polymorphic_decode(text: &str, stripped: &str) -> bool {
     };
     let generic = &text[at..];
     let generic = generic.split('(').next().unwrap_or(generic);
-    generic
+    rust_target_is_dyn(generic)
+}
+
+/// Whether `head` (a callee path with no turbofish or arguments) is a
+/// `toml` / `ron` decode whose target type picks the concrete type.
+pub(crate) fn is_polymorphic_decode_head(head: &str) -> bool {
+    matches!(
+        head,
+        "toml::from_str" | "toml::from_slice" | "ron::from_str" | "ron::from_bytes"
+    ) || head.ends_with("::toml::from_str")
+        || head.ends_with("::ron::from_str")
+}
+
+/// Whether a Rust type text names a trait object (`Box<dyn Plugin>`), as a
+/// whole `dyn` word.
+pub(crate) fn rust_target_is_dyn(type_text: &str) -> bool {
+    type_text
         .split(|c: char| !(c.is_alphanumeric() || c == '_'))
         .any(|w| w == "dyn")
 }
 
 /// The label of a polymorphic decode ([`is_polymorphic_decode`]).
-const POLYMORPHIC_DECODE: DataLabel = DataLabel::Sink(Cap::DESERIALIZE);
+pub(crate) const POLYMORPHIC_DECODE: DataLabel = DataLabel::Sink(Cap::DESERIALIZE);
 
 /// Whether the path segment ending `before` is reached through a `.`, i.e. is
 /// a method call rather than a `::` path segment.

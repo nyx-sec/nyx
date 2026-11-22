@@ -8543,3 +8543,39 @@ fn rust_unwrap_rebind_never_counts_as_all_literal() {
         .expect("unwrap call node");
     assert!(!unwrapped.1, "peeled call must stay not-all-literal");
 }
+
+/// Whether any node of the snippet carries a DESERIALIZE sink label.
+fn rust_has_deserialize_sink(src: &[u8]) -> bool {
+    let file_cfg = parse_to_file_cfg(src, "rust", Language::from(tree_sitter_rust::LANGUAGE));
+    file_cfg.bodies.iter().any(|b| {
+        b.graph.node_indices().any(|n| {
+            b.graph[n]
+                .taint
+                .labels
+                .iter()
+                .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::DESERIALIZE)))
+        })
+    })
+}
+
+#[test]
+fn rust_dyn_let_annotation_makes_toml_decode_a_sink() {
+    assert!(rust_has_deserialize_sink(
+        b"fn f(s: &str) { let v: Box<dyn P> = toml::from_str(s).unwrap(); }"
+    ));
+    assert!(rust_has_deserialize_sink(
+        b"fn f(s: &str) -> R { let v: Box<dyn P> = ron::from_str(s).map_err(e)?; Ok(()) }"
+    ));
+    assert!(!rust_has_deserialize_sink(
+        b"fn f(s: &str) { let v: Config = toml::from_str(s).unwrap(); }"
+    ));
+    assert!(!rust_has_deserialize_sink(
+        b"fn f(s: &str) { let v: Box<Config> = toml::from_str(s).unwrap(); }"
+    ));
+    assert!(
+        !rust_has_deserialize_sink(
+            b"fn f(s: &str) { let (a, b): (Box<dyn P>, X) = (build(), toml::from_str(s)?); }"
+        ),
+        "a dyn annotation that is not the decode target must not label it"
+    );
+}
