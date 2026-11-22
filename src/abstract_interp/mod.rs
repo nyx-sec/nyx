@@ -390,7 +390,7 @@ const MAX_ABSTRACT_VALUES: usize = 64;
 /// single definition, so the table is the same at every program point.  It is
 /// shared (`Arc`) by every [`AbstractState`] of the body instead of being
 /// copied into each one, which keeps the per-block states small to clone,
-/// join and compare, and keeps the [`MAX_ABSTRACT_VALUES`] budget for facts
+/// join and compare, and keeps the `MAX_ABSTRACT_VALUES` budget for facts
 /// that flow derives.
 #[derive(Debug, Default)]
 pub struct ConstFacts {
