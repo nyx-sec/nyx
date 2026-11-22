@@ -1053,6 +1053,15 @@ pub struct AstMeta {
     pub enclosing_func: Option<String>,
 }
 
+/// The call a condition header evaluates; see [`NodeInfo::cond_call`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CondCall {
+    /// Callee text, spelled like `CallMeta::callee`.
+    pub callee: String,
+    /// Identifiers of each positional argument, like `CallMeta::arg_uses`.
+    pub arg_uses: Vec<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NodeInfo {
     pub kind: StmtKind,
@@ -1072,6 +1081,12 @@ pub struct NodeInfo {
     /// an acquire produced nothing.
     #[serde(default)]
     pub null_check: Option<NullCheck>,
+    /// For If headers whose condition is a call (`if (fclose(f))`): that call
+    /// as structured data.  The header node
+    /// is not a `StmtKind::Call`, so the resource passes read this to apply
+    /// the call's release effect, which runs before either branch.
+    #[serde(default)]
+    pub cond_call: Option<Box<CondCall>>,
     /// For Return nodes: variables (and member paths) the returned expression
     /// hands to the caller, in escape positions only (see
     /// `helpers::collect_return_escapes`).  `return f`, `return f, nil`,
@@ -1101,6 +1116,13 @@ pub struct NodeInfo {
     /// resource that must be released before the function returns.
     #[serde(default)]
     pub escaping_store: bool,
+    /// True when this C / C++ assignment's value is not a copy of a whole
+    /// handle: the address of a sub-object (`c = &ac->c`), an aggregate
+    /// initializer (`cc = {.names = names}`), or arithmetic (`q = p + 1`).
+    /// The resource passes leave a tracked handle read by such a value where
+    /// it is instead of moving it to the new name.
+    #[serde(default)]
+    pub rhs_not_whole_handle: bool,
     /// For If / conditional (ternary) nodes: the condition as a pure
     /// integer-arithmetic + comparison expression tree, when the whole
     /// condition is built only from integer literals, identifiers, arithmetic
@@ -2884,10 +2906,14 @@ pub(crate) fn is_numeric_length_property(name: &str) -> bool {
 /// expressions, computed-key subscripts, optional-chaining, etc.) so
 /// the legacy copy-prop / Unknown propagation continues to apply.
 fn detect_member_field_assignment(ast: Node, code: &[u8]) -> Option<String> {
-    // Pull the RHS the same way `detect_numeric_length_access` does so
-    // both detectors look at the same node grain.
-    let target = ast
-        .child_by_field_name("value")
+    extract_member_field_name(assignment_rhs_or_self(ast), code)
+}
+
+/// The value expression of a declaration / assignment statement, or `ast`
+/// itself when it has none.  Pulled the same way by every detector that reads
+/// the RHS so they look at the same node grain.
+fn assignment_rhs_or_self(ast: Node) -> Node {
+    ast.child_by_field_name("value")
         .or_else(|| ast.child_by_field_name("right"))
         .or_else(|| {
             let mut cursor = ast.walk();
@@ -2910,8 +2936,30 @@ fn detect_member_field_assignment(ast: Node, code: &[u8]) -> Option<String> {
                 .find(|c| matches!(c.kind(), "assignment"))
                 .and_then(|a| a.child_by_field_name("right"))
         })
-        .unwrap_or(ast);
-    extract_member_field_name(target, code)
+        .unwrap_or(ast)
+}
+
+/// See [`NodeInfo::rhs_not_whole_handle`].
+fn rhs_is_not_whole_handle(ast: Node) -> bool {
+    let rhs = assignment_rhs_or_self(ast);
+    if rhs.id() == ast.id() {
+        return false;
+    }
+    let mut v = unwrap_parens(rhs);
+    // `(char *)p` still copies the handle; look through casts.
+    while v.kind() == "cast_expression" {
+        let Some(inner) = v.child_by_field_name("value") else {
+            break;
+        };
+        v = unwrap_parens(inner);
+    }
+    match v.kind() {
+        "initializer_list" | "compound_literal_expression" | "binary_expression" => true,
+        "pointer_expression" | "unary_expression" => v
+            .child_by_field_name("operator")
+            .is_some_and(|op| op.kind() == "&"),
+        _ => false,
+    }
 }
 
 fn extract_member_field_name(node: Node, code: &[u8]) -> Option<String> {
@@ -3895,6 +3943,8 @@ pub(super) fn push_node<'a>(
         }
     }
 
+    // Set when `text` below is the callee of a call in a condition header.
+    let mut cond_call_text = false;
     // Conditions can contain source/sink calls whose argument side effects are
     // load-bearing for taint, e.g. C `if (!fgets(buf, n, stdin)) return;`.
     // Classify the condition call so output-parameter sources still lower as
@@ -3910,6 +3960,7 @@ pub(super) fn push_node<'a>(
             labels.push(l);
         }
         text = ident;
+        cond_call_text = true;
         if inner_text_span.is_none() {
             inner_text_span = Some(ident_span);
         }
@@ -4965,6 +5016,19 @@ pub(super) fn push_node<'a>(
     };
     let arg_bare_names = call_ast.map(extract_arg_bare_name_mask).unwrap_or(0);
 
+    let cond_call = if cond_call_text && kind == StmtKind::If {
+        call_ast
+            .filter(|cn| scope.is_none_or(|root| runs_unconditionally(root, *cn)))
+            .map(|cn| {
+                Box::new(CondCall {
+                    callee: text.clone(),
+                    arg_uses: extract_arg_uses(cn, code),
+                })
+            })
+    } else {
+        None
+    };
+
     // Extract keyword / named arguments for Call and gated-sink nodes.
     // Languages whose grammar doesn't produce `keyword_argument` / `named_argument`
     // children return an empty Vec, so this costs nothing for C/Java/Go/etc.
@@ -5296,10 +5360,12 @@ pub(super) fn push_node<'a>(
         condition_vars,
         condition_negated,
         null_check,
+        cond_call,
         returned_idents: return_escapes.idents,
         returned_call_callees: return_escapes.call_callees,
         implicit_return: false,
         escaping_store: assignment_target_is_indirect(ast, lang),
+        rhs_not_whole_handle: matches!(lang, "c" | "cpp") && rhs_is_not_whole_handle(ast),
         cond_arith,
         all_args_literal,
         catch_param: false,
@@ -8664,8 +8730,40 @@ fn assignment_target_is_indirect(ast: Node, lang: &str) -> bool {
         | "index_expression"
         | "array_access"
         | "element_reference" => true,
+        // `f(..)->field = v`, `get().field = v`: the object is a call result,
+        // so the field lives in storage the call hands out, not in a local.
+        "field_expression"
+        | "member_expression"
+        | "field_access"
+        | "selector_expression"
+        | "member_access_expression"
+        | "attribute" => member_base_is_call(lhs, lang),
         _ => false,
     }
+}
+
+/// True when the object a member expression reads from, looking through
+/// nested member accesses and parentheses, is a call.
+fn member_base_is_call(member: Node, lang: &str) -> bool {
+    let mut cur = member;
+    for _ in 0..8 {
+        let Some(base) = cur
+            .child_by_field_name("argument")
+            .or_else(|| cur.child_by_field_name("object"))
+            .or_else(|| cur.child_by_field_name("operand"))
+        else {
+            return false;
+        };
+        let base = unwrap_parens(base);
+        if matches!(
+            lookup(lang, base.kind()),
+            Kind::CallFn | Kind::CallMethod | Kind::CallMacro
+        ) {
+            return true;
+        }
+        cur = base;
+    }
+    false
 }
 
 /// Names a C / C++ / Go / Java function declares itself: parameters
@@ -8814,6 +8912,10 @@ impl PendingStores {
 /// never declares (a global, package variable or unqualified field).  See
 /// [`NodeInfo::escaping_store`].
 fn mark_nonlocal_defines(g: &mut Cfg, func: Node, lang: &str, code: &[u8], params: &[String]) {
+    if matches!(lang, "javascript" | "typescript" | "tsx") {
+        mark_param_rooted_member_stores(g, params);
+        return;
+    }
     if !matches!(lang, "c" | "cpp" | "go" | "java") {
         return;
     }
@@ -8855,19 +8957,36 @@ fn mark_nonlocal_defines(g: &mut Cfg, func: Node, lang: &str, code: &[u8], param
     }
 }
 
-/// Mark the CFG node built from the tail statement of a Ruby method body as
-/// the method's implicit return value.  Only a plain value expression
+/// JS / TS: flag `param.field = v` / `param.a.b = v` stores.  The object
+/// belongs to the caller, so a handle stored on it is handed off (Koa
+/// `ctx.body = fs.createReadStream(p)`).  `this.field` is not flagged: a
+/// class-field acquire is the leak the state checks exist to report.
+fn mark_param_rooted_member_stores(g: &mut Cfg, params: &[String]) {
+    if params.is_empty() {
+        return;
+    }
+    for idx in g.node_indices().collect::<Vec<_>>() {
+        let info = &mut g[idx];
+        let Some(def) = info.taint.defines.as_deref() else {
+            continue;
+        };
+        let Some((root, _)) = def.split_once('.') else {
+            continue;
+        };
+        if root != "this" && params.iter().any(|p| p == root) {
+            info.escaping_store = true;
+        }
+    }
+}
+
+/// Mark the CFG node built from the tail statement of a Ruby method body, or
+/// from the expression body of an arrow function / lambda / closure, as the
+/// function's implicit return value.  Only a plain value expression
 /// qualifies (a variable, a call, a literal container); control flow
 /// (`if` / `case` / `begin`), assignments and explicit `return` keep their
 /// own semantics.  The node is matched by span so only the node that
 /// evaluates the whole statement is marked.
-fn mark_ruby_implicit_return(
-    g: &mut Cfg,
-    stmt: Node,
-    exits: &[NodeIndex],
-    lang: &str,
-    code: &[u8],
-) {
+fn mark_implicit_return(g: &mut Cfg, stmt: Node, exits: &[NodeIndex], lang: &str, code: &[u8]) {
     if !matches!(
         lookup(lang, stmt.kind()),
         Kind::CallFn | Kind::CallMethod | Kind::CallWrapper | Kind::Other
@@ -9863,7 +9982,7 @@ pub(super) fn build_sub<'a>(
                 }
 
                 if ruby_tail_stmt == Some(child.id()) {
-                    mark_ruby_implicit_return(g, child, &child_exits, lang, code);
+                    mark_implicit_return(g, child, &child_exits, lang, code);
                 }
 
                 let is_preproc = child.kind().starts_with("preproc_");
@@ -10025,6 +10144,16 @@ pub(super) fn build_sub<'a>(
                 fn_body_id,
             );
             drop(receiver_aliases);
+
+            // An expression body (`() => fs.createReadStream(p)`,
+            // `lambda: open(p)`) is the function's return value.
+            if matches!(
+                lang,
+                "javascript" | "typescript" | "tsx" | "python" | "rust"
+            ) && lookup(lang, body_ast.kind()) != Kind::Block
+            {
+                mark_implicit_return(&mut fn_graph, body_ast, &body_exits, lang, code);
+            }
 
             // ── 3) Wire exits to Exit node ────────────────────────────────────
             for &b in &body_exits {
@@ -11559,6 +11688,30 @@ fn call_arg_nesting(root: Node, span: (usize, usize)) -> CalleeNesting {
         cur = parent;
     }
     CalleeNesting::Own
+}
+
+/// True when `call`, a descendant of the condition expression `root`, is
+/// evaluated on every run of the condition: it is not the right operand of a
+/// short-circuit operator and not a branch of a conditional expression.
+fn runs_unconditionally(root: Node, call: Node) -> bool {
+    let mut cur = call;
+    while cur.id() != root.id() {
+        let Some(parent) = cur.parent() else {
+            return true;
+        };
+        let mut cursor = parent.walk();
+        let short_circuit = parent
+            .children(&mut cursor)
+            .any(|c| !c.is_named() && matches!(c.kind(), "&&" | "||" | "and" | "or" | "??" | "?"));
+        let left_first = parent
+            .named_child(0)
+            .is_some_and(|first| first.id() == cur.id());
+        if short_circuit && !left_first {
+            return false;
+        }
+        cur = parent;
+    }
+    true
 }
 
 /// Grammar kinds of object / array / map / struct literals.

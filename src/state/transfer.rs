@@ -243,6 +243,10 @@ pub(crate) fn container_insert_arg_positions(
         (Lang::Go, "append") if !is_method => 1,
         (Lang::Php, "array_push" | "array_unshift") if !is_method => 1,
         (Lang::Cpp, "reset") if is_method => 0,
+        // Node `stream.pipeline(a, b, .., cb)` destroys every stream on error
+        // or completion, so each stream argument is handed over.  `.pipe()`
+        // is not: it leaves the destination open when the source errors.
+        (Lang::JavaScript | Lang::TypeScript, "pipeline") => 0,
         (_, l) if is_method && CONTAINER_INSERT_LEAVES.contains(&l) => 0,
         _ => return out,
     };
@@ -559,6 +563,7 @@ impl Transfer<ProductState> for DefaultTransfer<'_> {
                 self.apply_call(node_idx, info, &mut state, &mut events);
             }
             StmtKind::If => {
+                self.apply_cond_release(node_idx, info, &mut state, &mut events);
                 self.apply_if(info, edge, &mut state);
             }
             StmtKind::Seq => {
@@ -741,6 +746,81 @@ impl DefaultTransfer<'_> {
         }
     }
 
+    /// Release effect of a call to `callee` whose operands are `uses`: moves
+    /// each OPEN operand to CLOSED and reports a second close.  Returns true
+    /// when `callee` is a release of some resource pair.
+    fn apply_release(
+        &self,
+        node_idx: NodeIndex,
+        info: &NodeInfo,
+        callee: &str,
+        uses: &[String],
+        released: &mut smallvec::SmallVec<[SymbolId; 4]>,
+        state: &mut ProductState,
+        events: &mut Vec<TransferEvent>,
+    ) -> bool {
+        // `released` tracks the variables already released, to avoid double-
+        // matching across multiple resource pair definitions.
+        let mut direct_release = false;
+        for pair in self.resource_pairs {
+            let is_release = pair.release.iter().any(|r| callee_matches(callee, r));
+            if is_release {
+                direct_release = true;
+                // Go `defer f.Close()`: skip the CLOSED transition so the
+                // variable stays OPEN mid-function.  Leak suppression is
+                // handled separately in extract_findings().
+                if info.in_defer {
+                    continue;
+                }
+                for used in uses {
+                    if let Some(sym) = self.get_sym(info, used) {
+                        if released.contains(&sym) {
+                            continue;
+                        }
+                        let current = state.resource.get(sym);
+                        if current == ResourceLifecycle::CLOSED {
+                            // Double close
+                            events.push(TransferEvent {
+                                kind: TransferEventKind::DoubleClose,
+                                node: node_idx,
+                                var: sym,
+                            });
+                        } else if current.contains(ResourceLifecycle::OPEN) {
+                            state.resource.set(sym, ResourceLifecycle::CLOSED);
+                        }
+                        released.push(sym);
+                    }
+                }
+            }
+        }
+        direct_release
+    }
+
+    /// A release call in an `if` condition (`if (fclose(f)) die(..)`) runs
+    /// before either branch, so its effect applies on both outgoing edges
+    /// even though the header is not a `StmtKind::Call`.  Only releases are
+    /// applied: a condition call never acquires or hands off here.
+    fn apply_cond_release(
+        &self,
+        node_idx: NodeIndex,
+        info: &NodeInfo,
+        state: &mut ProductState,
+        events: &mut Vec<TransferEvent>,
+    ) {
+        let Some(cc) = info.cond_call.as_deref() else {
+            return;
+        };
+        let callee = cc.callee.to_ascii_lowercase();
+        let mut uses: Vec<String> = cc.arg_uses.iter().flatten().cloned().collect();
+        if let Some((receiver, _)) = cc.callee.rsplit_once('.')
+            && !receiver.contains('(')
+        {
+            uses.push(receiver.to_string());
+        }
+        let mut released = smallvec::SmallVec::new();
+        self.apply_release(node_idx, info, &callee, &uses, &mut released, state, events);
+    }
+
     fn apply_call(
         &self,
         node_idx: NodeIndex,
@@ -835,6 +915,7 @@ impl DefaultTransfer<'_> {
                 && let Some(sym) = self.get_sym(info, def)
             {
                 state.resource.set(sym, ResourceLifecycle::OPEN);
+                state.acquire_spans.insert(sym, info.ast.span);
                 direct_acquire = true;
                 // Go `f, err := os.Open(p)`: pair the handle with the error
                 // result so `if err != nil { return err }` can prune the
@@ -852,38 +933,29 @@ impl DefaultTransfer<'_> {
         }
 
         // ── Resource release ─────────────────────────────────────────────
-        // Track which variables have already been released to avoid double-
-        // matching across multiple resource pair definitions.
-        let mut direct_release = false;
         let mut released: smallvec::SmallVec<[SymbolId; 4]> = smallvec::SmallVec::new();
-        for pair in self.resource_pairs {
-            let is_release = pair.release.iter().any(|r| callee_matches(&callee, r));
-            if is_release {
-                direct_release = true;
-                // Go `defer f.Close()`: skip the CLOSED transition so the
-                // variable stays OPEN mid-function.  Leak suppression is
-                // handled separately in extract_findings().
-                if info.in_defer {
+        let direct_release = self.apply_release(
+            node_idx,
+            info,
+            &callee,
+            &info.taint.uses,
+            &mut released,
+            state,
+            events,
+        );
+        // ── Value stored through a call result ───────────────────────────
+        // `get(l, k)->util = item;` / `*slot_at(c) = name;`: the target is
+        // storage the call hands out, so the stored handle now belongs there.
+        // The call's own arguments are not stored; only the other operands.
+        if info.escaping_store && !direct_acquire && !direct_release {
+            for used in &info.taint.uses {
+                if info.call.arg_uses.iter().flatten().any(|a| a == used) {
                     continue;
                 }
-                for used in &info.taint.uses {
-                    if let Some(sym) = self.get_sym(info, used) {
-                        if released.contains(&sym) {
-                            continue;
-                        }
-                        let current = state.resource.get(sym);
-                        if current == ResourceLifecycle::CLOSED {
-                            // Double close
-                            events.push(TransferEvent {
-                                kind: TransferEventKind::DoubleClose,
-                                node: node_idx,
-                                var: sym,
-                            });
-                        } else if current.contains(ResourceLifecycle::OPEN) {
-                            state.resource.set(sym, ResourceLifecycle::CLOSED);
-                        }
-                        released.push(sym);
-                    }
+                if let Some(sym) = self.get_sym(info, used)
+                    && state.resource.get(sym).contains(ResourceLifecycle::OPEN)
+                {
+                    state.resource.set(sym, ResourceLifecycle::MOVED);
                 }
             }
         }
@@ -1290,6 +1362,12 @@ impl DefaultTransfer<'_> {
                 }
                 return;
             }
+            // The address of a sub-object (`c = &ac->c`), an aggregate
+            // initializer or arithmetic on a handle is not the handle: it
+            // stays with its own name.
+            if info.rhs_not_whole_handle {
+                return;
+            }
             // Reading a field of a handle (`desc = cursor.description`,
             // `n = node->next`) yields a different value; the handle itself
             // stays put.  Only a plain alias (`g = f`) moves it.
@@ -1303,6 +1381,9 @@ impl DefaultTransfer<'_> {
                     if lc.contains(ResourceLifecycle::OPEN) {
                         state.resource.set(def_sym, lc);
                         state.resource.set(use_sym, ResourceLifecycle::MOVED);
+                        if let Some(span) = state.acquire_spans.get(&use_sym).copied() {
+                            state.acquire_spans.insert(def_sym, span);
+                        }
                         return;
                     }
                 }

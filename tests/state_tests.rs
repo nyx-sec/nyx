@@ -203,6 +203,85 @@ fn c_list_walk_cursor_does_not_leak() {
     assert_no_state_findings("c_list_walk_no_leak.c");
 }
 
+// ── release in an if condition, alias shapes, stores through a call ─────────
+
+fn diags_with_prefix(filename: &str, prefix: &str) -> Vec<&'static Diag> {
+    scan_all_fixtures()
+        .iter()
+        .filter(|d| d.path.contains(filename) && d.id.starts_with(prefix))
+        .collect()
+}
+
+#[test]
+fn c_release_in_if_condition_is_a_release() {
+    // `if (fclose(f))` runs before either branch, so the handle is released
+    // whichever way the branch goes, and the cleanup label that closes it
+    // again only runs after `f = NULL`.
+    let file = "c_release_in_condition_clean.c";
+    assert_no_state_findings(file);
+    assert!(diags_with_prefix(file, "cfg-resource-leak").is_empty());
+}
+
+#[test]
+fn c_release_behind_short_circuit_still_leaks() {
+    let file = "c_release_in_condition_leak.c";
+    let lines: Vec<usize> = state_diags_for(file).iter().map(|d| d.line).collect();
+    assert!(
+        lines.contains(&6),
+        "`ok && fclose(f)` does not always release; got lines {lines:?}"
+    );
+    assert!(
+        lines.contains(&14),
+        "a handle never closed still leaks; got lines {lines:?}"
+    );
+}
+
+#[test]
+fn c_subobject_and_aggregate_reads_do_not_move_the_handle() {
+    let file = "c_alias_subobject_clean.c";
+    assert_no_state_findings(file);
+}
+
+#[test]
+fn c_alias_leak_is_reported_at_the_allocation() {
+    // `q = p` really moves the handle; the leak belongs on the malloc line,
+    // not on the function exit.
+    let lines: Vec<usize> = state_diags_for("c_alias_leak_location.c")
+        .iter()
+        .filter(|d| d.id == "state-resource-leak")
+        .map(|d| d.line)
+        .collect();
+    assert_eq!(lines, vec![4], "leak must be anchored at the malloc");
+}
+
+#[test]
+fn c_store_through_call_result_hands_the_handle_off() {
+    let file = "c_store_through_call_clean.c";
+    assert_no_state_findings(file);
+    assert_has("c_store_through_call_leak.c", "state-resource-leak");
+}
+
+#[test]
+fn js_stream_handoffs_are_not_leaks() {
+    // pipeline() takes its stream arguments, a store on a
+    // parameter object belongs to the caller, an expression-bodied arrow
+    // returns its stream, and a stream inside an object handed to a call is
+    // owned by that call.
+    let file = "js_stream_handoff_clean.js";
+    assert_no_state_findings(file);
+    assert!(
+        diags_with_prefix(file, "cfg-resource-leak").is_empty(),
+        "cfg twin must agree"
+    );
+}
+
+#[test]
+fn js_stream_leaks_without_handoff_still_fire() {
+    let file = "js_stream_handoff_leak.js";
+    assert_message_contains(file, "state-resource-leak", "`out`");
+    assert_message_contains(file, "state-resource-leak", "`this.fd`");
+}
+
 // ── return inside try, release in finally / ensure ─────────────────────────
 //
 // `return` ends a path in the CFG, so a finally clause used to be skipped on

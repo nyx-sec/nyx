@@ -174,6 +174,15 @@ fn find_release_nodes(ctx: &AnalysisContext, release_patterns: &[&str]) -> Vec<N
             {
                 return true;
             }
+            // A release that is the condition of an `if` (`if (fclose(f))`)
+            // runs before either branch.
+            if info
+                .cond_call
+                .as_deref()
+                .is_some_and(|c| matches_release(&c.callee))
+            {
+                return true;
+            }
             // Inner-call-release-in-arg: any kind, the close lives in an
             // argument to the outer wrapper.
             info.arg_callees
