@@ -103,6 +103,34 @@ fn triage_file_path_for_root(root: &Path) -> PathBuf {
     root.join(".nyx").join("triage.json")
 }
 
+/// Directory whose `.nyx/triage.json` applies to a scan of `scan_path`.
+///
+/// A directory scan uses the directory itself.  A single-file scan uses the
+/// nearest ancestor that already holds `.nyx/triage.json`, so decisions
+/// exported from a project scan keep matching (portable fingerprints are
+/// relative to that root).  The search stops at the enclosing repository
+/// root (a directory containing `.git`) and falls back to the file's parent
+/// directory when no triage file is found.
+pub fn triage_root_for_scan_path(scan_path: &Path) -> PathBuf {
+    if !scan_path.is_file() {
+        return scan_path.to_path_buf();
+    }
+    let Some(parent) = scan_path.parent() else {
+        return scan_path.to_path_buf();
+    };
+    let mut dir = Some(parent);
+    while let Some(d) = dir {
+        if triage_file_path_for_root(d).is_file() {
+            return d.to_path_buf();
+        }
+        if d.join(".git").exists() {
+            break;
+        }
+        dir = d.parent();
+    }
+    parent.to_path_buf()
+}
+
 fn validate_existing_path_within_root(path: &Path, root: &Path) -> Result<(), String> {
     let canonical = path
         .canonicalize()
@@ -450,6 +478,47 @@ mod tests {
                 .join(".nyx")
                 .join("triage.json")
         );
+    }
+
+    #[test]
+    fn triage_root_for_directory_scan_is_the_directory() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(triage_root_for_scan_path(root.path()), root.path());
+    }
+
+    #[test]
+    fn triage_root_for_file_scan_falls_back_to_parent() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("app.js");
+        std::fs::write(&file, b"var x = 1;\n").unwrap();
+        assert_eq!(triage_root_for_scan_path(&file), root.path());
+        // The fallback root must be accepted by the triage loader.
+        assert!(load_triage_file_checked(&triage_root_for_scan_path(&file)).is_ok());
+    }
+
+    #[test]
+    fn triage_root_for_file_scan_finds_project_triage_file() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".nyx")).unwrap();
+        std::fs::write(root.path().join(".nyx/triage.json"), b"{}").unwrap();
+        let src = root.path().join("src/deep");
+        std::fs::create_dir_all(&src).unwrap();
+        let file = src.join("app.js");
+        std::fs::write(&file, b"var x = 1;\n").unwrap();
+        assert_eq!(triage_root_for_scan_path(&file), root.path());
+    }
+
+    #[test]
+    fn triage_root_search_stops_at_repository_root() {
+        let outer = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outer.path().join(".nyx")).unwrap();
+        std::fs::write(outer.path().join(".nyx/triage.json"), b"{}").unwrap();
+        let repo = outer.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        let file = repo.join("src/app.js");
+        std::fs::write(&file, b"var x = 1;\n").unwrap();
+        assert_eq!(triage_root_for_scan_path(&file), repo.join("src"));
     }
 
     #[test]

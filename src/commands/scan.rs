@@ -801,10 +801,12 @@ pub fn handle(
         retain_converged_findings(&mut diags);
     }
 
-    // Inline suppressions were applied in `post_process_diags`.
+    // Inline suppressions were applied in `post_process_diags`.  A
+    // single-file scan reads the triage file of the enclosing project.
+    let triage_root = crate::server::triage_sync::triage_root_for_scan_path(&scan_path);
     if !show_suppressed {
         let triage_summary =
-            crate::server::triage_sync::apply_triage_file_to_diags(&mut diags, &scan_path)
+            crate::server::triage_sync::apply_triage_file_to_diags(&mut diags, &triage_root)
                 .map_err(|e| crate::errors::NyxError::Msg(format!("triage sync failed: {e}")))?;
         if !suppress_status
             && triage_summary.decisions_applied + triage_summary.suppression_rules_applied > 0
@@ -822,7 +824,7 @@ pub fn handle(
         }
         diags.retain(|d| !is_inactive_for_cli(d));
     } else {
-        crate::server::triage_sync::apply_triage_file_to_diags(&mut diags, &scan_path)
+        crate::server::triage_sync::apply_triage_file_to_diags(&mut diags, &triage_root)
             .map_err(|e| crate::errors::NyxError::Msg(format!("triage sync failed: {e}")))?;
     }
 
