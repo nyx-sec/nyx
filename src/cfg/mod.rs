@@ -74,20 +74,20 @@ use imports::{
 #[cfg(test)]
 use literals::has_sql_placeholders;
 use literals::{
-    ParamQueryShape, arg0_kind_and_interpolation, call_has_arg_at, call_ident_of, def_use,
-    destination_field_reading_source, detect_go_replace_call_sanitizer,
-    detect_rust_replace_chain_sanitizer, extract_arg_bare_name_mask, extract_arg_callees,
-    extract_arg_string_literals, extract_arg_string_prefixes, extract_arg_uses,
-    extract_const_keyword_arg, extract_const_macro_arg, extract_const_string_arg,
-    extract_destination_field_pairs, extract_destination_kwarg_pairs, extract_kwargs,
-    extract_literal_rhs, extract_object_arg_property, extract_shell_array_payload_idents,
-    find_call_node, find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
+    ParamQueryShape, call_has_arg_at, call_ident_of, def_use, destination_field_reading_source,
+    detect_go_replace_call_sanitizer, detect_rust_replace_chain_sanitizer,
+    extract_arg_bare_name_mask, extract_arg_callees, extract_arg_string_literals,
+    extract_arg_string_prefixes, extract_arg_uses, extract_const_keyword_arg,
+    extract_const_macro_arg, extract_const_string_arg, extract_destination_field_pairs,
+    extract_destination_kwarg_pairs, extract_kwargs, extract_literal_rhs,
+    extract_object_arg_property, extract_shell_array_payload_idents, find_call_node,
+    find_call_node_deep, find_chained_gated_sink_call, find_chained_inner_call,
     find_orm_query_chain_call, has_keyword_arg, has_object_arg_property, has_only_literal_args,
     is_object_create_null_call, is_rust_format_style_macro, java_chain_arg0_kind_for_method,
     js_arg_is_prototype_object, js_arg_is_string_valued, js_arg_is_structured_condition,
     js_chain_arg0_kind_for_method, js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref,
     js_positional_arity, js_shell_option_argv_positions, js_sql_template_raw_splices,
-    parameterized_query_shape, python_positional_arity, ruby_chain_arg0_for_method,
+    parameterized_query_shape, python_positional_arity, ruby_statement_ar_queries_safe,
     walk_chain_inner_call_args,
 };
 use params::{
@@ -4594,22 +4594,8 @@ pub(super) fn push_node<'a>(
             .iter()
             .any(|l| matches!(l, DataLabel::Sanitizer(c) if c.contains(Cap::SQL_QUERY)))
     {
-        // Identify the matched AR query method from the callee `text`
-        // (e.g. "Issue.where" → "where", "joins(:project).where" → "where").
-        let leaf = text.rsplit(['.', ':']).next().unwrap_or(&text);
-        const AR_QUERY_METHODS: &[&str] = &["where", "order", "group", "having", "joins", "pluck"];
-        if AR_QUERY_METHODS.contains(&leaf) {
-            // Try the outer call's arg 0 first (handles direct calls);
-            // fall back to walking the receiver chain for collapsed
-            // chained-call CFG nodes.
-            let shape = call_ast
-                .and_then(arg0_kind_and_interpolation)
-                .or_else(|| scope.and_then(|s| ruby_chain_arg0_for_method(s, &[leaf], code)));
-            if let Some((arg0_kind, has_interp)) = shape
-                && crate::labels::ruby::ar_query_safe_shape(&text, &arg0_kind, has_interp)
-            {
-                labels.push(DataLabel::Sanitizer(Cap::SQL_QUERY));
-            }
+        if scope.is_some_and(|s| ruby_statement_ar_queries_safe(s, code, extra)) {
+            labels.push(DataLabel::Sanitizer(Cap::SQL_QUERY));
         }
     }
 

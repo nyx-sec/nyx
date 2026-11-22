@@ -1,0 +1,70 @@
+{
+  "description": "An interpolated where/order argument anywhere in the statement (receiver chain, nested merge argument, later call, modifier-if body) keeps the sink firing even when another call in the chain has a safe shape.",
+  "tags": [
+    "active-record",
+    "rails",
+    "sqli",
+    "chain",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        5,
+        5
+      ],
+      "evidence_contains": [],
+      "notes": "An interpolated where/order argument anywhere in the statement (receiver chain, nested merge argument, later call, modifier-if body) keeps the sink firing even when another call in the chain has a safe shape."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        10,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "An interpolated where/order argument anywhere in the statement (receiver chain, nested merge argument, later call, modifier-if body) keeps the sink firing even when another call in the chain has a safe shape."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        16,
+        16
+      ],
+      "evidence_contains": [],
+      "notes": "An interpolated where/order argument anywhere in the statement (receiver chain, nested merge argument, later call, modifier-if body) keeps the sink firing even when another call in the chain has a safe shape."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        23,
+        23
+      ],
+      "evidence_contains": [],
+      "notes": "An interpolated where/order argument anywhere in the statement (receiver chain, nested merge argument, later call, modifier-if body) keeps the sink firing even when another call in the chain has a safe shape."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        28,
+        28
+      ],
+      "evidence_contains": [],
+      "notes": "An interpolated where/order argument anywhere in the statement (receiver chain, nested merge argument, later call, modifier-if body) keeps the sink firing even when another call in the chain has a safe shape."
+    }
+  ]
+}

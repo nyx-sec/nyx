@@ -14,7 +14,7 @@ use super::{
     find_constructor_type_child, first_call_ident, rmw_assignment, rmw_target_define,
     rmw_target_reads, root_receiver_text, text_of,
 };
-use crate::labels::{Cap, Kind, lookup};
+use crate::labels::{Cap, DataLabel, Kind, lookup};
 use smallvec::SmallVec;
 use tree_sitter::Node;
 
@@ -879,46 +879,98 @@ pub(super) fn java_chain_arg0_kind_for_method(
     None
 }
 
-/// Walk a Ruby method-chain receiver-side looking for the inner call whose
-/// method identifier matches one of `target_methods`, then return that
-/// inner call's [`arg0_kind_and_interpolation`].  Used when the CFG node
-/// represents a chained expression like `Model.where(...).preload(...).to_a`
-///, the outermost call (`to_a`) has no arguments, so the shape suppressor
-/// must reach down the chain to inspect `where`'s arg 0.
+/// Decide whether every ActiveRecord query call in a Ruby statement has a
+/// parameter-safe argument shape, so the statement may carry a synthesised
+/// `Sanitizer(SQL_QUERY)`.
 ///
-/// Conservative: returns `None` if the chain doesn't contain a matching
-/// method, so callers fall through to the no-suppression path.
-pub(super) fn ruby_chain_arg0_for_method(
-    expr: Node,
-    target_methods: &[&str],
+/// The CFG node for a Ruby statement stands for the whole expression:
+/// `Status.where.not(a: 1).joins(:b).merge(Account.where("n = '#{q}'"))`
+/// is one node, and the label machinery may have picked any call in it as the
+/// sink.  The synthesised sanitizer clears the whole node, so the proof must
+/// cover the whole statement rather than one call:
+///
+/// * at least one AR query method (`where`, `order`, `group`, `having`,
+///   `joins`, `pluck`) call must be present;
+/// * every such call must have a safe arg 0 (hash, symbol, array, or a string
+///   without interpolation) or no arguments at all (`where` followed by
+///   `.not(hash)`; the `not` call is checked like `where`);
+/// * no other SQL-labelled call (`find_by_sql`, `execute`, ...) may appear,
+///   since the sanitizer would mask it.
+///
+/// Nested function literals (`do` blocks, lambdas) are separate CFG bodies and
+/// are not walked.
+pub(super) fn ruby_statement_ar_queries_safe(
+    scope: Node,
     code: &[u8],
-) -> Option<(String, bool)> {
-    let n = unwrap_parens(expr);
-    if n.kind() == "call"
-        && let Some(method) = n.child_by_field_name("method")
-        && let Some(name) = text_of(method, code)
-        && target_methods.iter().any(|m| *m == name)
-    {
-        return arg0_kind_and_interpolation(n);
-    }
-    // Recurse into the receiver chain (`call.receiver` → next call up).
-    if n.kind() == "call"
-        && let Some(recv) = n
-            .child_by_field_name("receiver")
-            .or_else(|| n.child_by_field_name("object"))
-        && let Some(found) = ruby_chain_arg0_for_method(recv, target_methods, code)
-    {
-        return Some(found);
-    }
-    // Also descend into named children to handle wrapping (assignment RHS,
-    // begin-end blocks, parenthesised expressions, etc.).
-    let mut cursor = n.walk();
-    for c in n.named_children(&mut cursor) {
-        if let Some(found) = ruby_chain_arg0_for_method(c, target_methods, code) {
-            return Some(found);
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> bool {
+    const AR_QUERY_METHODS: &[&str] = &["where", "order", "group", "having", "joins", "pluck"];
+    let mut seen_ar = false;
+    let mut stack = vec![scope];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "call" {
+            let method = n
+                .child_by_field_name("method")
+                .and_then(|m| text_of(m, code));
+            let is_not_on_where = method.as_deref() == Some("not")
+                && n.child_by_field_name("receiver")
+                    .map(unwrap_parens)
+                    .and_then(|r| {
+                        (r.kind() == "call")
+                            .then(|| r.child_by_field_name("method"))
+                            .flatten()
+                    })
+                    .and_then(|m| text_of(m, code))
+                    .as_deref()
+                    == Some("where");
+            let ar_method = method
+                .as_deref()
+                .filter(|m| AR_QUERY_METHODS.contains(m))
+                .or(is_not_on_where.then_some("not"));
+            if let Some(m) = ar_method {
+                seen_ar = true;
+                if let Some((kind, has_interp)) = arg0_kind_and_interpolation(n) {
+                    let lookup_name = if m == "not" { "where" } else { m };
+                    if !crate::labels::ruby::ar_query_safe_shape(lookup_name, &kind, has_interp) {
+                        return false;
+                    }
+                }
+            } else if let Some(m) = method {
+                // Name the call by its own method and the nearest receiver
+                // segment only.  `call_ident_of` would fold the whole
+                // receiver chain in, so `where(a: 1).delete_all` would read
+                // as the AR call it wraps and trip this check.
+                let seg = n
+                    .child_by_field_name("receiver")
+                    .map(unwrap_parens)
+                    .and_then(|r| {
+                        if r.kind() == "call" {
+                            r.child_by_field_name("method")
+                                .and_then(|x| text_of(x, code))
+                        } else {
+                            text_of(r, code)
+                        }
+                    });
+                let id = match seg {
+                    Some(r) => format!("{r}.{m}"),
+                    None => m,
+                };
+                if crate::labels::classify_all("ruby", &id, extra)
+                    .iter()
+                    .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SQL_QUERY)))
+                {
+                    return false;
+                }
+            }
+        }
+        let mut cursor = n.walk();
+        for c in n.named_children(&mut cursor) {
+            if lookup("ruby", c.kind()) != Kind::Function {
+                stack.push(c);
+            }
         }
     }
-    None
+    seen_ar
 }
 
 fn subtree_has_interpolation(n: Node) -> bool {

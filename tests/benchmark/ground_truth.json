@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 973
+    "corpus_size": 975
   },
   "cases": [
     {
@@ -30961,6 +30961,109 @@
       ],
       "disabled": false,
       "notes": "File.basename keeps only the final component."
+    },
+    {
+      "case_id": "ru-safe-ar-chain-shapes-001",
+      "file": "ruby/safe/safe_ar_chain_shapes.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "active-record",
+        "rails",
+        "sqli",
+        "chain",
+        "cfg-unguarded",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Chained and modifier-if ActiveRecord statements where every where/joins/pluck call has a hash or symbol argument, including where.not(hash) and a nested Account.where(hash); the statement-wide safe-shape proof must clear them."
+    },
+    {
+      "case_id": "ru-sqli-ar-chain-shapes-001",
+      "file": "ruby/sqli/sqli_ar_chain_shapes.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ],
+        [
+          10,
+          10
+        ],
+        [
+          16,
+          16
+        ],
+        [
+          23,
+          23
+        ],
+        [
+          28,
+          28
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          3,
+          3
+        ],
+        [
+          9,
+          9
+        ],
+        [
+          15,
+          15
+        ],
+        [
+          22,
+          22
+        ],
+        [
+          27,
+          27
+        ]
+      ],
+      "tags": [
+        "active-record",
+        "rails",
+        "sqli",
+        "chain",
+        "cfg-unguarded"
+      ],
+      "disabled": false,
+      "notes": "An interpolated where/order argument anywhere in the statement (receiver chain, nested merge argument, later call, modifier-if body) keeps the sink firing even when another call in the chain has a safe shape."
     }
   ]
 }
