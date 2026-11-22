@@ -1,0 +1,15 @@
+{
+  "description": "Query parameters appended to a constant URL cannot change the redirect destination",
+  "tags": [
+    "taint",
+    "open_redirect",
+    "express",
+    "url",
+    "no-source",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": []
+}

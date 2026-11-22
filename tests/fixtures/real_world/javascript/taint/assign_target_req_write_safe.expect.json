@@ -1,0 +1,14 @@
+{
+  "description": "Writes to req.path, req.query and req.headers[k] are not reads of attacker input",
+  "tags": [
+    "taint",
+    "express",
+    "assignment-target",
+    "no-source",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": []
+}

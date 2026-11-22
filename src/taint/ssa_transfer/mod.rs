@@ -5522,7 +5522,7 @@ pub(super) fn transfer_inst(
             state.set(
                 inst.value,
                 VarTaint {
-                    caps: Cap::all(),
+                    caps: Cap::CAUGHT_EXCEPTION,
                     origins: SmallVec::from_elem(origin, 1),
                     uses_summary: false,
                 },
@@ -5603,6 +5603,9 @@ pub(super) fn transfer_inst(
                                 }
                             }
                         }
+                        // A query parameter cannot change the scheme, host or
+                        // path of the URL, so it cannot steer a redirect.
+                        arg_caps &= !Cap::OPEN_REDIRECT;
                         if !arg_caps.is_empty() {
                             // Walk the FieldProj receiver chain (and any
                             // Rust-style nested call receivers) so every

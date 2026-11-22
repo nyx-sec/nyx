@@ -1,0 +1,14 @@
+{
+  "description": "A caught exception is not a property key, redirect target or URL",
+  "tags": [
+    "taint",
+    "express",
+    "catch",
+    "no-source",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": []
+}

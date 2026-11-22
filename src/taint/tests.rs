@@ -4287,10 +4287,11 @@ fn catch_param_source_node_has_callee() {
     // The source CFG node for a catch-param finding must have a non-None callee
     // so the report renders a meaningful descriptor instead of "(unknown)".
     let src = b"
+        const { exec } = require('child_process');
         try {
             riskyOperation();
         } catch (e) {
-            fetch(e.message);
+            exec(e.message);
         }
     ";
 
@@ -4310,7 +4311,7 @@ fn catch_param_source_node_has_callee() {
 
     assert!(
         !findings.is_empty(),
-        "catch param to fetch should produce a finding"
+        "catch param to exec should produce a finding"
     );
     for f in &findings {
         let source_info = &the_cfg[f.source];

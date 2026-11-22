@@ -967,13 +967,42 @@ pub(crate) fn first_member_label(
         }
         _ => {}
     }
+    // The target of an assignment is written, not read.  A Source label on
+    // it (`req.path = '/x'`, `req.headers[k] = v`) must not become the
+    // node's label; a Sink label (`el.innerHTML = x`) is still meaningful.
+    let assign_target = if matches!(lookup(lang, n.kind()), Kind::Assignment) {
+        n.child_by_field_name("left").map(|l| l.id())
+    } else {
+        None
+    };
     let mut cursor = n.walk();
+    // A node carries one source label.  A source that omits some caps (the
+    // page's own origin parts, which are not redirect input) must not hide a
+    // full source later in the same expression, so keep scanning and union
+    // the caps of every source seen.
+    let mut partial: Option<crate::labels::Cap> = None;
     for child in n.children(&mut cursor) {
-        if let Some(lbl) = first_member_label(child, lang, code, extra_labels) {
-            return Some(lbl);
+        let lbl = first_member_label(child, lang, code, extra_labels);
+        if assign_target == Some(child.id()) && !matches!(lbl, Some(DataLabel::Sink(_))) {
+            continue;
+        }
+        match lbl {
+            Some(DataLabel::Source(c)) if c != crate::labels::Cap::all() => {
+                partial = Some(partial.map_or(c, |p| p | c));
+            }
+            Some(DataLabel::Source(c)) => {
+                return Some(DataLabel::Source(partial.map_or(c, |p| p | c)));
+            }
+            Some(other) => {
+                return match partial {
+                    Some(p) => Some(DataLabel::Source(p)),
+                    None => Some(other),
+                };
+            }
+            None => {}
         }
     }
-    None
+    partial.map(DataLabel::Source)
 }
 
 /// Locate the inner sink CALL node whose `Sink` label [`first_member_label`]

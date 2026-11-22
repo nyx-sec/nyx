@@ -1,0 +1,35 @@
+{
+  "description": "Methods that merely end in _path can return attacker data, so redirecting to them stays an open redirect",
+  "tags": [
+    "taint",
+    "open_redirect",
+    "rails"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        3,
+        3
+      ],
+      "evidence_contains": [],
+      "notes": "Methods that merely end in _path can return attacker data, so redirecting to them stays an open redirect"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        11,
+        11
+      ],
+      "evidence_contains": [],
+      "notes": "Methods that merely end in _path can return attacker data, so redirecting to them stays an open redirect"
+    }
+  ]
+}

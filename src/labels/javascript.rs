@@ -7,6 +7,29 @@ use phf::{Map, phf_map};
 
 pub static RULES: &[LabelRule] = &[
     // ─────────── Sources ───────────
+    // The page's own origin components (`window.location.origin`, `.host`,
+    // ...) name the site being served, not request text the visitor
+    // chose, so a redirect built from them stays same-origin.  They remain
+    // sources for every other cap (DOM XSS, SSRF).  `pathname`, `search`,
+    // `hash` and `href` stay full sources: `//evil.com` and `?next=` reach
+    // the redirect through them.  This rule precedes the `window.location`
+    // source below so the longer spelling wins.
+    LabelRule {
+        matchers: &[
+            "window.location.origin",
+            "window.location.host",
+            "window.location.hostname",
+            "window.location.protocol",
+            "window.location.port",
+            "document.location.origin",
+            "document.location.host",
+            "document.location.hostname",
+            "document.location.protocol",
+            "document.location.port",
+        ],
+        label: DataLabel::Source(Cap::all().difference(Cap::OPEN_REDIRECT)),
+        case_sensitive: false,
+    },
     LabelRule {
         matchers: &[
             "document.location",

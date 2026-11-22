@@ -1,0 +1,14 @@
+{
+  "description": "Rebuilding a URL only from the page own origin parts is not an open redirect",
+  "tags": [
+    "taint",
+    "open_redirect",
+    "dom",
+    "no-source",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": []
+}

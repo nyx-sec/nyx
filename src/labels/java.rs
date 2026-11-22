@@ -32,7 +32,8 @@ pub static RULES: &[LabelRule] = &[
             "getRequestURI",
             "getRequestURL",
             "getServletPath",
-            "getContextPath",
+            // `getContextPath` is deliberately absent: it is the container
+            // mapped webapp prefix, fixed by deployment, not request text.
             // Multipart upload: the client-chosen file name of a
             // `request.getPart(..)` part.
             "getSubmittedFileName",
