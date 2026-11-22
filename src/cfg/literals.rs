@@ -905,6 +905,26 @@ pub(super) fn ruby_statement_ar_queries_safe(
     extra: Option<&[crate::labels::RuntimeLabelRule]>,
 ) -> bool {
     const AR_QUERY_METHODS: &[&str] = &["where", "order", "group", "having", "joins", "pluck"];
+    const AR_FRAGMENT_METHODS: &[&str] = &[
+        "update_all",
+        "delete_all",
+        "destroy_all",
+        "reorder",
+        "rewhere",
+        "select",
+        "from",
+        "lock",
+        "calculate",
+        "sum",
+        "average",
+        "minimum",
+        "maximum",
+        "count",
+        "find_by",
+        "exists?",
+        "left_joins",
+        "left_outer_joins",
+    ];
     let mut seen_ar = false;
     let mut stack = vec![scope];
     while let Some(n) = stack.pop() {
@@ -936,6 +956,17 @@ pub(super) fn ruby_statement_ar_queries_safe(
                     }
                 }
             } else if let Some(m) = method {
+                // Relation methods that take a SQL fragment but are not in
+                // the proven set: `where(a: 1).update_all(params[:set])`.
+                // Their calls do not classify as sinks (the receiver
+                // segment is the inner `where`), so check the argument
+                // shape directly.
+                if AR_FRAGMENT_METHODS.contains(&m.as_str())
+                    && let Some((kind, has_interp)) = arg0_kind_and_interpolation(n)
+                    && !crate::labels::ruby::ar_query_safe_shape("where", &kind, has_interp)
+                {
+                    return false;
+                }
                 // Name the call by its own method and the nearest receiver
                 // segment only.  `call_ident_of` would fold the whole
                 // receiver chain in, so `where(a: 1).delete_all` would read

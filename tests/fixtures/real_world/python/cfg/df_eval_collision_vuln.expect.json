@@ -1,0 +1,25 @@
+{
+  "description": "df.eval on a parameter receiver may be a library call, so a project eval method elsewhere must not hide it.",
+  "tags": [
+    "eval",
+    "code-injection",
+    "name-collision",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        8,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "df.eval on a parameter receiver may be a library call, so a project eval method elsewhere must not hide it."
+    }
+  ]
+}

@@ -3214,6 +3214,38 @@ fn arg_callee_label_sanitizer_caps(ctx: &AnalysisContext, sink: NodeIndex) -> Ca
     caps
 }
 
+/// Whether the receiver of `callee` is known to be an instance of a project
+/// class: `self` / `this` / `cls`, or a local bound to a constructor call of a
+/// class the project defines.  Any other receiver (a parameter, an attribute,
+/// an import) may be a library object such as a DataFrame.
+fn receiver_is_project_object(ctx: &AnalysisContext, callee: &str, leaf: &str) -> bool {
+    let recv = callee[..callee.len() - leaf.len()].trim_end_matches(['.', ':']);
+    if matches!(recv, "self" | "this" | "cls") {
+        return true;
+    }
+    if recv.is_empty() || recv.contains(['.', ':', '(']) {
+        return false;
+    }
+    let is_project_class = |name: &str| {
+        ctx.func_summaries
+            .keys()
+            .any(|k| k.container.rsplit("::").next() == Some(name))
+            || ctx.global_summaries.is_some_and(|g| {
+                g.lookup_same_lang(ctx.lang, "__init__")
+                    .into_iter()
+                    .any(|(k, _)| k.container.rsplit("::").next() == Some(name))
+            })
+    };
+    ctx.cfg.node_weights().any(|info| {
+        info.taint.defines.as_deref() == Some(recv)
+            && info
+                .call
+                .callee
+                .as_deref()
+                .is_some_and(|c| is_project_class(callee_leaf_name(c)))
+    })
+}
+
 /// Whether a receiver-qualified sink call is a name collision with a
 /// project-defined method rather than a call to the library API the sink
 /// label models.
@@ -3239,6 +3271,9 @@ fn sink_is_project_method_name_collision(
     let leaf = callee_leaf_name(callee);
     // Only receiver-qualified calls: a bare `eval(x)` is the builtin.
     if leaf == callee {
+        return false;
+    }
+    if !receiver_is_project_object(ctx, callee, leaf) {
         return false;
     }
     let lang = ctx.lang.as_str();

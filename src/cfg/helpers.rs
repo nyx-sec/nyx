@@ -1083,6 +1083,29 @@ pub(crate) fn nested_member_sink_calls<'a>(
             })?;
             calls.push(call);
         }
+        // A call through a bare identifier may be an alias of a sink
+        // (`const lit = Sequelize.literal; lit(q)`).  It is only provably
+        // harmless when every argument is a literal.
+        if matches!(lookup(lang, cur.kind()), Kind::CallFn)
+            && cur
+                .child_by_field_name("function")
+                .is_some_and(|f| f.kind() == "identifier")
+            && let Some(args) = cur.child_by_field_name("arguments")
+        {
+            let mut ac = args.walk();
+            let all_literal = args.named_children(&mut ac).all(|a| match a.kind() {
+                "string" | "number" | "true" | "false" | "null" => true,
+                "template_string" => {
+                    let mut tc = a.walk();
+                    !a.named_children(&mut tc)
+                        .any(|c| c.kind() == "template_substitution")
+                }
+                _ => false,
+            });
+            if !all_literal {
+                return None;
+            }
+        }
         let mut cursor = cur.walk();
         for child in cur.children(&mut cursor) {
             stack.push(child);

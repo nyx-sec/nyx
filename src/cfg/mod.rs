@@ -11078,10 +11078,24 @@ fn retain_sound_const_collections(bodies: &mut [BodyCfg], root: Node, lang: &str
         let allowed = n.parent().is_some_and(|p| {
             let field_is = |f: &str| p.child_by_field_name(f).map(|c| c.id()) == Some(n.id());
             match p.kind() {
-                // `const NAMES = [..]`
-                "variable_declarator" => field_is("name"),
-                // `NAMES = [..]` (Python)
-                "assignment" => field_is("left"),
+                // `const NAMES = [..]`.  An exported declaration is
+                // importable, and another module may mutate it.
+                "variable_declarator" => {
+                    field_is("name")
+                        && !p
+                            .parent()
+                            .and_then(|d| d.parent())
+                            .is_some_and(|e| e.kind() == "export_statement")
+                }
+                // `NAMES = [..]` (Python).  A public module-level list can be
+                // mutated by any importer; only private names and immutable
+                // tuples are provably constant.
+                "assignment" => {
+                    field_is("left")
+                        && (text.starts_with('_')
+                            || p.child_by_field_name("right")
+                                .is_some_and(|r| r.kind() == "tuple"))
+                }
                 // `for (const x of NAMES)` / `for x in NAMES:`
                 "for_in_statement" | "for_statement" => field_is("right"),
                 _ => false,

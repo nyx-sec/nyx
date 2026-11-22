@@ -1,0 +1,26 @@
+{
+  "description": "An aliased sink call with a request value beside a constant Sequelize.literal must keep firing.",
+  "tags": [
+    "sqli",
+    "sequelize",
+    "literal",
+    "nested-sink",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        6,
+        6
+      ],
+      "evidence_contains": [],
+      "notes": "An aliased sink call with a request value beside a constant Sequelize.literal must keep firing."
+    }
+  ]
+}

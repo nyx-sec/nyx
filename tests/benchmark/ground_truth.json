@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 985
+    "corpus_size": 994
   },
   "cases": [
     {
@@ -31453,6 +31453,308 @@
       ],
       "disabled": false,
       "notes": "exec on request data with a callback, inline or by name, must still fire."
+    },
+    {
+      "case_id": "rb-sqli-ar-relation-tail-001",
+      "file": "ruby/sqli/sqli_ar_relation_tail.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          3,
+          3
+        ],
+        [
+          7,
+          7
+        ],
+        [
+          11,
+          11
+        ],
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "active-record",
+        "rails",
+        "sqli",
+        "cfg-unguarded"
+      ],
+      "disabled": false,
+      "notes": "A relation method after a safe where (update_all, reorder, select) with an interpolated or request-supplied fragment must keep firing."
+    },
+    {
+      "case_id": "rb-safe-ar-relation-tail-001",
+      "file": "ruby/safe/safe_ar_relation_tail.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "active-record",
+        "rails",
+        "sqli",
+        "cfg-unguarded",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "update_all, reorder, select and count with hash, symbol or literal arguments stay quiet."
+    },
+    {
+      "case_id": "ja-sqli-exported-const-collection-001",
+      "file": "javascript/sqli/sqli_exported_const_collection.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "sqli",
+        "const-collection",
+        "cfg-unguarded"
+      ],
+      "disabled": false,
+      "notes": "An exported literal collection can be mutated by an importer, so a loop over it is not constant."
+    },
+    {
+      "case_id": "ja-safe-exported-const-collection-001",
+      "file": "javascript/safe/safe_exported_const_collection.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "sqli",
+        "const-collection",
+        "cfg-unguarded",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A module-private literal collection that is only looped over is constant."
+    },
+    {
+      "case_id": "py-sqli-public-const-collection-001",
+      "file": "python/sqli/sqli_public_const_collection.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "sqli",
+        "const-collection",
+        "cfg-unguarded"
+      ],
+      "disabled": false,
+      "notes": "A public module-level list can be mutated by an importer, so a loop over it is not constant."
+    },
+    {
+      "case_id": "py-code-injection-df-eval-collision-001",
+      "file": "python/code_injection/code_injection_df_eval_collision.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "code_injection",
+      "cwe": "CWE-95",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "eval",
+        "code-injection",
+        "name-collision",
+        "cfg-unguarded"
+      ],
+      "disabled": false,
+      "notes": "df.eval on a parameter receiver may be a library call, so a project eval method elsewhere must not hide it."
+    },
+    {
+      "case_id": "py-safe-df-eval-collision-001",
+      "file": "python/safe/safe_df_eval_collision.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "eval",
+        "code-injection",
+        "name-collision",
+        "cfg-unguarded",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "eval on a local built from a project class constructor targets the project method."
+    },
+    {
+      "case_id": "ty-sqli-aliased-sink-beside-literal-001",
+      "file": "typescript/sqli/sqli_aliased_sink_beside_literal.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "sqli",
+        "sequelize",
+        "literal",
+        "nested-sink",
+        "cfg-unguarded"
+      ],
+      "disabled": false,
+      "notes": "An aliased sink call with a request value beside a constant Sequelize.literal must keep firing."
+    },
+    {
+      "case_id": "ty-safe-aliased-sink-beside-literal-001",
+      "file": "typescript/safe/safe_aliased_sink_beside_literal.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "sqli",
+        "sequelize",
+        "literal",
+        "nested-sink",
+        "cfg-unguarded",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "An aliased literal with a constant argument beside a constant literal stays constant."
     }
   ]
 }
