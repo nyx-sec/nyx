@@ -12,5 +12,5 @@ app.post('/update', function(req: any, res: any) {
     var input = req.body as SafeInput;
     var query = 'UPDATE users SET name = \'' + input.name + '\' WHERE age = ' + input.age;
     // SQL injection despite type assertion
-    res.json({ query: query });
+    res.send(query);
 });

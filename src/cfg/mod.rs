@@ -50,8 +50,8 @@ use helpers::{
     collect_rhs_object_literal, derive_anon_fn_name_from_context, find_classifiable_inner_call,
     find_inner_sink_call, find_inner_source_or_sink_call, first_call_ident_with_span,
     first_callback_sink_call, first_member_label, first_member_text, is_raii_factory,
-    is_subscript_kind, nested_member_sink_calls, root_member_receiver, subscript_components,
-    subscript_lhs_node,
+    is_subscript_kind, nested_member_sink_calls, root_member_receiver,
+    scope_sets_html_content_type, subscript_components, subscript_lhs_node,
 };
 pub use nested_calls::{CallSlot, NestedCall, NestedCallTree, NestedUse};
 // Re-exports so sibling submodules can keep using `super::name` for
@@ -4039,6 +4039,7 @@ pub(super) fn push_node<'a>(
             // label on the target (`req.path = '/x'`, `req.headers[k] = v`)
             // would turn a write into a read of attacker data.
             && matches!(l, DataLabel::Sink(_))
+            && !is_koa_json_body_assignment(assign, lhs, lang, code, &l)
         {
             if rhs_source_only {
                 labels.clear();
@@ -4083,6 +4084,7 @@ pub(super) fn push_node<'a>(
             ) && !rhs_is_function_literal(ast, lang)))
         && let Some(found) = first_member_label(ast, lang, code, extra)
         && (!is_bare_return || matches!(found, DataLabel::Source(_)))
+        && !is_koa_json_body_node(ast, lang, code, &found)
     {
         let hoisted_is_sink = matches!(found, DataLabel::Sink(_));
         labels.push(found);
@@ -8137,6 +8139,58 @@ fn pp_extract_eq_compare(expr: Node, code: &[u8]) -> Option<(String, String)> {
     None
 }
 
+/// `is_koa_json_body_assignment` for a statement node that is, or wraps, the
+/// assignment.  Only reached after a Sink label was found, so the lookups
+/// stay off the common path.
+fn is_koa_json_body_node(ast: Node, lang: &str, code: &[u8], label: &DataLabel) -> bool {
+    if !matches!(lang, "javascript" | "typescript" | "tsx")
+        || !matches!(label, DataLabel::Sink(c) if *c == Cap::HTML_ESCAPE)
+    {
+        return false;
+    }
+    let assign = if matches!(lookup(lang, ast.kind()), Kind::Assignment) {
+        Some(ast)
+    } else {
+        let mut cursor = ast.walk();
+        ast.children(&mut cursor)
+            .find(|c| matches!(lookup(lang, c.kind()), Kind::Assignment))
+    };
+    assign
+        .and_then(|a| a.child_by_field_name("left").map(|l| (a, l)))
+        .is_some_and(|(a, l)| is_koa_json_body_assignment(a, l, lang, code, label))
+}
+
+/// Koa serialises an object or array `ctx.body` as JSON with
+/// `Content-Type: application/json`, so assigning a literal of that shape is
+/// not a direct XSS sink.  A string, template, identifier or call value keeps
+/// the sink because Koa may send it as `text/html`.
+fn is_koa_json_body_assignment(
+    assign: Node,
+    lhs: Node,
+    lang: &str,
+    code: &[u8],
+    label: &DataLabel,
+) -> bool {
+    if !matches!(lang, "javascript" | "typescript" | "tsx")
+        || !matches!(label, DataLabel::Sink(c) if *c == Cap::HTML_ESCAPE)
+        || lhs.kind() != "member_expression"
+    {
+        return false;
+    }
+    let Some(rhs) = assign.child_by_field_name("right") else {
+        return false;
+    };
+    if !matches!(rhs.kind(), "object" | "array") {
+        return false;
+    }
+    // With an HTML content type set in the same function, the body is
+    // rendered as markup (an object with a custom `toString` included), so
+    // the sink stays.
+    member_expr_text(lhs, code).is_some_and(|t| {
+        t.eq_ignore_ascii_case("ctx.body") || t.eq_ignore_ascii_case("ctx.response.body")
+    }) && !scope_sets_html_content_type(assign, code)
+}
+
 /// Label of an assignment target (`el.innerHTML`, `location.href`,
 /// `res.headers['X']`).  The full member path is tried first (`location.href`,
 /// more specific and avoids false positives on `a.href`), then the property
@@ -8231,10 +8285,11 @@ fn pre_emit_sink_assignment_sources(
             Some(r.extra_labels.as_slice())
         }
     });
-    if !matches!(
-        classify_assignment_lhs(lhs, lang, code, extra),
-        Some(DataLabel::Sink(_))
-    ) {
+    let Some(target_label @ DataLabel::Sink(_)) = classify_assignment_lhs(lhs, lang, code, extra)
+    else {
+        return (effective_preds, names);
+    };
+    if is_koa_json_body_assignment(assign, lhs, lang, code, &target_label) {
         return (effective_preds, names);
     }
     let mut found: Vec<(Node, Cap, String)> = Vec::new();

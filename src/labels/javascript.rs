@@ -271,8 +271,11 @@ pub static RULES: &[LabelRule] = &[
     // written value.  Fluent chains such as `res.status(404).send(body)`
     // reach these rules through the CFG callee canonicaliser, which rewrites
     // them to `res.send`.
+    // JSON responses (`res.json`, a Koa `ctx.body` object or array literal) are
+    // not modelled as direct XSS sinks: they are sent with
+    // `Content-Type: application/json`, which browsers do not render as HTML.
     LabelRule {
-        matchers: &["res.send", "res.json"],
+        matchers: &["res.send"],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
@@ -1917,12 +1920,12 @@ pub static GATED_SINKS: &[SinkGate] = &[
     // The flat response rules in RULES would otherwise fall back to every
     // operand of the call, receiver included.  `res` picks up taint from a
     // field write (`res.locals.q = req.query.q`) and client code often names
-    // a fetch `Response` `res`, so a constant `res.json({ ok: true })` or a
-    // zero-arg `res.json()` was reported as XSS.  Body writers take the body
+    // a fetch `Response` `res`, so a constant `res.send("ok")` or a
+    // zero-arg `res.send()` was reported as XSS.  Body writers take the body
     // at arg 0; `res.redirect([status,] url)` and the header setters
     // (`res.set(name, value)`, `setHeader(name, value)`) take theirs at 0..1.
+    // `res.json` is intentionally absent: see the note on the `res.send` rule.
     SinkGate::payload_positions("res.send", DataLabel::Sink(Cap::HTML_ESCAPE), false, &[0]),
-    SinkGate::payload_positions("res.json", DataLabel::Sink(Cap::HTML_ESCAPE), false, &[0]),
     SinkGate::payload_positions(
         "res.redirect",
         DataLabel::Sink(Cap::OPEN_REDIRECT),
@@ -2554,7 +2557,6 @@ mod tests {
         for lang in ["javascript", "typescript"] {
             for (callee, payload) in [
                 ("res.send", vec![0]),
-                ("res.json", vec![0]),
                 ("res.redirect", vec![0, 1]),
                 ("res.set", vec![0, 1]),
                 ("res.setHeader", vec![0, 1]),

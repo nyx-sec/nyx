@@ -44,7 +44,7 @@
         12
       ],
       "evidence_contains": [],
-      "notes": "return-value flow: processAndStore returns input.length, count carries taint to res.json (HTML_ESCAPE sink)"
+      "notes": "return-value flow: processAndStore returns input.length, count carries taint to res.send (HTML_ESCAPE sink)"
     }
   ]
 }

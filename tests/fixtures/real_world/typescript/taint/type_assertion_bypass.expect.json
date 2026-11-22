@@ -9,7 +9,7 @@
       "must_match": true,
       "line_range": [10, 15],
       "evidence_contains": [],
-      "notes": "req.body flows through type assertion into SQL string concat and into res.json sink (HTML_ESCAPE cap)"
+      "notes": "req.body flows through type assertion into SQL string concat and into the res.send sink (HTML_ESCAPE cap)"
     },
     {
       "rule_id": "ts.quality.any_annotation",

@@ -1,0 +1,24 @@
+{
+  "description": "res.json and an object ctx.body stay non-sinks under an explicit JSON content type.",
+  "tags": [
+    "taint",
+    "xss",
+    "koa",
+    "express",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": false,
+      "line_range": [
+        8,
+        21
+      ],
+      "notes": "application/json responses"
+    }
+  ]
+}

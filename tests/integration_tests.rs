@@ -707,7 +707,7 @@ fn insecure_session_config() {
     validate_expectations(&diags, &dir);
 }
 
-/// Debug endpoint: process.env → res.json() should be caught by taint.
+/// Debug endpoint: process.env → res.send() should be caught by taint.
 #[test]
 fn debug_endpoint() {
     let dir = fixture_path("debug_endpoint");
@@ -749,7 +749,7 @@ fn dynamic_dispatch_ssrf() {
 }
 
 /// Cross-file info leak: service returns process.env data (source-independent
-/// taint), caller passes to res.json() sink.
+/// taint), caller passes to res.send() sink.
 #[test]
 fn cross_file_info_leak() {
     let dir = fixture_path("cross_file_info_leak");

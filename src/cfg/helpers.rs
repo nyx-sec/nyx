@@ -247,12 +247,74 @@ pub(crate) fn root_member_receiver(n: Node, code: &[u8]) -> Option<String> {
 /// [`js_canonical_callee`] first; every other case is the node's source
 /// text.
 pub(crate) fn call_fn_callee_text(func: Node, lang: &str, code: &[u8]) -> Option<String> {
-    if matches!(lang, "javascript" | "typescript" | "tsx")
-        && let Some(canonical) = js_canonical_callee(func, code)
-    {
-        return Some(canonical);
+    if matches!(lang, "javascript" | "typescript" | "tsx") {
+        let text = js_canonical_callee(func, code).or_else(|| text_of(func, code))?;
+        return Some(js_json_call_as_send(func, text, code));
     }
     text_of(func, code)
+}
+
+/// `res.json(x)` is not an XSS sink because it is sent as
+/// `application/json`.  When the enclosing function also sets an HTML
+/// content type, the body is rendered as markup, so the call is named
+/// `res.send` and the `res.send` sink rule applies to it.  Only callees that
+/// end in `.json` pay for the scope check.
+fn js_json_call_as_send(func: Node, text: String, code: &[u8]) -> String {
+    match text.strip_suffix(".json") {
+        Some(root) if !root.is_empty() && scope_sets_html_content_type(func, code) => {
+            format!("{root}.send")
+        }
+        _ => text,
+    }
+}
+
+/// True when the function enclosing `node` (or the whole file at top level)
+/// sets an HTML content type: a `text/html` or `xhtml` literal, or a
+/// `type('html')` / `type = 'html'` style call or assignment.  A content type
+/// set in a different function (middleware) is not seen, so the JSON
+/// response there stays exempt.
+pub(crate) fn scope_sets_html_content_type(node: Node, code: &[u8]) -> bool {
+    let mut cur = node;
+    while let Some(parent) = cur.parent() {
+        cur = parent;
+        if matches!(
+            cur.kind(),
+            "function_declaration"
+                | "function_expression"
+                | "function"
+                | "arrow_function"
+                | "method_definition"
+                | "generator_function_declaration"
+                | "generator_function"
+        ) {
+            break;
+        }
+    }
+    let Some(src) = code.get(cur.start_byte()..cur.end_byte()) else {
+        return false;
+    };
+    let lower = src.to_ascii_lowercase();
+    if find_bytes(&lower, b"text/html").is_some() || find_bytes(&lower, b"xhtml").is_some() {
+        return true;
+    }
+    // A quoted `html` argument or value shortly after a `type` word.
+    for quote in [b'\'', b'"', b'`'] {
+        let needle = [quote, b'h', b't', b'm', b'l', quote];
+        let mut from = 0;
+        while let Some(i) = find_bytes(&lower[from..], &needle) {
+            let at = from + i;
+            let window = &lower[at.saturating_sub(24)..at];
+            if find_bytes(window, b"type").is_some() {
+                return true;
+            }
+            from = at + 1;
+        }
+    }
+    false
+}
+
+fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 /// Canonical callee text for a JS/TS member call whose raw source text hides

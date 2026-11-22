@@ -1,0 +1,22 @@
+{
+  "description": "A Koa ctx.body set to a string with request data can be sent as text/html, so it stays an XSS sink.",
+  "tags": [
+    "taint",
+    "xss",
+    "koa"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        7,
+        7
+      ],
+      "notes": "string body built from ctx.query.name"
+    }
+  ]
+}

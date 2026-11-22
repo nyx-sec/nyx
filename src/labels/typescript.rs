@@ -228,8 +228,11 @@ pub static RULES: &[LabelRule] = &[
     },
     // Express response sinks.  The matching `GATED_SINKS` entries keep the
     // `res` receiver out of the payload; see javascript.rs.
+    // JSON responses (`res.json`, a Koa `ctx.body` object or array literal) are
+    // not modelled as direct XSS sinks: they are sent with
+    // `Content-Type: application/json`, which browsers do not render as HTML.
     LabelRule {
-        matchers: &["res.send", "res.json"],
+        matchers: &["res.send"],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
@@ -1390,8 +1393,8 @@ pub static GATED_SINKS: &[SinkGate] = &[
     },
     // ── Express / Node `http` response payload positions ─────────────────
     // See javascript.rs: keeps the `res` receiver out of the payload.
+    // `res.json` is intentionally absent: see the note on the `res.send` rule.
     SinkGate::payload_positions("res.send", DataLabel::Sink(Cap::HTML_ESCAPE), false, &[0]),
-    SinkGate::payload_positions("res.json", DataLabel::Sink(Cap::HTML_ESCAPE), false, &[0]),
     SinkGate::payload_positions(
         "res.redirect",
         DataLabel::Sink(Cap::OPEN_REDIRECT),

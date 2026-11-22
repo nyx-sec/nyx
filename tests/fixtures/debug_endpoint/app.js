@@ -4,7 +4,7 @@ const app = express();
 // Debug endpoint that leaks environment variables
 app.get('/debug', (req, res) => {
   const env = process.env;
-  res.json({ env: env, session: req.session });
+  res.send(env.DATABASE_URL);
 });
 
 // Another endpoint leaking query params via tainted flow
