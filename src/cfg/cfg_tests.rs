@@ -7606,6 +7606,75 @@ class T {
     );
 }
 
+#[test]
+fn java_stream_resource_println_keeps_declared_type() {
+    use crate::ssa::type_facts::TypeKind;
+    let src = br#"
+import java.io.*;
+class T {
+    void copy(File out, File f, String header) throws Exception {
+        try (PrintStream ps = new PrintStream(new FileOutputStream(out));
+             BufferedReader br = new BufferedReader(new FileReader(f))) {
+            for (String l = br.readLine(); l != null; l = br.readLine()) {
+                ps.println(l);
+            }
+            ps.print(header);
+        }
+    }
+}
+"#;
+    let types = java_receiver_decl_types(src);
+    for callee in ["ps.println", "ps.print"] {
+        let kind = types
+            .iter()
+            .find(|(c, _)| c == callee)
+            .unwrap_or_else(|| panic!("no call node for {callee}: {types:?}"))
+            .1
+            .clone();
+        assert_eq!(kind, Some(TypeKind::FileHandle), "{callee}");
+    }
+}
+
+#[test]
+fn java_wrapping_stream_on_response_or_reassigned_keeps_no_type() {
+    let src = br#"
+import java.io.*;
+class T {
+    void a(javax.servlet.http.HttpServletResponse resp, String m) throws Exception {
+        PrintStream ps = new PrintStream(resp.getOutputStream());
+        ps.println(m);
+    }
+    void b(javax.servlet.http.HttpServletResponse resp, File f, String m) throws Exception {
+        PrintStream qs = new PrintStream(new FileOutputStream(f));
+        qs = new PrintStream(resp.getOutputStream());
+        qs.println(m);
+    }
+    void c(PrintWriter w, String m) {
+        PrintWriter pw = new PrintWriter(new BufferedWriter(new FileWriter("log")));
+        pw.println(m);
+        w.println(m);
+    }
+}
+"#;
+    let types = java_receiver_decl_types(src);
+    let kind_of = |callee: &str| {
+        types
+            .iter()
+            .find(|(c, _)| c == callee)
+            .unwrap_or_else(|| panic!("no call node for {callee}: {types:?}"))
+            .1
+            .clone()
+    };
+    assert_eq!(kind_of("ps.println"), None, "wraps the servlet response");
+    assert_eq!(kind_of("qs.println"), None, "reassigned to the response");
+    assert_eq!(kind_of("w.println"), None, "a PrintWriter formal");
+    assert_eq!(
+        kind_of("pw.println"),
+        Some(crate::ssa::type_facts::TypeKind::FileHandle),
+        "nested wrappers over a FileWriter"
+    );
+}
+
 /// Callee text of every Java call node that carries a `Source` label.
 fn java_source_callees(src: &[u8]) -> Vec<String> {
     let file_cfg = parse_to_file_cfg(src, "java", Language::from(tree_sitter_java::LANGUAGE));

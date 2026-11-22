@@ -4129,6 +4129,31 @@ pub(super) fn push_node<'a>(
         }
     }
 
+    // JS/TS: a sink call nested in the value an assignment or declaration
+    // binds (`where = { [Op.and]: [Sequelize.literal(`const`)] }`) names the
+    // node's callee but is not the statement's own call, so no payload
+    // positions describe it.  Record every nested sink call; the unguarded-sink
+    // check then proves the node constant only when all of them are.
+    if hoisted_sink.is_none()
+        && matches!(lang, "javascript" | "typescript" | "tsx")
+        && matches!(
+            lookup(lang, ast.kind()),
+            Kind::Assignment | Kind::CallWrapper
+        )
+        && labels.iter().any(|l| matches!(l, DataLabel::Sink(_)))
+        && scope.and_then(|s| find_call_node(s, lang)).is_none()
+        && let Some(calls) = nested_member_sink_calls(ast, lang, code, extra)
+        && !calls.is_empty()
+    {
+        let mut all: Vec<HoistedSink> = calls
+            .into_iter()
+            .map(|c| compute_hoisted_sink(c, lang, code))
+            .collect();
+        if all.iter().all(HoistedSink::is_constant) {
+            hoisted_sink = Some(Box::new(all.swap_remove(0)));
+        }
+    }
+
     // Set when `text` below is the callee of a call in a condition header.
     let mut cond_call_text = false;
     // Conditions can contain source/sink calls whose argument side effects are
@@ -6135,7 +6160,150 @@ fn java_call_receiver_decl_type(
     call: Node,
     code: &[u8],
 ) -> Option<crate::ssa::type_facts::TypeKind> {
-    java_receiver_declared_type(call, code).and_then(|ty| java_declared_receiver_kind(&ty))
+    let ty = java_receiver_declared_type(call, code)?;
+    if let Some(kind) = java_declared_receiver_kind(&ty) {
+        return Some(kind);
+    }
+    // A wrapping stream (`PrintStream`, `PrintWriter`, ...) can sit on the
+    // servlet response, so its declared type alone says nothing.  When the
+    // variable is bound once to a constructor chain that bottoms out in a
+    // file or memory stream (`new PrintStream(new FileOutputStream(f))`), it
+    // is a file writer.
+    (java_is_wrapping_stream_type(&ty) && java_receiver_wraps_file_stream(call, code))
+        .then_some(crate::ssa::type_facts::TypeKind::FileHandle)
+}
+
+/// Java stream and writer types that wrap another stream or writer.
+fn java_is_wrapping_stream_type(ty: &str) -> bool {
+    matches!(
+        ty.rsplit('.').next().unwrap_or(ty),
+        "PrintStream"
+            | "PrintWriter"
+            | "DataOutputStream"
+            | "ObjectOutputStream"
+            | "BufferedOutputStream"
+            | "BufferedWriter"
+            | "OutputStreamWriter"
+    )
+}
+
+/// Whether the identifier receiver of a Java `method_invocation` is bound,
+/// exactly once, to a constructor chain of wrapping streams around a file or
+/// memory stream: a `try (T x = new ...)` resource, or a block local with no
+/// later reassignment.  Anything else (a formal, a field, a reassigned local,
+/// an initializer that is not a constructor) gives `false`.
+fn java_receiver_wraps_file_stream(call: Node, code: &[u8]) -> bool {
+    let Some(obj) = call.child_by_field_name("object") else {
+        return false;
+    };
+    if obj.kind() != "identifier" {
+        return false;
+    }
+    let Some(var) = text_of(obj, code) else {
+        return false;
+    };
+    let mut cur = call;
+    while let Some(parent) = cur.parent() {
+        match parent.kind() {
+            "try_with_resources_statement" => {
+                if let Some(specs) = parent.child_by_field_name("resources") {
+                    let mut cursor = specs.walk();
+                    for res in specs.named_children(&mut cursor) {
+                        if res.kind() == "resource"
+                            && res
+                                .child_by_field_name("name")
+                                .and_then(|n| n.utf8_text(code).ok())
+                                == Some(var.as_str())
+                        {
+                            return res
+                                .child_by_field_name("value")
+                                .is_some_and(|v| java_ctor_chain_ends_in_file_stream(v, code));
+                        }
+                    }
+                }
+            }
+            "block" | "constructor_body" => {
+                let mut cursor = parent.walk();
+                let decl = parent.named_children(&mut cursor).find(|c| {
+                    c.kind() == "local_variable_declaration"
+                        && java_decl_defines_var(*c, &var, code)
+                });
+                if let Some(decl) = decl {
+                    let mut c2 = decl.walk();
+                    let value = decl
+                        .named_children(&mut c2)
+                        .filter(|d| d.kind() == "variable_declarator")
+                        .find(|d| {
+                            d.child_by_field_name("name")
+                                .and_then(|n| n.utf8_text(code).ok())
+                                == Some(var.as_str())
+                        })
+                        .and_then(|d| d.child_by_field_name("value"));
+                    return value.is_some_and(|v| java_ctor_chain_ends_in_file_stream(v, code))
+                        && !java_subtree_assigns(parent, &var, code);
+                }
+            }
+            "method_declaration"
+            | "constructor_declaration"
+            | "lambda_expression"
+            | "class_body" => return false,
+            _ => {}
+        }
+        cur = parent;
+    }
+    false
+}
+
+/// Whether `expr` is `new W(new W2(... new F(..)))`, every `W` a wrapping
+/// stream and `F` a file or memory stream, the wrapped stream always being the
+/// first constructor argument.
+fn java_ctor_chain_ends_in_file_stream(expr: Node, code: &[u8]) -> bool {
+    let mut cur = expr;
+    for _ in 0..8 {
+        if cur.kind() != "object_creation_expression" {
+            return false;
+        }
+        let Some(ty) = cur
+            .child_by_field_name("type")
+            .and_then(|t| text_of(t, code))
+        else {
+            return false;
+        };
+        let leaf = ty.rsplit('.').next().unwrap_or(&ty);
+        if matches!(
+            leaf,
+            "FileOutputStream" | "FileWriter" | "ByteArrayOutputStream" | "StringWriter"
+        ) {
+            return true;
+        }
+        if !java_is_wrapping_stream_type(leaf) {
+            return false;
+        }
+        let Some(first) = cur
+            .child_by_field_name("arguments")
+            .and_then(|a| a.named_child(0))
+        else {
+            return false;
+        };
+        cur = first;
+    }
+    false
+}
+
+/// Whether any assignment under `scope` writes the bare identifier `var`.
+fn java_subtree_assigns(scope: Node, var: &str, code: &[u8]) -> bool {
+    let mut stack = vec![scope];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "assignment_expression"
+            && n.child_by_field_name("left")
+                .is_some_and(|l| l.kind() == "identifier" && l.utf8_text(code).ok() == Some(var))
+        {
+            return true;
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
+    false
 }
 
 /// Declared type text of the receiver of a Java `method_invocation`: a plain
