@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 975
+    "corpus_size": 977
   },
   "cases": [
     {
@@ -31064,6 +31064,92 @@
       ],
       "disabled": false,
       "notes": "An interpolated where/order argument anywhere in the statement (receiver chain, nested merge argument, later call, modifier-if body) keeps the sink firing even when another call in the chain has a safe shape."
+    },
+    {
+      "case_id": "py-safe-project-eval-method-001",
+      "file": "python/safe/safe_project_eval_method.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "eval",
+        "code-injection",
+        "name-collision",
+        "cfg-unguarded",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Project classes define eval() methods that only compare values; calls to cond.eval(...) must not match the Python eval sink by name."
+    },
+    {
+      "case_id": "py-code_injection-project-eval-method-001",
+      "file": "python/code_injection/code_injection_project_eval_method.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "code_injection",
+      "cwe": "CWE-94",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "py.code_exec.eval",
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ],
+        [
+          15,
+          15
+        ],
+        [
+          20,
+          20
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ],
+        [
+          14,
+          14
+        ],
+        [
+          19,
+          19
+        ]
+      ],
+      "tags": [
+        "eval",
+        "code-injection",
+        "name-collision",
+        "cfg-unguarded"
+      ],
+      "disabled": false,
+      "notes": "A project class with an eval() method that wraps the builtin, a pandas style df.eval(input()) and a direct eval(sys.argv[1]) must keep firing."
     }
   ]
 }

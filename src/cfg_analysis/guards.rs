@@ -3214,6 +3214,88 @@ fn arg_callee_label_sanitizer_caps(ctx: &AnalysisContext, sink: NodeIndex) -> Ca
     caps
 }
 
+/// Whether a receiver-qualified sink call is a name collision with a
+/// project-defined method rather than a call to the library API the sink
+/// label models.
+///
+/// Suffix sink matchers (Python `eval`, which exists for `df.eval` and
+/// `redis.eval`) match any `recv.<name>` call.  When the project defines
+/// methods with that name, the call usually targets one of them.  The call is
+/// treated as such a collision only when every project function of that name
+/// is known not to contain the sink: no sink caps overlapping `sink_caps`, or
+/// the overlap is explained entirely by receiver-qualified calls of the same
+/// name (a wrapper that forwards to another method called `eval`).  Any
+/// unqualified call of the name, or another sink-labelled call, in a
+/// candidate keeps the finding.  Callers apply this only to findings the
+/// taint engine did not confirm.
+fn sink_is_project_method_name_collision(
+    ctx: &AnalysisContext,
+    sink: NodeIndex,
+    sink_caps: Cap,
+) -> bool {
+    let Some(callee) = ctx.cfg[sink].call.callee.as_deref() else {
+        return false;
+    };
+    let leaf = callee_leaf_name(callee);
+    // Only receiver-qualified calls: a bare `eval(x)` is the builtin.
+    if leaf == callee {
+        return false;
+    }
+    let lang = ctx.lang.as_str();
+    let extra = ctx.analysis_rules.map(|r| r.extra_labels.as_slice());
+    let sink_overlaps = |text: &str| {
+        crate::labels::classify_all(lang, text, extra)
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.intersects(sink_caps)))
+    };
+    // The label must be name-based: the bare leaf alone already classifies.
+    if !sink_overlaps(leaf) {
+        return false;
+    }
+
+    let candidate_is_clean = |name_caps: Cap, callees: &[crate::summary::CalleeSite]| {
+        if !name_caps.intersects(sink_caps) {
+            return true;
+        }
+        let mut explained = false;
+        for site in callees {
+            let full = match site.receiver.as_deref() {
+                Some(r) if !site.name.contains('.') => format!("{r}.{}", site.name),
+                _ => site.name.clone(),
+            };
+            if !sink_overlaps(&full) {
+                continue;
+            }
+            let qualified = site.receiver.is_some() || site.name.contains('.');
+            if callee_leaf_name(&site.name) == leaf && qualified {
+                explained = true;
+            } else {
+                return false;
+            }
+        }
+        explained
+    };
+
+    let mut any = false;
+    for (k, s) in ctx.func_summaries.iter() {
+        if k.name == leaf {
+            any = true;
+            if !candidate_is_clean(s.sink_caps, &s.callees) {
+                return false;
+            }
+        }
+    }
+    if let Some(g) = ctx.global_summaries {
+        for (_, s) in g.lookup_same_lang(ctx.lang, leaf) {
+            any = true;
+            if !candidate_is_clean(Cap::from_bits_truncate(s.sink_caps), &s.callees) {
+                return false;
+            }
+        }
+    }
+    any
+}
+
 /// Check whether taint analysis confirmed unsanitized flow to this sink node.
 pub(super) fn taint_confirms_sink(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
     ctx.taint_findings.iter().any(|f| f.sink == sink)
@@ -3994,6 +4076,12 @@ impl CfgAnalysis for UnguardedSink {
             // If sink args are all constants (including one-hop constant bindings)
             // and taint didn't confirm, this is a false positive, skip it.
             if is_all_args_constant(ctx, *sink) && !has_taint {
+                continue;
+            }
+
+            // Name-based sink label on a call that resolves to project
+            // methods of that name (`cond.eval(data)` on a project class).
+            if !has_taint && sink_is_project_method_name_collision(ctx, *sink, sink_caps) {
                 continue;
             }
 
