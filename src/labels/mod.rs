@@ -1524,7 +1524,10 @@ fn match_name_suffix(text: &[u8], tail: &[u8], case_sensitive: bool) -> bool {
 }
 
 /// Word-boundary suffix match with configurable case sensitivity.
-#[inline]
+// Always inline: this runs once per candidate matcher of every
+// classification, and an out-of-line call here cost ~15% of the Go sweep
+// bench on x86 once the sigil handling grew the body.
+#[inline(always)]
 fn match_suffix_cs(text: &[u8], matcher: &[u8], case_sensitive: bool) -> bool {
     // One first-byte branch decodes both sigils: this is the innermost loop
     // of every classification.  `=name` is exact-only; `~_path` is a
