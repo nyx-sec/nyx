@@ -859,6 +859,150 @@ fn sink_args_typed_safe(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) 
     type_facts_suppress(&values, sink_caps, type_facts)
 }
 
+/// True when every real operand of the sink call is a number the language
+/// produced by a numeric cast or arithmetic assignment (PHP `$pid = (int)
+/// $raw;`).  The taint engine clears all capabilities at such an assignment
+/// (`NodeInfo::yields_number`), so the structural rule must not keep
+/// treating the variable as source-derived through its earlier definition:
+/// `passthru('kill -9 ' . $pid)` after `$pid = (int) fread(..)`.
+///
+/// Reads the SSA definition chain, so a cast on only one path (a phi with a
+/// non-numeric operand) does not count.
+fn sink_args_numeric_assigned(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+    let Some(facts) = ctx.body_const_facts else {
+        return false;
+    };
+    let Some(&sink_val) = facts.ssa.cfg_node_map.get(&sink) else {
+        return false;
+    };
+    let Some(inst) = find_inst(&facts.ssa, sink_val) else {
+        return false;
+    };
+    let SsaOp::Call { args, receiver, .. } = &inst.op else {
+        return false;
+    };
+    let sink_info = &ctx.cfg[sink];
+    let callee_desc = sink_info.call.callee.as_deref().unwrap_or("");
+    let callee_parts: Vec<&str> = callee_desc
+        .split(['.', ':'])
+        .map(|p| p.split('(').next().unwrap_or(p))
+        .collect();
+    let outer_parts: Vec<&str> = sink_info
+        .call
+        .outer_callee
+        .as_deref()
+        .map(|oc| {
+            oc.split(['.', ':'])
+                .map(|p| p.split('(').next().unwrap_or(p))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    fn numeric(ctx: &AnalysisContext, ssa: &crate::ssa::SsaBody, v: SsaValue, depth: u8) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Some(def) = find_inst(ssa, v) else {
+            return false;
+        };
+        match &def.op {
+            SsaOp::Phi(ops) => ops.iter().all(|(_, o)| numeric(ctx, ssa, *o, depth + 1)),
+            SsaOp::Const(_) => true,
+            _ => ctx.cfg[def.cfg_node].yields_number,
+        }
+    }
+
+    let mut saw_cast = false;
+    let mut check = |v: SsaValue| -> bool {
+        let Some(def) = find_inst(&facts.ssa, v) else {
+            return true;
+        };
+        match &def.op {
+            SsaOp::Const(_) => return true,
+            SsaOp::Param { .. } => {
+                let name = def.var_name.as_deref().unwrap_or("");
+                if is_callee_fragment(name, callee_desc, &callee_parts, &outer_parts) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        if numeric(ctx, &facts.ssa, v, 0) {
+            saw_cast = true;
+            true
+        } else {
+            false
+        }
+    };
+    if let Some(r) = receiver
+        && !check(*r)
+    {
+        return false;
+    }
+    for group in args {
+        for v in group.iter() {
+            if !check(*v) {
+                return false;
+            }
+        }
+    }
+    saw_cast
+}
+
+/// Whether the file defines a class deriving from `ActiveRecord::Migration`.
+fn source_declares_rails_migration(src: &[u8]) -> bool {
+    const NEEDLE: &[u8] = b"ActiveRecord::Migration";
+    src.windows(NEEDLE.len()).any(|w| w == NEEDLE)
+}
+
+/// Whether the sink sits in a block, lambda or other anonymous function body.
+fn sink_in_closure(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+    ctx.cfg[sink]
+        .ast
+        .enclosing_func
+        .as_deref()
+        .is_some_and(crate::cfg::is_anon_fn_name)
+        || !ctx.captured_params.is_empty()
+}
+
+/// Whether any identifier the sink reads is a parameter in scope, or a local assigned from an expression that reads one.
+/// Closure over the body's assignments, so `o = [a, opts[:x]]; q.order(o)`
+/// reaches `opts` while `q.order(sort_clause)` does not.
+fn sink_operands_reach_param(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+    let sink_info = &ctx.cfg[sink];
+    let sink_func = sink_info.ast.enclosing_func.as_deref();
+    let mut reach: HashSet<&str> = ctx.scope_param_names().collect();
+    if reach.is_empty() {
+        return false;
+    }
+    loop {
+        let before = reach.len();
+        for idx in ctx.cfg.node_indices() {
+            let info = &ctx.cfg[idx];
+            if info.ast.enclosing_func.as_deref() != sink_func {
+                continue;
+            }
+            if !info.taint.uses.iter().any(|u| reach.contains(u.as_str())) {
+                continue;
+            }
+            if let Some(d) = info.taint.defines.as_deref() {
+                reach.insert(d);
+            }
+            for d in &info.taint.extra_defines {
+                reach.insert(d.as_str());
+            }
+        }
+        if reach.len() == before {
+            break;
+        }
+    }
+    sink_info
+        .taint
+        .uses
+        .iter()
+        .any(|u| reach.contains(u.as_str()))
+}
+
 /// Suppress a Go `cfg-unguarded-sink` reflected-XSS finding on
 /// `fmt.Fprint*` / `io.WriteString` when the writer (positional arg 0) is
 /// provably not an `http.ResponseWriter`: an in-memory `*bytes.Buffer`, an
@@ -4393,6 +4537,12 @@ impl CfgAnalysis for UnguardedSink {
                 continue;
             }
 
+            // Numeric cast / arithmetic assignment (`$pid = (int) $raw`):
+            // the taint engine clears every capability at that assignment.
+            if !has_taint && sink_args_numeric_assigned(ctx, *sink) {
+                continue;
+            }
+
             // Go `fmt.Fprint*` reflected-XSS onto a non-response writer
             // (`*bytes.Buffer`, `*os.File`, `bufio.Writer`, `io.Writer`
             // param): the taint engine strips `HTML_ESCAPE` for the same
@@ -4552,6 +4702,25 @@ impl CfgAnalysis for UnguardedSink {
                 let has_params = ctx.scope_param_names().next().is_some();
                 if !has_sources && !has_params {
                     continue; // No sources or params in scope → noise
+                }
+                // Rails migration: one-off DDL run by a developer, its block
+                // parameters come from rows the migration just selected.
+                if !has_sources
+                    && ctx.lang == Lang::Ruby
+                    && source_declares_rails_migration(ctx.source_bytes)
+                {
+                    continue;
+                }
+                // Ruby block / lambda body: a closure that merely has
+                // parameters in scope is not a signal.  The sink must read
+                // one of them, directly or through locals
+                // (`lambda { order(configuration[:order]) }` reads none).
+                if !has_sources
+                    && ctx.lang == Lang::Ruby
+                    && sink_in_closure(ctx, *sink)
+                    && !sink_operands_reach_param(ctx, *sink)
+                {
+                    continue;
                 }
                 (Severity::Medium, Confidence::Medium)
             };

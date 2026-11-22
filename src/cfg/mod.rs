@@ -5495,9 +5495,33 @@ pub(super) fn push_node<'a>(
     } else {
         None
     };
-    let param_query_shape = param_query_call
+    let mut param_query_call = param_query_call;
+    let mut param_query_shape = param_query_call
         .map(|cn| parameterized_query_shape(cn, code))
         .unwrap_or(ParamQueryShape::NotParameterized);
+    // A SQL sink in the middle of a call chain (`scope.where("a = ?", x).
+    // order(:id)`): the node's outer call is the chain's last call, but the
+    // sink is the inner call that supplied the callee.  Read the query shape
+    // off that call.
+    if param_query_shape == ParamQueryShape::NotParameterized
+        && param_query_call.is_some()
+        && let Some((s, e)) = inner_callee_span
+        && let Some(mut inner) = ast.descendant_for_byte_range(s, e)
+    {
+        while (inner.start_byte(), inner.end_byte()) != (s, e) {
+            match inner.parent() {
+                Some(p) => inner = p,
+                None => break,
+            }
+        }
+        if (inner.start_byte(), inner.end_byte()) == (s, e) {
+            let shape = parameterized_query_shape(inner, code);
+            if shape != ParamQueryShape::NotParameterized {
+                param_query_shape = shape;
+                param_query_call = Some(inner);
+            }
+        }
+    }
     let parameterized_query = param_query_shape == ParamQueryShape::ConstantQuery;
     let parameterized_query_interpolated = param_query_shape == ParamQueryShape::InterpolatedQuery;
 

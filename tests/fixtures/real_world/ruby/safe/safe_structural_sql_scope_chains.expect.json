@@ -1,0 +1,25 @@
+{
+  "description": "Structural unguarded-sink findings need a sink operand that reaches a parameter: a mid-chain where with a bound date, a lambda reading a class-declaration option, and backticks whose interpolations are shellescaped.",
+  "tags": [
+    "cfg",
+    "ruby",
+    "negative",
+    "sql",
+    "optional-param"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [
+        1,
+        26
+      ],
+      "notes": "no structural sink finding anywhere in the fixture",
+      "must_not_match": true
+    }
+  ]
+}

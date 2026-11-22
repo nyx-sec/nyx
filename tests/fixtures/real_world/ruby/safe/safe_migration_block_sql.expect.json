@@ -1,0 +1,25 @@
+{
+  "description": "A Rails migration selecting ids and executing DDL with them is one-off developer code: no structural unguarded-sink finding.",
+  "tags": [
+    "cfg",
+    "ruby",
+    "negative",
+    "sql",
+    "migration"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [
+        1,
+        9
+      ],
+      "notes": "no structural sink finding in a migration",
+      "must_not_match": true
+    }
+  ]
+}
