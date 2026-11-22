@@ -276,14 +276,10 @@ pub static RULES: &[LabelRule] = &[
     // purpose: like `serde_json::from_str` they have no polymorphic
     // instantiation surface, and reporting them would flag every config loader.
     // A `dyn` turbofish (`toml::from_str::<Box<dyn Plugin>>`) is attacker-chosen
-    // type selection, so the label layer rewrites that shape to the `@dyn`
-    // spellings below.
+    // type selection, which the label layer recognises itself
+    // (`labels::is_polymorphic_decode`) and labels like the rule below.
     LabelRule {
         matchers: &[
-            "toml::from_str@dyn",
-            "toml::from_slice@dyn",
-            "ron::from_str@dyn",
-            "ron::from_bytes@dyn",
             "serde_yaml::from_str",
             "serde_yaml::from_slice",
             "serde_yaml::from_reader",
