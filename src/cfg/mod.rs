@@ -2101,18 +2101,21 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
 /// when the prefix contains `scheme://host/`, the sink is suppressed because
 /// the attacker cannot reach a different host.
 ///
-/// `url_arg` is the positional index of the URL-bearing argument of a call
-/// (the sink's single payload position, else `0`).
-fn extract_template_prefix(ast: Node, lang: &str, code: &[u8], url_arg: usize) -> Option<String> {
-    url_operand_nodes(ast, lang, url_arg)
-        .into_iter()
-        .find_map(|(n, _)| prefix_of_expression(n, lang, code))
+/// `ops` are the node's [`url_operand_nodes`].
+fn template_prefix_of(ops: &[(Node, bool)], lang: &str, code: &[u8]) -> Option<String> {
+    ops.iter()
+        .find_map(|&(n, _)| prefix_of_expression(n, lang, code))
 }
 
 /// The string-building operand a node's prefix is read from: an assignment's
-/// RHS, then the URL argument of a call.  Empty for languages the prefix
-/// extractor does not cover.
-fn url_operand_nodes<'t>(ast: Node<'t>, lang: &str, url_arg: usize) -> Vec<(Node<'t>, bool)> {
+/// RHS, then the URL argument of a call.  `url_arg` is the positional index of
+/// the URL-bearing argument (the sink's single payload position, else `0`).
+/// Empty for languages the prefix extractor does not cover.
+fn url_operand_nodes<'t>(
+    ast: Node<'t>,
+    lang: &str,
+    url_arg: usize,
+) -> smallvec::SmallVec<[(Node<'t>, bool); 2]> {
     // Phase 14 — extended beyond JS/TS so the SSRF prefix-lock fires
     // across every supported language whose origin-locked URL shape
     // is a literal+tainted string concatenation.  The grammar
@@ -2123,7 +2126,7 @@ fn url_operand_nodes<'t>(ast: Node<'t>, lang: &str, url_arg: usize) -> Vec<(Node
         lang,
         "javascript" | "typescript" | "java" | "go" | "php" | "ruby" | "python" | "rust"
     );
-    let mut out = Vec::new();
+    let mut out = smallvec::SmallVec::new();
     if !supported {
         return out;
     }
@@ -2153,40 +2156,35 @@ fn url_operand_nodes<'t>(ast: Node<'t>, lang: &str, url_arg: usize) -> Vec<(Node
             .child_by_field_name("arguments")
             .or_else(|| ast.child_by_field_name("argument_list"));
         if let Some(args_node) = args {
-            let mut w = args_node.walk();
-            let positional: Vec<Node> = args_node.named_children(&mut w).collect();
             // Express `res.redirect(301, url)`: skip a leading numeric
             // status so the URL argument's prefix is read.
-            let url_node = match positional.as_slice() {
-                [status, url] if url_arg == 0 && is_numeric_literal_kind(status.kind()) => {
-                    Some(*url)
-                }
-                all => all.get(url_arg).copied(),
-            };
+            let status_first = url_arg == 0
+                && args_node.named_child_count() == 2
+                && args_node
+                    .named_child(0)
+                    .is_some_and(|status| is_numeric_literal_kind(status.kind()));
+            let url_node = args_node.named_child(if status_first { 1 } else { url_arg as u32 });
             out.extend(url_node.map(|n| (n, true)));
         }
     }
     out
 }
 
-/// Like [`extract_template_prefix`] for a string that starts with a bare
+/// Like [`template_prefix_of`] for a string that starts with a bare
 /// identifier instead of a literal: `(name, literal tail)` for `API + p`,
 /// `` `${API}/users/${id}` `` or `f"{API}/users/{id}"`.  The identifier is a
 /// module-level constant candidate, resolved once every body of the file is
 /// built (see `module_consts`).  When `url_sink` is set the URL argument may
 /// also be the bare identifier itself (`requests.get(API, params=p)`).
-fn extract_lead_ident(
-    ast: Node,
+fn lead_ident_of(
+    ops: &[(Node, bool)],
     lang: &str,
     code: &[u8],
-    url_arg: usize,
     url_sink: bool,
 ) -> Option<(String, String)> {
-    url_operand_nodes(ast, lang, url_arg)
-        .into_iter()
-        .find_map(|(n, is_call_arg)| {
-            lead_ident_of_operand(n, lang, code, is_call_arg && url_sink, !is_call_arg, 0)
-        })
+    ops.iter().find_map(|&(n, is_call_arg)| {
+        lead_ident_of_operand(n, lang, code, is_call_arg && url_sink, !is_call_arg, 0)
+    })
 }
 
 /// True for the node kinds that name a module-level constant visible inside
@@ -2298,7 +2296,7 @@ const PREFIX_WALK_DEPTH: usize = 32;
 /// a `"lit" + x + y` / PHP `"lit" . $x` chain, the literal text before the
 /// first directive of a format call (`fmt.Sprintf`, `String.format`,
 /// `sprintf`, `"..." % x`, `"...".format(x)`), or a Rust `format!` head.  Used
-/// by `extract_template_prefix` for both assignment RHS and call arguments.
+/// by `template_prefix_of` for both assignment RHS and call arguments.
 ///
 /// Also descends through `await` / `yield` wrappers and into the first
 /// argument of a call expression, this covers the common sink shape
@@ -3678,14 +3676,27 @@ pub(super) fn push_node<'a>(
         // it); a nested source or sink still does.  The sink check applies
         // the sanitizer to the operands it wraps through the nested-call
         // tree.
+        //
+        // The gate lookup only matters when the first inner call found is a
+        // sanitizer: when it is a source or sink, the search that skips
+        // sanitizers finds the same call first, so the common case pays for
+        // one walk and no gate lookup.
         let inner = if labels.is_empty() {
-            let outer_is_gated_sink = !text.is_empty()
-                && !crate::labels::classify_gated_sink(lang, &text, |_| None, |_| None, |_| false)
-                    .is_empty();
-            if outer_is_gated_sink {
-                find_inner_source_or_sink_call(ast, lang, code, extra)
-            } else {
-                find_classifiable_inner_call(ast, lang, code, extra)
+            match find_classifiable_inner_call(ast, lang, code, extra) {
+                Some((_, DataLabel::Sanitizer(_), _))
+                    if !text.is_empty()
+                        && !crate::labels::classify_gated_sink(
+                            lang,
+                            &text,
+                            |_| None,
+                            |_| None,
+                            |_| false,
+                        )
+                        .is_empty() =>
+                {
+                    find_inner_source_or_sink_call(ast, lang, code, extra)
+                }
+                found => found,
             }
         } else {
             find_inner_sink_call(ast, lang, code, extra)
@@ -5115,18 +5126,24 @@ pub(super) fn push_node<'a>(
     // A read-modify-write keeps the target's own prefix (`url += "/x"`), so
     // only a call argument's prefix is recorded for it.
     let own_scope = if rmw.is_some() { None } else { scope };
-    let string_prefix = own_scope
-        .and_then(|s| extract_template_prefix(s, lang, code, url_arg))
-        .or_else(|| call_ast.and_then(|cn| extract_template_prefix(cn, lang, code, url_arg)));
+    // The operands are found once per side and read for both the literal
+    // prefix and, failing that, the leading module-constant identifier.  The
+    // call side is only needed when the statement side has no prefix.
+    let scope_ops = own_scope
+        .map(|s| url_operand_nodes(s, lang, url_arg))
+        .unwrap_or_default();
+    let scope_prefix = template_prefix_of(&scope_ops, lang, code);
+    let call_ops = match (&scope_prefix, call_ast) {
+        (None, Some(cn)) => url_operand_nodes(cn, lang, url_arg),
+        _ => SmallVec::new(),
+    };
+    let string_prefix = scope_prefix.or_else(|| template_prefix_of(&call_ops, lang, code));
     let url_sink = labels
         .iter()
         .any(|l| matches!(l, DataLabel::Sink(c) if c.intersects(Cap::SSRF | Cap::OPEN_REDIRECT)));
     let string_prefix_ident = if string_prefix.is_none() {
-        own_scope
-            .and_then(|s| extract_lead_ident(s, lang, code, url_arg, url_sink))
-            .or_else(|| {
-                call_ast.and_then(|cn| extract_lead_ident(cn, lang, code, url_arg, url_sink))
-            })
+        lead_ident_of(&scope_ops, lang, code, url_sink)
+            .or_else(|| lead_ident_of(&call_ops, lang, code, url_sink))
     } else {
         None
     };

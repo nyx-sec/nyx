@@ -2582,6 +2582,16 @@ pub(super) fn extract_arg_string_prefixes(
     let Some(args_node) = call_node.child_by_field_name("arguments") else {
         return Vec::new();
     };
+    // Every prefix starts at a string literal: a quote, a PHP heredoc (`<<<`),
+    // a Ruby `%q()` literal, or a Rust macro whose format string is a `const`.
+    // Most calls have none of these bytes in their arguments, so they skip the
+    // per-argument walk.
+    if !code[args_node.byte_range()]
+        .iter()
+        .any(|b| matches!(b, b'"' | b'\'' | b'`' | b'%' | b'<' | b'!'))
+    {
+        return Vec::new();
+    }
     let mut result = Vec::new();
     let mut cursor = args_node.walk();
     for child in args_node.named_children(&mut cursor) {

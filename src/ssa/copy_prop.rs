@@ -39,7 +39,7 @@ pub fn copy_propagate(body: &mut SsaBody, cfg: &Cfg) -> (usize, HashMap<SsaValue
                     }
                     // Skip Assigns whose CFG node carries a `string_prefix`
                     // (template literals or `"lit" + var` RHS recognised by
-                    // `extract_template_prefix`).  The abstract-interpretation
+                    // `template_prefix_of`).  The abstract-interpretation
                     // `transfer_abstract` consumes that prefix to seed a
                     // StringFact on the Assign's SSA value, which downstream
                     // SSRF suppression reads.  Propagating past this Assign
