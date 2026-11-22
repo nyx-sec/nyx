@@ -1,0 +1,32 @@
+{
+  "description": "Statement-form `sb.append(x)` on a StringBuilder/StringBuffer writes the argument into the builder, so a later `write(sb.toString())` is reflected XSS (both the plain and the chained statement form).",
+  "tags": [
+    "taint",
+    "xss",
+    "stringbuilder",
+    "container"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        13,
+        13
+      ],
+      "notes": "statement-form append then write"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        21,
+        21
+      ],
+      "notes": "chained append on a StringBuffer then println"
+    }
+  ]
+}

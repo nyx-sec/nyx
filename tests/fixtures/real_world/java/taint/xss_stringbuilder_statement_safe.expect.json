@@ -1,0 +1,42 @@
+{
+  "description": "Escaping before the append (qualified or statically imported), or appending constants only, leaves the builder clean.",
+  "tags": [
+    "taint",
+    "xss",
+    "stringbuilder",
+    "container",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        16,
+        16
+      ],
+      "notes": "escapeHtml4 value appended"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        24,
+        24
+      ],
+      "notes": "only constants appended"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        32,
+        32
+      ],
+      "notes": "statically imported escapeHtml4 inside a chained append"
+    }
+  ]
+}

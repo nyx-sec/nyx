@@ -1,0 +1,41 @@
+{
+  "description": "An escaper in the same chain does not clean a raw appended value.",
+  "tags": [
+    "taint",
+    "xss",
+    "stringbuilder",
+    "container"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "notes": "raw value then escaped constant"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        19,
+        19
+      ],
+      "notes": "escaped value then raw value"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        26,
+        26
+      ],
+      "notes": "escaped constant then raw value"
+    }
+  ]
+}

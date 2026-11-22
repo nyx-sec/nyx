@@ -64,6 +64,25 @@ impl<'a, 't> NestedOperands<'a, 't> {
         })
     }
 
+    /// The record of a node whose expression is one statement-level call
+    /// chain (`sb.append(a).append(esc(b))`), anchored on the outermost
+    /// call.  Used where the node's own callee text does not identify a
+    /// call of the record, so [`Self::new`] has no anchor.
+    pub(super) fn for_call_chain(
+        info: &'a NodeInfo,
+        transfer: &'a SsaTaintTransfer<'t>,
+    ) -> Option<Self> {
+        let tree = info.call.nested_calls.as_deref()?;
+        let anchor = tree.calls.iter().position(|c| c.parent.is_none())? as u16;
+        Some(Self {
+            tree,
+            anchor,
+            info,
+            transfer,
+            summaries: (0..tree.calls.len()).map(|_| OnceCell::new()).collect(),
+        })
+    }
+
     /// Callee summary of call `c`, when one resolves.
     fn summary(&self, c: u16) -> Option<&ResolvedSummary> {
         self.summaries[c as usize]
@@ -230,7 +249,7 @@ impl<'a, 't> NestedOperands<'a, 't> {
 
     /// Caps `v` carries past the calls wrapping it.  `None` when the value
     /// has no recorded occurrence in the node.
-    fn value_caps(
+    pub(super) fn value_caps(
         &self,
         v: SsaValue,
         caps: Cap,
@@ -242,6 +261,33 @@ impl<'a, 't> NestedOperands<'a, 't> {
         for u in self.occurrences(v, ssa) {
             seen = true;
             out |= self.occurrence_caps(u, caps, state);
+        }
+        seen.then_some(out)
+    }
+
+    /// [`Self::value_caps`] for a value appended to a string builder: an
+    /// occurrence that only feeds a predicate (`x.isEmpty() ? a : b`,
+    /// `"k".equals(x)`) contributes nothing, since the call yields a boolean
+    /// or a length and the text of `x` does not reach the builder through it.
+    pub(super) fn builder_value_caps(
+        &self,
+        v: SsaValue,
+        caps: Cap,
+        ssa: &SsaBody,
+        state: &SsaTaintState,
+    ) -> Option<Cap> {
+        let mut seen = false;
+        let mut out = Cap::empty();
+        for u in self.occurrences(v, ssa) {
+            seen = true;
+            let feeds_predicate = u.call.is_some_and(|c| {
+                is_value_predicate(crate::labels::bare_method_name(
+                    &self.tree.calls[c as usize].callee,
+                ))
+            });
+            if !feeds_predicate {
+                out |= self.occurrence_caps(u, caps, state);
+            }
         }
         seen.then_some(out)
     }
@@ -372,6 +418,29 @@ impl NestedOperands<'_, '_> {
         }
         (caps_out, origins)
     }
+}
+
+/// Methods whose result is a boolean or a number derived from the receiver
+/// and arguments, never their text.
+fn is_value_predicate(method: &str) -> bool {
+    matches!(
+        method,
+        "isEmpty"
+            | "isBlank"
+            | "length"
+            | "size"
+            | "equals"
+            | "equalsIgnoreCase"
+            | "contains"
+            | "startsWith"
+            | "endsWith"
+            | "matches"
+            | "hashCode"
+            | "indexOf"
+            | "lastIndexOf"
+            | "compareTo"
+            | "isPresent"
+    )
 }
 
 /// A source call nested inside a sink call's arguments.  See

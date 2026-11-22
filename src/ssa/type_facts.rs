@@ -288,6 +288,13 @@ pub enum TypeKind {
     /// list contents reaching the command builder are caught at the
     /// `command(...)` call site.
     ProcessBuilder,
+    /// A `java.lang.StringBuilder` / `StringBuffer` instance, produced by
+    /// `new StringBuilder(...)` or a declared receiver of that type.  Its
+    /// `append` / `insert` calls mutate the receiver, so the taint engine
+    /// writes the argument taint into the builder only for receivers of
+    /// this kind; an unrelated user type with an `append` method keeps the
+    /// default call propagation.
+    StringBuilder,
     /// A `java.lang.Runtime` instance produced by the static factory
     /// `Runtime.getRuntime()`.  The dominant OWASP Benchmark
     /// command-injection shape splits the receiver across statements:
@@ -805,6 +812,9 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
             // Type-qualified resolution rewrites `pb.command(...)` →
             // `ProcessBuilder.command` against the flat SHELL_ESCAPE rule.
             "ProcessBuilder" => Some(TypeKind::ProcessBuilder),
+            // `new StringBuilder(...)` / `new StringBuffer(...)`: the
+            // receiver of statement-form `append` / `insert` mutation.
+            "StringBuilder" | "StringBuffer" => Some(TypeKind::StringBuilder),
             // `Runtime.getRuntime()` — the static factory returns the
             // singleton `java.lang.Runtime`.  Gating on `callee.contains
             // ("Runtime")` keeps an unrelated `foo.getRuntime()` method from
@@ -4241,5 +4251,16 @@ mod tests {
         // No turbofish, or a non-boundary `parse` token.
         assert_eq!(parse_turbofish_arg("s.parse()"), None);
         assert_eq!(parse_turbofish_arg("reparse::<Foo>()"), None);
+    }
+
+    #[test]
+    fn java_string_builder_constructors_are_typed() {
+        for callee in ["StringBuilder", "StringBuffer", "java.lang.StringBuilder"] {
+            assert_eq!(
+                constructor_type(Lang::Java, callee),
+                Some(TypeKind::StringBuilder),
+                "{callee}"
+            );
+        }
     }
 }

@@ -6266,6 +6266,7 @@ pub(crate) fn java_declared_receiver_kind(
             Some(TypeKind::FileHandle)
         }
         "ProcessBuilder" => Some(TypeKind::ProcessBuilder),
+        "StringBuilder" | "StringBuffer" => Some(TypeKind::StringBuilder),
         // Parser factories: `dbf.newDocumentBuilder().parse(x)` reads as
         // `dbf.parse`, and StAX parses straight off the factory
         // (`xif.createXMLStreamReader(in)`).
@@ -7633,6 +7634,276 @@ fn try_lower_spring_redirect_return(
     });
     connect_all(g, preds, n, EdgeKind::Seq);
     Some(n)
+}
+
+/// Annotations of a Java declaration as `(leaf name, full annotation text)`.
+fn java_declaration_annotations<'a>(decl: Node<'a>, code: &'a [u8]) -> Vec<(&'a str, &'a str)> {
+    let mut out = Vec::new();
+    let mut cursor = decl.walk();
+    for child in decl.children(&mut cursor) {
+        if child.kind() != "modifiers" {
+            continue;
+        }
+        let mut inner = child.walk();
+        for ann in child.children(&mut inner) {
+            if !matches!(ann.kind(), "marker_annotation" | "annotation") {
+                continue;
+            }
+            let Some(name) = ann
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(code).ok())
+            else {
+                continue;
+            };
+            let Ok(full) = ann.utf8_text(code) else {
+                continue;
+            };
+            out.push((name.rsplit('.').next().unwrap_or(name).trim(), full));
+        }
+    }
+    out
+}
+
+/// True when `ret` sits in a Spring handler method that answers with an HTML
+/// body: a mapping annotation whose `produces` names `text/html`, on a
+/// `@ResponseBody` method or in a `@RestController` / `@ResponseBody` class,
+/// and a `String` return type.  A handler that does not declare an HTML
+/// content type returns JSON or plain text, where reflecting input is not
+/// cross-site scripting, so it never matches.
+fn spring_html_body_handler(ret: Node, code: &[u8]) -> bool {
+    const MAPPINGS: &[&str] = &[
+        "RequestMapping",
+        "GetMapping",
+        "PostMapping",
+        "PutMapping",
+        "DeleteMapping",
+        "PatchMapping",
+    ];
+    let produces_html = |text: &str| {
+        text.find("produces").is_some_and(|i| {
+            let rest = &text[i..];
+            rest.contains("text/html") || rest.contains("TEXT_HTML")
+        })
+    };
+    let mut cur = ret.parent();
+    let method = loop {
+        let Some(n) = cur else { return false };
+        match n.kind() {
+            "method_declaration" => break n,
+            // A return inside a lambda or a nested class returns from that
+            // body, not from the handler.
+            "lambda_expression" | "class_body" | "constructor_declaration" => return false,
+            _ => cur = n.parent(),
+        }
+    };
+    if method
+        .child_by_field_name("type")
+        .and_then(|t| t.utf8_text(code).ok())
+        .map(str::trim)
+        != Some("String")
+    {
+        return false;
+    }
+    let anns = java_declaration_annotations(method, code);
+    let mapping = anns.iter().find(|(n, _)| MAPPINGS.contains(n));
+    let Some((_, mapping_text)) = mapping else {
+        return false;
+    };
+    let class = method
+        .parent()
+        .and_then(|b| b.parent())
+        .filter(|c| c.kind() == "class_declaration");
+    let class_anns = class
+        .map(|c| java_declaration_annotations(c, code))
+        .unwrap_or_default();
+    let body_response = anns.iter().any(|(n, _)| *n == "ResponseBody")
+        || class_anns
+            .iter()
+            .any(|(n, _)| matches!(*n, "RestController" | "ResponseBody"));
+    if !body_response {
+        return false;
+    }
+    produces_html(mapping_text)
+        || class_anns
+            .iter()
+            .any(|(n, t)| *n == "RequestMapping" && produces_html(t))
+}
+
+/// Identifiers whose taint reaches the value of a returned HTML string:
+/// plain names, `+` concatenation, ternary arms, and value-preserving string
+/// methods.  A call to anything else is skipped, since it may be a sanitizer
+/// (`escapeHtml4(x)`, `HtmlUtils.htmlEscape(x)`) whose result is clean.
+fn collect_html_return_idents<'a>(
+    n: Node<'a>,
+    code: &[u8],
+    out: &mut Vec<String>,
+    sources: &mut Vec<Node<'a>>,
+) {
+    const PASS_THROUGH: &[&str] = &[
+        "toString",
+        "valueOf",
+        "format",
+        "formatted",
+        "concat",
+        "trim",
+        "strip",
+        "stripLeading",
+        "stripTrailing",
+        "toLowerCase",
+        "toUpperCase",
+        "replace",
+        "replaceAll",
+        "replaceFirst",
+        "substring",
+        "subSequence",
+        "repeat",
+        "intern",
+    ];
+    match n.kind() {
+        "identifier" => {
+            if let Ok(t) = n.utf8_text(code) {
+                out.push(t.to_string());
+            }
+        }
+        "binary_expression" => {
+            for side in ["left", "right"] {
+                if let Some(c) = n.child_by_field_name(side) {
+                    collect_html_return_idents(c, code, out, sources);
+                }
+            }
+        }
+        "parenthesized_expression" => {
+            if let Some(c) = n.named_child(0) {
+                collect_html_return_idents(c, code, out, sources);
+            }
+        }
+        "ternary_expression" => {
+            for arm in ["consequence", "alternative"] {
+                if let Some(c) = n.child_by_field_name(arm) {
+                    collect_html_return_idents(c, code, out, sources);
+                }
+            }
+        }
+        "method_invocation" => {
+            let name = n
+                .child_by_field_name("name")
+                .and_then(|c| c.utf8_text(code).ok());
+            if name.is_some_and(|m| !PASS_THROUGH.contains(&m)) {
+                // Not a value-preserving method: it may be a sanitizer, so
+                // only a call that is itself a source contributes.
+                sources.push(n);
+            } else if name.is_some() {
+                if let Some(obj) = n.child_by_field_name("object") {
+                    collect_html_return_idents(obj, code, out, sources);
+                }
+                if let Some(args) = n.child_by_field_name("arguments") {
+                    let mut cursor = args.walk();
+                    for a in args.named_children(&mut cursor) {
+                        collect_html_return_idents(a, code, out, sources);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Spring `@RestController` / `@ResponseBody` handler that declares
+/// `produces = "text/html"` and returns a `String`: the returned string is
+/// the response body, so it is an HTML sink (CVE-2024-23819).  Emits a
+/// synthetic `__spring_html_body__` Call with `Sink(HTML_ESCAPE)` between
+/// `preds` and the Return node.  Returns the new frontier, or `preds`
+/// unchanged when the handler does not qualify.
+fn try_lower_spring_html_return(
+    ast: Node,
+    preds: &[NodeIndex],
+    g: &mut Cfg,
+    lang: &str,
+    code: &[u8],
+    enclosing_func: Option<&str>,
+    call_ordinal: &mut u32,
+) -> Vec<NodeIndex> {
+    if lang != "java" || !spring_html_body_handler(ast, code) {
+        return preds.to_vec();
+    }
+    let Some(expr) = ast.named_child(0) else {
+        return preds.to_vec();
+    };
+    let mut uses: Vec<String> = Vec::new();
+    let mut candidates: Vec<Node> = Vec::new();
+    collect_html_return_idents(expr, code, &mut uses, &mut candidates);
+    // A source call in the returned expression (`r.getParameter("q")`) has
+    // no variable of its own, so it gets a pre-emitted source node that
+    // defines one, which the sink then reads.
+    let mut preds: Vec<NodeIndex> = preds.to_vec();
+    for (i, call) in candidates.into_iter().enumerate() {
+        let Some(args) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        let Ok(callee) = std::str::from_utf8(&code[call.start_byte()..args.start_byte()]) else {
+            continue;
+        };
+        let callee: String = callee.chars().filter(|c| !c.is_whitespace()).collect();
+        let caps = crate::labels::classify_all("java", &callee, None)
+            .iter()
+            .fold(Cap::empty(), |acc, l| match l {
+                DataLabel::Source(bits) => acc | *bits,
+                _ => acc,
+            });
+        if caps.is_empty() {
+            continue;
+        }
+        let synth_name = format!("__nyx_src_{}_ret{}", g.node_count(), i);
+        let src_idx = g.add_node(NodeInfo {
+            kind: StmtKind::Seq,
+            call: CallMeta {
+                callee: Some(callee),
+                ..Default::default()
+            },
+            taint: TaintMeta {
+                labels: smallvec::smallvec![DataLabel::Source(caps)],
+                defines: Some(synth_name.clone()),
+                ..Default::default()
+            },
+            ast: AstMeta {
+                span: (call.start_byte(), call.end_byte()),
+                enclosing_func: enclosing_func.map(|s| s.to_string()),
+            },
+            ..Default::default()
+        });
+        connect_all(g, &preds, src_idx, EdgeKind::Seq);
+        preds = vec![src_idx];
+        uses.push(synth_name);
+    }
+    if uses.is_empty() {
+        return preds;
+    }
+    let ord = *call_ordinal;
+    *call_ordinal += 1;
+    let mut labels: smallvec::SmallVec<[DataLabel; 2]> = smallvec::SmallVec::new();
+    labels.push(DataLabel::Sink(Cap::HTML_ESCAPE));
+    let n = g.add_node(NodeInfo {
+        kind: StmtKind::Call,
+        call: CallMeta {
+            callee: Some("__spring_html_body__".to_string()),
+            arg_uses: vec![uses.clone()],
+            call_ordinal: ord,
+            sink_payload_args: Some(vec![0]),
+            ..Default::default()
+        },
+        taint: TaintMeta {
+            labels,
+            uses,
+            ..Default::default()
+        },
+        ast: AstMeta {
+            span: (ast.start_byte(), ast.end_byte()),
+            enclosing_func: enclosing_func.map(|s| s.to_string()),
+        },
+        ..Default::default()
+    });
+    connect_all(g, &preds, n, EdgeKind::Seq);
+    vec![n]
 }
 
 /// React JSX `dangerouslySetInnerHTML={{ __html: x }}` recogniser.  Walks
@@ -10503,6 +10774,15 @@ pub(super) fn build_sub<'a>(
                     call_ordinal,
                     analysis_rules,
                 );
+                let post_jsx = try_lower_spring_html_return(
+                    ast,
+                    &post_jsx,
+                    g,
+                    lang,
+                    code,
+                    enclosing_func,
+                    call_ordinal,
+                );
                 let ret = push_node(
                     g,
                     StmtKind::Return,
@@ -10585,6 +10865,15 @@ pub(super) fn build_sub<'a>(
                     enclosing_func,
                     call_ordinal,
                     analysis_rules,
+                );
+                effective_preds = try_lower_spring_html_return(
+                    ast,
+                    &effective_preds,
+                    g,
+                    lang,
+                    code,
+                    enclosing_func,
+                    call_ordinal,
                 );
                 let ret = push_node(
                     g,

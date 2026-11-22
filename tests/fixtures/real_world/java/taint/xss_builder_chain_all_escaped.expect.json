@@ -1,0 +1,24 @@
+{
+  "description": "Every operand of the chain is escaped or constant.",
+  "tags": [
+    "taint",
+    "xss",
+    "stringbuilder",
+    "container",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        11,
+        11
+      ],
+      "notes": "every operand escaped"
+    }
+  ]
+}
