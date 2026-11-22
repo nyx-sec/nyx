@@ -3,6 +3,11 @@ use super::model::{
     AnalysisUnit, AnalysisUnitKind, AuthCheck, AuthCheckKind, AuthorizationModel, OperationKind,
     SensitiveOperation, SinkClass, UnitRuntime, ValueRef, ValueSourceKind,
 };
+use super::naming::{
+    is_actor_object, is_caller_identity_name, is_caller_scope_entity_name,
+    is_request_payload_segment, is_request_scope_path, is_request_scope_segment,
+    is_session_identity_ref,
+};
 use crate::patterns::Severity;
 
 #[derive(Debug, Clone)]
@@ -184,7 +189,10 @@ fn check_ownership_gaps(
                 // Association scoping: `current_user.notes.find(params[:id])`,
                 // `request.user.documents.filter(id=doc_id)`.  The query
                 // starts at the caller, so it can only return their rows.
-                if is_owner_scoped_callee(&op.callee) {
+                if is_owner_scoped_callee(&op.callee, rules)
+                    || is_request_scope_rooted_lookup(&op.callee, unit)
+                    || is_authorization_scoped_var_lookup(&op.callee, unit)
+                {
                     continue;
                 }
                 // Scope co-subject: the same call also binds the caller's
@@ -1066,70 +1074,7 @@ fn is_request_context_scope_subject(base: &str, root: &str, unit: &AnalysisUnit)
     if rest.is_empty() {
         return is_request_scope_segment(root);
     }
-    rest.iter().any(|seg| is_request_scope_segment(seg))
-        && !rest.iter().any(|seg| is_request_payload_segment(seg))
-}
-
-fn is_request_scope_segment(segment: &str) -> bool {
-    is_caller_scope_entity_name(segment)
-        || matches!(
-            segment.to_ascii_lowercase().as_str(),
-            "package" | "owner" | "contextuser"
-        )
-}
-
-fn is_request_payload_segment(segment: &str) -> bool {
-    matches!(
-        segment.to_ascii_lowercase().as_str(),
-        "body"
-            | "form"
-            | "postform"
-            | "multipartform"
-            | "query"
-            | "params"
-            | "input"
-            | "data"
-            | "req"
-            | "request"
-            | "header"
-            | "headers"
-            | "url"
-            | "args"
-            | "json"
-            | "values"
-    )
-}
-
-/// Recognises parameter names that conventionally carry a *scope*
-/// entity — the multi-tenant ownership boundary inherited from the
-/// caller — rather than a user-controlled target identifier.  Used
-/// only by `is_caller_scope_entity_subject` to suppress
-/// `missing_ownership_check` on `<entity>.id` arguments to ORM /
-/// query / mutation calls.
-///
-/// Vocabulary matches the canonical multi-tenant primitives across
-/// Django (Sentry, Saleor), Rails (Discourse, Mastodon), and Laravel
-/// /  Symfony idioms.  Both singular and short forms are matched
-/// (`organization` / `org`, `repository` / `repo`).  Excluded:
-/// `user`, `member`, `actor` (actor semantics, covered by
-/// `is_actor_context_subject` and per-actor self-id detectors).
-fn is_caller_scope_entity_name(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    matches!(
-        lower.as_str(),
-        "organization"
-            | "org"
-            | "project"
-            | "team"
-            | "workspace"
-            | "tenant"
-            | "account"
-            | "community"
-            | "group"
-            | "repository"
-            | "repo"
-            | "company"
-    )
+    is_request_scope_path(&rest)
 }
 
 /// True iff `subject` is a plain identifier whose declaration binds
@@ -1199,6 +1144,15 @@ fn is_actor_context_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
     // resolves the signed-in user onto the context before the handler runs.
     if let Some(base) = subject.base.as_deref()
         && is_request_context_actor_base(base, unit)
+        && subject.field.as_deref().is_some_and(is_self_actor_id_field)
+    {
+        return true;
+    }
+
+    // `requester.id`, `requestor.pk`: resolvers receive the authenticated
+    // caller under these names, and its own id is not a foreign target.
+    if let Some(base) = subject.base.as_deref()
+        && is_caller_identity_name(base)
         && subject.field.as_deref().is_some_and(is_self_actor_id_field)
     {
         return true;
@@ -1364,6 +1318,11 @@ fn is_self_scoped_session_subject(subject: &ValueRef) -> bool {
     if subject.source_kind != ValueSourceKind::Session {
         return false;
     }
+    // The identity key of a session container: `session.user_id`,
+    // `req.session.userId`, `request.session.uid`, `session[:user_id]`.
+    if is_session_identity_ref(&subject.name) {
+        return true;
+    }
     // `req.session.user.id` has base `req.session.user`; `req.session.userId`
     // has base `req.session` and the whole chain is the entry the allowlist
     // names.  Match either.
@@ -1378,29 +1337,6 @@ fn is_self_scoped_session_subject(subject: &ValueRef) -> bool {
     // One of the caller's own identifiers: `current_user.id`, `request.user.pk`.
     subject.base.as_deref().is_some_and(is_actor_object)
         && subject.field.as_deref().is_some_and(is_self_actor_id_field)
-}
-
-/// Chains that name the authenticated caller itself.  `current_user` and
-/// `current_account` are the Devise / Flask-Login / Rails helpers; the rest are
-/// the request-bound user of Django, Express, Koa and Flask.
-fn is_actor_object(chain: &str) -> bool {
-    matches!(
-        chain,
-        "current_user"
-            | "current_account"
-            | "current_member"
-            | "g.user"
-            | "self.request.user"
-            | "req.user"
-            | "request.user"
-            | "req.currentUser"
-            | "request.currentUser"
-            | "ctx.state.user"
-            | "ctx.state.currentUser"
-            | "ctx.state.auth.user"
-            | "ctx.session.user"
-            | "session.user"
-    )
 }
 
 /// The caller as a whole object (`current_user`, `request.user`) rather than
@@ -1462,7 +1398,7 @@ fn is_lookup_callee(callee: &str) -> bool {
 /// (`current_user.memberships.create(project_id: id)`, `req.user.setRoles(ids)`)
 /// is not covered, and neither is a lookup that leaves the caller for its
 /// model (`current_user.class.find(id)`).
-fn is_owner_scoped_callee(callee: &str) -> bool {
+fn is_owner_scoped_callee(callee: &str, rules: &AuthAnalysisRules) -> bool {
     let Some((receiver, _method)) = callee.rsplit_once('.') else {
         return false;
     };
@@ -1487,10 +1423,22 @@ fn is_owner_scoped_callee(callee: &str) -> bool {
     let mut scoped = false;
     for (idx, segment) in receiver.split('.').enumerate() {
         let name = segment.trim_end_matches("()");
-        if scoped && matches!(name, "class" | "klass" | "constructor" | "__class__") {
+        if scoped
+            && matches!(
+                name,
+                "class" | "klass" | "constructor" | "__class__" | "model" | "_default_manager"
+            )
+        {
             return false;
         }
-        if !scoped && (name == "accessible_by" || (idx == 0 && name == "policy_scope")) {
+        if !scoped
+            && (name == "accessible_by"
+                || (idx == 0 && name == "policy_scope")
+                || rules
+                    .authorization_scope_segments
+                    .iter()
+                    .any(|scope| scope == name))
+        {
             scoped = true;
         }
         prefix_end += segment.len();
@@ -1500,6 +1448,84 @@ fn is_owner_scoped_callee(callee: &str) -> bool {
         prefix_end += 1;
     }
     scoped
+}
+
+/// `scope = Project.visible; scope.find(params[:id])`: the receiver is a local
+/// bound to a relation an authorization scope already confined.  The callee
+/// must be a lookup, like the chain form.
+fn is_authorization_scoped_var_lookup(callee: &str, unit: &AnalysisUnit) -> bool {
+    if unit.authorization_scoped_vars.is_empty() {
+        return false;
+    }
+    let Some((receiver, _)) = callee.rsplit_once('.') else {
+        return false;
+    };
+    let root = receiver.split('.').next().unwrap_or(receiver);
+    unit.authorization_scoped_vars.contains(root)
+        && (is_lookup_callee(callee) || receiver.split('.').any(is_lookup_callee))
+        && !receiver.split('.').any(|seg| {
+            matches!(
+                seg,
+                "class" | "klass" | "constructor" | "__class__" | "model" | "_default_manager"
+            )
+        })
+}
+
+/// `GetUserByID`, `FindMemberByName`: a fetch of a user, member or team by key.
+/// Reaching it through a scope entity does not confine it, since the method
+/// reads the entity type's table, not the scope's own rows.
+fn is_keyed_identity_fetch(lower_method: &str) -> bool {
+    let rest = ["get", "find", "load", "fetch", "lookup"]
+        .iter()
+        .find_map(|p| lower_method.strip_prefix(p))
+        .unwrap_or(lower_method);
+    [
+        "user",
+        "member",
+        "team",
+        "org",
+        "account",
+        "collaborator",
+        "owner",
+    ]
+    .iter()
+    .any(|entity| {
+        rest.strip_prefix(entity)
+            .is_some_and(|tail| tail.trim_start_matches('s').starts_with("by"))
+    })
+}
+
+/// Go: a read through the scope entity the request context already holds,
+/// `ctx.Repo.GitRepo.GetCommit(sha)` or `gitRepo.GetCommit(sha)` after
+/// `gitRepo := ctx.Repo.GitRepo`.  The router middleware resolved that entity
+/// and checked the caller's access to it, so a lookup on it returns only what
+/// lies inside.  Only reading methods qualify: removing or adding through the
+/// entity (`ctx.Org.Team.RemoveRepository(id)`) acts on a foreign id and
+/// still fires, as does a lookup that goes through request payload.
+fn is_request_scope_rooted_lookup(callee: &str, unit: &AnalysisUnit) -> bool {
+    if unit.request_roots.is_empty() || callee.contains('(') {
+        return false;
+    }
+    let Some((receiver, method)) = callee.rsplit_once('.') else {
+        return false;
+    };
+    if !is_lookup_callee(method) {
+        return false;
+    }
+    let lower = method.to_ascii_lowercase();
+    if lower.starts_with("delete") || lower.starts_with("destroy") || lower.starts_with("remove") {
+        return false;
+    }
+    if is_keyed_identity_fetch(&lower) {
+        return false;
+    }
+    let mut segments = receiver.split('.');
+    let root = segments.next().unwrap_or(receiver);
+    let rest: Vec<&str> = segments.collect();
+    if unit.request_scope_roots.contains(root) {
+        return !rest.iter().any(|seg| is_request_payload_segment(seg));
+    }
+    unit.request_roots.contains(root) && is_request_scope_path(&rest)
 }
 
 fn is_self_scoped_session_base(base: &str) -> bool {
@@ -1522,24 +1548,6 @@ fn is_self_scoped_session_base(base: &str) -> bool {
             | "ctx.state.auth.user"
             | "g.user"
             | "self.request.user"
-            // The caller's own id from the session is self-scoped: fetching
-            // your own record with it is not IDOR (only a foreign,
-            // request-supplied id is). The `.user` forms above missed the
-            // `req.session.userId` / `session.uid` idiom.
-            | "req.session.userId"
-            | "request.session.userId"
-            | "session.userId"
-            | "req.session.userid"
-            | "request.session.userid"
-            | "session.userid"
-            | "req.session.uid"
-            | "request.session.uid"
-            | "session.uid"
-            | "ctx.session.userId"
-            | "ctx.session.userid"
-            | "ctx.session.uid"
-            | "ctx.state.userId"
-            | "ctx.state.uid"
     )
 }
 
@@ -1871,6 +1879,8 @@ mod tests {
             package_names: HashSet::new(),
             runtime: UnitRuntime::Unknown,
             request_roots: HashSet::new(),
+            request_scope_roots: HashSet::new(),
+            authorization_scoped_vars: HashSet::new(),
         }
     }
 
@@ -2854,7 +2864,11 @@ mod tests {
 
     #[test]
     fn owner_scoped_callees_start_at_the_caller_or_a_policy_scope() {
-        use super::is_owner_scoped_callee as scoped;
+        let rules = crate::auth_analysis::config::build_auth_rules(
+            &crate::utils::config::Config::default(),
+            "ruby",
+        );
+        let scoped = |callee: &str| super::is_owner_scoped_callee(callee, &rules);
         assert!(scoped("current_user.notes.find"));
         assert!(scoped("current_user.notes.where().find"));
         assert!(scoped("request.user.documents.filter"));
@@ -2886,6 +2900,26 @@ mod tests {
         assert!(!scoped("find"));
         // The user's name in a later segment does not scope the query.
         assert!(!scoped("Note.current_user.find"));
+        // An authorization scope confines the lookup that follows it.
+        assert!(scoped("Issue.viewable_by.find"));
+        assert!(scoped("project.issues.readable_by.find_by"));
+        assert!(scoped("User.viewable_by.active.find"));
+        assert!(!scoped("Issue.viewable_by"));
+        assert!(!scoped("Issue.find"));
+        assert!(!scoped("Issue.where.visible_by.find"));
+        assert!(!scoped("Issue.viewable_by.klass.find"));
+        assert!(!scoped("Issue.viewable_by.model.find"));
+        // Bare `visible` is usually a publish flag, so it scopes nothing.
+        assert!(!scoped("Issue.visible.find"));
+        // Other languages carry no such scope vocabulary.
+        let py = crate::auth_analysis::config::build_auth_rules(
+            &crate::utils::config::Config::default(),
+            "python",
+        );
+        assert!(!super::is_owner_scoped_callee(
+            "Issue.viewable_by.find",
+            &py
+        ));
     }
 
     #[test]

@@ -1,0 +1,25 @@
+{
+  "description": "Rails session identity reads, viewable_by scopes and visible(current_user), directly or through a local, are not missing an ownership check.",
+  "tags": [
+    "auth",
+    "ruby",
+    "negative",
+    "session",
+    "visible-scope"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rb.auth.missing_ownership_check",
+      "severity": null,
+      "line_range": [
+        1,
+        34
+      ],
+      "notes": "no ownership finding anywhere in the fixture",
+      "must_not_match": true
+    }
+  ]
+}

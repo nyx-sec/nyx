@@ -1,0 +1,24 @@
+{
+  "description": "A package-level value of an application type is not an in-memory container, so its Add with request ids still fires.",
+  "tags": [
+    "auth",
+    "go",
+    "positive",
+    "in-memory"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        18,
+        18
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    }
+  ]
+}

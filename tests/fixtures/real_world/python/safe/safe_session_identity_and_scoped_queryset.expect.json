@@ -1,0 +1,25 @@
+{
+  "description": "Flask session identity reads and querysets scoped to the caller (visible_to_user(requestor), filter(id=requester.id)) are not missing an ownership check.",
+  "tags": [
+    "auth",
+    "python",
+    "negative",
+    "session",
+    "scoped-queryset"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "py.auth.missing_ownership_check",
+      "severity": null,
+      "line_range": [
+        1,
+        32
+      ],
+      "notes": "no ownership finding anywhere in the fixture",
+      "must_not_match": true
+    }
+  ]
+}

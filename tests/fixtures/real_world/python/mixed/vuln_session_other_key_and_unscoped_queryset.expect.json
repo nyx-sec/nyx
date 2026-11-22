@@ -1,0 +1,85 @@
+{
+  "description": "Other session keys, unscoped querysets, a queryset rebound to an unscoped one and a scope called with a non-caller argument still fire, an id read from the session on one branch only, a queryset hopped back through .model.objects and a local named session holding request input.",
+  "tags": [
+    "auth",
+    "python",
+    "positive",
+    "session",
+    "scoped-queryset"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "py.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        11,
+        11
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "py.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        17,
+        17
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "py.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        24,
+        24
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "py.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        29,
+        29
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "py.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        37,
+        37
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "py.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        44,
+        44
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "py.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        51,
+        51
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    }
+  ]
+}

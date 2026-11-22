@@ -107,6 +107,28 @@ pub(super) fn expr_root<'a>(node: Node<'a>, bytes: &[u8]) -> Option<String> {
     }
 }
 
+/// Root and later segments of a pure selector chain (`ctx.Repo.GitRepo`),
+/// seeing through `&` and parentheses.  `None` when the expression has a call,
+/// an index or any other step in it.
+pub(super) fn selector_chain(node: Node<'_>, bytes: &[u8]) -> Option<(String, Vec<String>)> {
+    let mut segments = Vec::new();
+    let mut cur = node;
+    loop {
+        match cur.kind() {
+            "identifier" => {
+                segments.reverse();
+                return Some((text(cur, bytes), segments));
+            }
+            "selector_expression" => {
+                segments.push(text(cur.child_by_field_name("field")?, bytes));
+                cur = cur.child_by_field_name("operand")?;
+            }
+            "parenthesized_expression" | "unary_expression" => cur = cur.named_child(0)?,
+            _ => return None,
+        }
+    }
+}
+
 /// First segment of a dotted callee text: `r` for `r.URL.Query().Get`.
 pub(super) fn callee_root(callee: &str) -> &str {
     callee.split(['.', '(']).next().unwrap_or(callee)
@@ -141,7 +163,16 @@ pub(super) fn expression_items(node: Node<'_>) -> Vec<Node<'_>> {
 
 /// Standard-library packages whose types are in-memory containers or
 /// synchronisation primitives, never a data-layer client.
-const IN_MEMORY_PACKAGES: &[&str] = &["sync", "atomic", "list", "ring", "heap", "orderedmap"];
+const IN_MEMORY_PACKAGES: &[&str] = &[
+    "sync",
+    "atomic",
+    "list",
+    "ring",
+    "heap",
+    "orderedmap",
+    // hashicorp/golang-lru caches: `lru.Cache`, `lru.ARCCache`, ...
+    "lru",
+];
 
 /// `(package, type)` pairs outside those packages that are in-memory values.
 const IN_MEMORY_TYPES: &[(&str, &str)] = &[
@@ -151,6 +182,7 @@ const IN_MEMORY_TYPES: &[(&str, &str)] = &[
     ("bytes", "Buffer"),
     ("bytes", "Reader"),
     ("strings", "Reader"),
+    ("expirable", "LRU"),
 ];
 
 /// Constructor functions of the project-level set types
@@ -224,6 +256,45 @@ pub(super) fn package_level_names(root: Node<'_>, bytes: &[u8]) -> HashSet<Strin
             "import_declaration" => collect_imports(decl, bytes, &mut names),
             "const_declaration" => collect_consts(decl, bytes, &mut names),
             _ => {}
+        }
+    }
+    names
+}
+
+/// Package-level `var` names whose declared type or initialiser is an
+/// in-memory container (`var cache *lru.Cache[string, any]`,
+/// `var seen = make(map[string]bool)`).  A method called on one of them is
+/// bookkeeping on process memory, not a data-layer operation.
+pub(super) fn package_in_memory_vars(root: Node<'_>, bytes: &[u8]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for decl in named_children(root) {
+        if decl.kind() != "var_declaration" {
+            continue;
+        }
+        let mut specs = Vec::new();
+        for child in named_children(decl) {
+            match child.kind() {
+                "var_spec" => specs.push(child),
+                "var_spec_list" => specs.extend(named_children(child)),
+                _ => {}
+            }
+        }
+        for spec in specs {
+            let in_memory = spec
+                .child_by_field_name("type")
+                .is_some_and(|ty| type_is_in_memory(ty, bytes))
+                || spec
+                    .child_by_field_name("value")
+                    .is_some_and(|value| value_is_in_memory(value, bytes));
+            if !in_memory {
+                continue;
+            }
+            let mut cursor = spec.walk();
+            for name in spec.children_by_field_name("name", &mut cursor) {
+                if name.kind() == "identifier" {
+                    names.insert(text(name, bytes));
+                }
+            }
         }
     }
     names
@@ -328,7 +399,6 @@ fn collect_consts(decl: Node<'_>, bytes: &[u8], out: &mut HashSet<String>) {
 /// Every name a function declares for itself: parameters, results, receiver,
 /// `:=` and `var` bindings, `range` variables.  A package-level name that
 /// appears here is shadowed inside the function.
-#[cfg(test)]
 pub(super) fn declared_names(definition: Node<'_>, bytes: &[u8]) -> HashSet<String> {
     let mut out = HashSet::new();
     declared_names_visit(definition, bytes, &mut |name| {
@@ -424,7 +494,6 @@ fn declared_names_in_node(node: Node<'_>, bytes: &[u8], sink: &mut impl FnMut(&s
     }
 }
 
-#[cfg(test)]
 fn declared_names_visit(node: Node<'_>, bytes: &[u8], sink: &mut impl FnMut(&str)) {
     declared_names_in_node(node, bytes, sink);
     for idx in 0..node.named_child_count() {

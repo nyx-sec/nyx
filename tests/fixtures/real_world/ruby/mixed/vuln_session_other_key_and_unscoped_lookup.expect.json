@@ -1,0 +1,95 @@
+{
+  "description": "Session keys that are not the caller identity, an unscoped lookup and a scope local rebound to an unscoped relation still fire, a bare visible scope and an id read from the session on one branch only.",
+  "tags": [
+    "auth",
+    "ruby",
+    "positive",
+    "session",
+    "visible-scope"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rb.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        6,
+        6
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "rb.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        11,
+        11
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "rb.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        16,
+        16
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "rb.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        21,
+        21
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "rb.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        28,
+        28
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "rb.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        34,
+        34
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "rb.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        48,
+        48
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "rb.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        40,
+        40
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    }
+  ]
+}

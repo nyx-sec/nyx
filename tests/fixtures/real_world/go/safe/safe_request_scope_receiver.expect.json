@@ -1,0 +1,24 @@
+{
+  "description": "Lookups through the scope entity the router middleware resolved (ctx.Repo.GitRepo.GetCommit, and a local alias of it) are confined to that entity and are not missing an ownership check.",
+  "tags": [
+    "auth",
+    "go",
+    "negative",
+    "request-scope"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "line_range": [
+        1,
+        22
+      ],
+      "notes": "no ownership finding anywhere in the fixture",
+      "must_not_match": true
+    }
+  ]
+}

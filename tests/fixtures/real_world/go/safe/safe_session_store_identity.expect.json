@@ -1,0 +1,24 @@
+{
+  "description": "Ids read from the server-side session store under identity keys (uid, twofaUid) are not request-supplied.",
+  "tags": [
+    "auth",
+    "go",
+    "negative",
+    "session"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "line_range": [
+        1,
+        31
+      ],
+      "notes": "no ownership finding anywhere in the fixture",
+      "must_not_match": true
+    }
+  ]
+}

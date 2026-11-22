@@ -67,6 +67,15 @@ pub struct AuthAnalysisRules {
     /// in `classify_sink_class` for SQLAlchemy / similar query-builder
     /// idioms whose first call returns an opaque builder object.
     pub db_query_builder_roots: Vec<String>,
+    /// Receiver-chain segments that confine a lookup to the rows the caller
+    /// may see (`Issue.visible.find(id)`, Redmine's `visible(user)` scope).
+    /// `accessible_by` and `policy_scope` are always scopes, in every
+    /// language; this list adds the framework-specific spellings.
+    pub authorization_scope_segments: Vec<String>,
+    /// Scope methods that confine rows only when the caller is passed to
+    /// them: `Model.objects.visible_to_user(requestor)`.  A call with another
+    /// argument (a channel, a slug) is not a scope on its own.
+    pub actor_scope_segments: Vec<String>,
 }
 
 impl AuthAnalysisRules {
@@ -93,6 +102,8 @@ impl AuthAnalysisRules {
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
             db_query_builder_roots: Vec::new(),
+            authorization_scope_segments: Vec::new(),
+            actor_scope_segments: Vec::new(),
         }
     }
 
@@ -760,6 +771,13 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             // chain *root* primitive itself is the DB-anchor evidence.
             // Closes airflow-style `session.scalar(select(C).filter_by(...))`.
             db_query_builder_roots: vec!["select".into(), "query".into()],
+            authorization_scope_segments: Vec::new(),
+            actor_scope_segments: vec![
+                "visible_to_user".into(),
+                "visible_to".into(),
+                "viewable_by".into(),
+                "readable_by".into(),
+            ],
         }
     } else if matches!(lang_slug, "ruby") {
         AuthAnalysisRules {
@@ -938,6 +956,11 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
             db_query_builder_roots: Vec::new(),
+            // Bare `visible` is not here: in most Rails apps it is a publish
+            // flag scope, not an authorization scope.  `visible(current_user)`
+            // counts through `actor_scope_segments`.
+            authorization_scope_segments: vec!["viewable_by".into(), "readable_by".into()],
+            actor_scope_segments: vec!["visible".into()],
         }
     } else if matches!(lang_slug, "go") {
         AuthAnalysisRules {
@@ -1046,6 +1069,8 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
             db_query_builder_roots: Vec::new(),
+            authorization_scope_segments: Vec::new(),
+            actor_scope_segments: Vec::new(),
         }
     } else if matches!(lang_slug, "java") {
         AuthAnalysisRules {
@@ -1139,6 +1164,8 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
             db_query_builder_roots: Vec::new(),
+            authorization_scope_segments: Vec::new(),
+            actor_scope_segments: Vec::new(),
         }
     } else if matches!(lang_slug, "rust") {
         AuthAnalysisRules {
@@ -1323,6 +1350,8 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "share_grants".into(),
             ],
             db_query_builder_roots: Vec::new(),
+            authorization_scope_segments: Vec::new(),
+            actor_scope_segments: Vec::new(),
         }
     } else {
         AuthAnalysisRules {
@@ -1487,6 +1516,8 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
             db_query_builder_roots: Vec::new(),
+            authorization_scope_segments: Vec::new(),
+            actor_scope_segments: Vec::new(),
         }
     };
 

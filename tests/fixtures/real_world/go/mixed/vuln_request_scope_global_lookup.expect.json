@@ -1,0 +1,74 @@
+{
+  "description": "A package-level lookup by the request id, a removal or a keyed user fetch through the scope entity, a rebound scope alias and an id read from the session on one branch only still fire; only reads through the scope entity are exempt.",
+  "tags": [
+    "auth",
+    "go",
+    "positive",
+    "request-scope"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        13,
+        13
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        20,
+        20
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        27,
+        27
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        34,
+        34
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        43,
+        43
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    },
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        53,
+        53
+      ],
+      "notes": "request-supplied or non-identity id reaches a lookup with no ownership check"
+    }
+  ]
+}

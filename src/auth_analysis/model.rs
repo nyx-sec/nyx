@@ -356,6 +356,14 @@ pub struct AnalysisUnit {
     /// `<root>.Repo.Repository.ID` style chains read the scope entity the
     /// middleware already resolved.  Empty for other languages.
     pub request_roots: HashSet<String>,
+    /// Go: locals bound to a scope entity read off the request context
+    /// (`gitRepo := ctx.Repo.GitRepo`).  A subset of `request_roots`; the
+    /// alias keeps the scope tag its right-hand side carried.
+    pub request_scope_roots: HashSet<String>,
+    /// Locals bound to a relation already confined by an authorization scope
+    /// (`scope = Project.visible`), so `scope.find(params[:id])` is a scoped
+    /// read.  Rails only, driven by `AuthAnalysisRules::authorization_scope_segments`.
+    pub authorization_scoped_vars: HashSet<String>,
 }
 
 /// Per-function summary of which positional parameters are
