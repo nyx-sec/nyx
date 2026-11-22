@@ -7,7 +7,7 @@
 use super::domain::{AuthLevel, ChainProxyState, ProductState, ResourceLifecycle};
 use super::engine::Transfer;
 use super::symbol::{SymbolId, SymbolInterner};
-use crate::cfg::{EdgeKind, NodeInfo, StmtKind};
+use crate::cfg::{CalleeNesting, EdgeKind, NodeInfo, StmtKind};
 use crate::cfg_analysis::rules::{self, ResourcePair};
 use crate::symbol::Lang;
 use petgraph::graph::NodeIndex;
@@ -825,8 +825,12 @@ impl DefaultTransfer<'_> {
                 .iter()
                 .any(|e| acquire_callee_matches(self.lang, &callee, e));
 
+            // A callee promoted out of another call's arguments binds nothing
+            // here (the definition holds the outer call's result), and a
+            // hoisted member read is no call of this node at all.
             if is_acquire
                 && !is_excluded
+                && info.call.callee_nesting == CalleeNesting::Own
                 && let Some(ref def) = info.taint.defines
                 && let Some(sym) = self.get_sym(info, def)
             {

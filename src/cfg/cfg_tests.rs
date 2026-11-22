@@ -1250,6 +1250,7 @@ fn clone_preserves_all_sub_structs() {
             destination_uses: None,
             gate_filters: Vec::new(),
             is_constructor: false,
+            callee_nesting: CalleeNesting::Own,
             ctor_owned_args: vec!["in".into()],
             produces_null_proto: false,
             hoisted_sink: Some(Box::new(crate::cfg::HoistedSink {

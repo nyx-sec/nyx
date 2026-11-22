@@ -677,6 +677,30 @@ impl CondArith {
 }
 
 /// Call-related metadata for CFG nodes.
+/// Relation between a node's recorded `callee` and the call the node is.
+///
+/// `callee` can be promoted from a call nested in the node, so the resource
+/// passes need to know whether it still describes the call whose result the
+/// node's definition holds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CalleeNesting {
+    /// The callee is the node's own call, or a chain head used as a receiver
+    /// (`createReadStream(p).on(..)`), whose result is the acquired value.
+    #[default]
+    Own,
+    /// Promoted from the arguments of another call (`wrap(open(p))`): the
+    /// definition holds the outer call's result, not the nested value.
+    InArg,
+    /// As `InArg`, but through an object / array / map literal in the
+    /// arguments (`rq({ files: createReadStream(p) })`): the value is stored
+    /// into an aggregate that the outer call receives.
+    InAggregateArg,
+    /// A member read hoisted out of a callback argument over the node's own
+    /// callee (`describe(.., () => { fs.createReadStream(p) })`).  Names no
+    /// call of this node.
+    Hoisted,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CallMeta {
     pub callee: Option<String>,
@@ -815,6 +839,10 @@ pub struct CallMeta {
     /// must not survive into the constructed object.
     #[serde(default)]
     pub is_constructor: bool,
+    /// Where `callee` sits relative to the node's own call.  See
+    /// [`CalleeNesting`].
+    #[serde(default)]
+    pub callee_nesting: CalleeNesting,
     /// Bare variables whose ownership this constructor takes over: the
     /// arguments of a Java wrapper constructor (`new BufferedInputStream(in)`,
     /// nested wrappers included) and the initialiser of a C++ smart-pointer
@@ -5165,6 +5193,12 @@ pub(super) fn push_node<'a>(
     // actually narrows against `ast.span`, storing a redundant copy would
     // just bloat every labeled Call node.
     let callee_span = inner_callee_span.or(inner_text_span).filter(|s| *s != span);
+    let callee_nesting =
+        if text_from_member_label && inner_callee_span.is_none() && outer_callee.is_some() {
+            CalleeNesting::Hoisted
+        } else {
+            callee_span.map_or(CalleeNesting::Own, |cs| call_arg_nesting(ast, cs))
+        };
 
     // Constructor detection: a `new X(...)` call carries different cap
     // semantics than a plain function call. The SSA Call transfer uses
@@ -5237,6 +5271,7 @@ pub(super) fn push_node<'a>(
             destination_uses,
             gate_filters,
             is_constructor,
+            callee_nesting,
             ctor_owned_args,
             produces_null_proto,
             hoisted_sink,
@@ -11440,8 +11475,16 @@ fn apply_gated_label_rules(
                     }
                     reaching = Some(uses);
                 }
+                let nesting = if own_call.is_none() {
+                    call_arg_nesting(node, inner_span)
+                } else {
+                    CalleeNesting::Own
+                };
                 let info = &mut body.graph[idx];
                 info.taint.labels.push(inner.label);
+                if nesting != CalleeNesting::Own {
+                    info.call.callee_nesting = nesting;
+                }
                 if info.call.sink_reaching_uses.is_none() {
                     info.call.sink_reaching_uses = reaching;
                 }
@@ -11486,6 +11529,59 @@ fn chain_head_call(call_node: Node) -> Node {
         cur = next;
     }
     cur
+}
+
+/// Classify how the node spanning `span` sits under `root`: directly in the
+/// `arguments` of some call, through an aggregate literal inside such
+/// arguments, or not in call arguments at all.
+fn call_arg_nesting(root: Node, span: (usize, usize)) -> CalleeNesting {
+    let Some(mut cur) = root.descendant_for_byte_range(span.0, span.1) else {
+        return CalleeNesting::Own;
+    };
+    let mut via_aggregate = false;
+    while cur.id() != root.id() {
+        let Some(parent) = cur.parent() else {
+            return CalleeNesting::Own;
+        };
+        if parent
+            .child_by_field_name("arguments")
+            .is_some_and(|a| a.id() == cur.id())
+        {
+            return if via_aggregate {
+                CalleeNesting::InAggregateArg
+            } else {
+                CalleeNesting::InArg
+            };
+        }
+        if is_aggregate_literal_kind(cur.kind()) {
+            via_aggregate = true;
+        }
+        cur = parent;
+    }
+    CalleeNesting::Own
+}
+
+/// Grammar kinds of object / array / map / struct literals.
+fn is_aggregate_literal_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "object"
+            | "array"
+            | "pair"
+            | "dictionary"
+            | "list"
+            | "tuple"
+            | "set"
+            | "hash"
+            | "array_initializer"
+            | "array_creation_expression"
+            | "initializer_list"
+            | "composite_literal"
+            | "literal_value"
+            | "struct_expression"
+            | "array_expression"
+            | "tuple_expression"
+    )
 }
 
 /// Positional index of the argument of `call_node` whose span contains

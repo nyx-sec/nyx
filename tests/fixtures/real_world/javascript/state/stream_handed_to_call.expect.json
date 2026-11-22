@@ -1,0 +1,31 @@
+{
+  "description": "A stream created inside the arguments of another call is handed to that call; the assigned name holds the call result. A stream bound to a local and never closed still leaks.",
+  "tags": ["state", "resource-leak", "ownership-handoff"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [1, 19],
+      "evidence_contains": [],
+      "notes": "stream nested in rq(...) arguments is not bound to res or result"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [1, 19],
+      "evidence_contains": [],
+      "notes": "same handoff, cfg twin; describe/test wrapper lines must not carry the acquire"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": true,
+      "line_range": [21, 24],
+      "evidence_contains": [],
+      "notes": "s is created, never closed, never handed off"
+    }
+  ]
+}
