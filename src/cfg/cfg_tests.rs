@@ -9225,6 +9225,51 @@ fn go_elem_reads_of(src: &[u8]) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// Whether the node reading `parts[0]` in `src` is marked unstable.
+fn go_elem_base_unstable_in(src: &str) -> bool {
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src.as_bytes(), "go", ts_lang);
+    let nodes: Vec<_> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter(|n| !n.elem_reads.is_empty())
+        .collect();
+    assert!(!nodes.is_empty(), "no element read in {src}");
+    nodes.iter().any(|n| n.elem_base_unstable)
+}
+
+#[test]
+fn go_elem_base_with_other_write_routes_is_unstable() {
+    let wrap = |mid: &str| {
+        format!(
+            "package p\nfunc f(s string) {{\n  parts := strings.Split(s, \" \")\n  {mid}\n  use(parts[0])\n}}"
+        )
+    };
+    for mid in [
+        "sort.Strings(parts)",
+        "copy(parts, other)",
+        "fill(parts)",
+        "p := &parts; (*p)[0] = s",
+        "q := parts; q[0] = s",
+        "parts[0] = s",
+        "set := func() { parts[0] = s }; set()",
+        "r := parts[1:]; r[0] = s",
+        "parts = append(parts, s)",
+    ] {
+        assert!(go_elem_base_unstable_in(&wrap(mid)), "{mid}");
+    }
+    for mid in [
+        "n := len(parts)",
+        "i := 1; _ = parts[i]",
+        "for _, p := range parts { use(p) }",
+        "parts = strings.Split(s, \",\")",
+        "",
+    ] {
+        assert!(!go_elem_base_unstable_in(&wrap(mid)), "{mid}");
+    }
+}
+
 #[test]
 fn go_constant_index_reads_are_recorded() {
     let src = b"package p\n\

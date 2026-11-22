@@ -122,110 +122,6 @@ fn try_lower_field_proj_chain(
     Some((current, method))
 }
 
-/// Whether the value `v` is the result of a Python `urlparse` / `urlsplit`
-/// call, looking through plain copies.
-fn is_url_parse_result(v: SsaValue, blocks: &[SsaBlock], value_defs: &[ValueDef]) -> bool {
-    let mut cur = v;
-    for _ in 0..4 {
-        let Some(vd) = value_defs.get(cur.0 as usize) else {
-            return false;
-        };
-        let Some(block) = blocks.get(vd.block.0 as usize) else {
-            return false;
-        };
-        let Some(inst) = block
-            .phis
-            .iter()
-            .chain(block.body.iter())
-            .find(|i| i.value == cur)
-        else {
-            return false;
-        };
-        match &inst.op {
-            SsaOp::Assign(uses) if uses.len() == 1 => cur = uses[0],
-            SsaOp::Call {
-                callee,
-                receiver: None,
-                ..
-            } => return is_python_url_parse_callee(callee),
-            _ => return false,
-        }
-    }
-    false
-}
-
-/// Rewrite the operands of `op` that read a `urlparse` result only through
-/// a host-free component (see [`NodeInfo::hostless_proj_roots`]): each such
-/// operand becomes a `FieldProj` of the parse result, so the taint transfer
-/// can drop the redirect capability from exactly that read.  Roots that are
-/// not a `urlparse` result, or that the node itself redefines, are left
-/// untouched.
-#[allow(clippy::too_many_arguments)]
-fn project_hostless_reads(
-    op: &mut SsaOp,
-    info: &crate::cfg::NodeInfo,
-    var_stacks: &FxHashMap<String, Vec<SsaValue>>,
-    field_interner: &mut FieldInterner,
-    block_idx: usize,
-    block_id: BlockId,
-    next_value: &mut u32,
-    ssa_blocks: &mut [SsaBlock],
-    value_defs: &mut Vec<ValueDef>,
-    node: NodeIndex,
-) {
-    for root in &info.hostless_proj_roots {
-        if info.taint.defines.as_deref() == Some(&**root) {
-            continue;
-        }
-        let Some(rv) = var_stacks.get(&**root).and_then(|s| s.last().copied()) else {
-            continue;
-        };
-        if !is_url_parse_result(rv, ssa_blocks, value_defs) {
-            continue;
-        }
-        // The projection stands for the component read; `path` is the
-        // representative field (all four share the same transfer rule).
-        let fid = field_interner.intern("path");
-        let pv = SsaValue(*next_value);
-        let mut used = false;
-        let mut swap = |slot: &mut SsaValue| {
-            if *slot == rv {
-                *slot = pv;
-                used = true;
-            }
-        };
-        match op {
-            SsaOp::Assign(uses) => uses.iter_mut().for_each(&mut swap),
-            SsaOp::Call { args, .. } => args
-                .iter_mut()
-                .flat_map(|g| g.iter_mut())
-                .for_each(&mut swap),
-            _ => {}
-        }
-        if !used {
-            continue;
-        }
-        *next_value += 1;
-        let name = format!("{root}.path");
-        ssa_blocks[block_idx].body.push(SsaInst {
-            value: pv,
-            op: SsaOp::FieldProj {
-                receiver: rv,
-                field: fid,
-                projected_type: None,
-            },
-            cfg_node: node,
-            var_name: Some(name.clone()),
-            span: info.ast.span,
-        });
-        value_defs.push(ValueDef {
-            var_name: Some(name),
-            cfg_node: node,
-            block: block_id,
-        });
-    }
-}
-
 /// The value copied by the instruction defining `v`, when that instruction
 /// is a plain single-operand copy.
 fn copy_source(v: SsaValue, blocks: &[SsaBlock], value_defs: &[ValueDef]) -> Option<SsaValue> {
@@ -271,6 +167,12 @@ fn project_const_index_reads(
             continue;
         };
         if info.taint.defines.as_deref() == Some(base) {
+            continue;
+        }
+        // A base the array behind it can change through (aliased, passed to a
+        // callee, captured, stored into) keeps its plain taint: no element
+        // value, so no validation can attach to the element.
+        if info.elem_base_unstable {
             continue;
         }
         let Some(rv) = var_stacks.get(base).and_then(|s| s.last().copied()) else {
@@ -1986,20 +1888,6 @@ fn rename_variables(
                 project_const_index_reads(
                     &mut op, info, var_stacks, block_idx, block_id, next_value, ssa_blocks,
                     value_defs, node,
-                );
-            }
-            if !info.hostless_proj_roots.is_empty() {
-                project_hostless_reads(
-                    &mut op,
-                    info,
-                    var_stacks,
-                    field_interner,
-                    block_idx,
-                    block_id,
-                    next_value,
-                    ssa_blocks,
-                    value_defs,
-                    node,
                 );
             }
 

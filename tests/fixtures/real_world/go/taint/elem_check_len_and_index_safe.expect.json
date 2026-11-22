@@ -1,0 +1,39 @@
+{
+  "description": "parts is only read through len, constant and variable indexes after the check, so the check on parts[0] still holds",
+  "tags": [
+    "taint",
+    "sqli",
+    "go",
+    "safe",
+    "allowlist"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        12,
+        26
+      ],
+      "evidence_contains": [],
+      "notes": "len and index reads cannot change the checked element",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [
+        12,
+        26
+      ],
+      "evidence_contains": [],
+      "notes": "len and index reads cannot change the checked element",
+      "must_match": false,
+      "must_not_match": true
+    }
+  ]
+}

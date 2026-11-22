@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 1259
+    "corpus_size": 1269
   },
   "cases": [
     {
@@ -39034,8 +39034,9 @@
         "patched",
         "negative"
       ],
-      "disabled": false,
-      "notes": "CVE-2026-28415 patched counterpart: the fix rebuilds the redirect target from urlparse(target).path/.query/.fragment, which carry no scheme or host. Regression guard that Nyx does not refire on the fix. Apache-2.0"
+      "disabled": true,
+      "notes": "CVE-2026-28415 patched counterpart: the fix rebuilds the redirect target from urlparse(target).path/.query/.fragment, which carry no scheme or host. Regression guard that Nyx does not refire on the fix. Apache-2.0",
+      "disabled_reason": "Precision deferred: the upstream fix rebuilds the target from urlparse(target).path/.query/.fragment, but urlparse('////evil.com').path is '//evil.com', a protocol-relative URL, so the fix itself still redirects off-site. Nyx keeps reporting it on purpose."
     },
     {
       "case_id": "cve-ruby-2025-54314-vulnerable",
@@ -40275,10 +40276,10 @@
       "tags": [
         "open_redirect",
         "urlparse",
-        "hostless-projection"
+        "leading-slash-guard"
       ],
       "disabled": false,
-      "notes": "urlparse(x).path/.query/.fragment carry no scheme or host, so a target rebuilt from them cannot leave the site."
+      "notes": "urlparse(x).path is only redirected to after rejecting protocol-relative and backslash prefixes."
     },
     {
       "case_id": "go-sqli-elem-stale-001",
@@ -40425,6 +40426,358 @@
       ],
       "disabled": false,
       "notes": "comma-ok membership on parts[0] and asc/desc equality on parts[1] validate the elements used in ORDER BY."
+    },
+    {
+      "case_id": "go-sqli-elem-copy-over-001",
+      "file": "go/sqli/sqli_elem_check_copy_over.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          20,
+          20
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "tags": [
+        "sqli",
+        "element-check",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "A comma-ok check on parts[0] does not cover a read after copy() overwrites the slice with request data."
+    },
+    {
+      "case_id": "go-sqli-elem-callee-write-001",
+      "file": "go/sqli/sqli_elem_check_callee_write.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          24,
+          24
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          19,
+          19
+        ]
+      ],
+      "tags": [
+        "sqli",
+        "element-check",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "A comma-ok check on parts[0] does not cover a read after a callee stores request data into the slice."
+    },
+    {
+      "case_id": "go-sqli-elem-closure-write-001",
+      "file": "go/sqli/sqli_elem_check_closure_write.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          23,
+          23
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "tags": [
+        "sqli",
+        "element-check",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "A comma-ok check on parts[0] does not cover a read after a closure stores request data into the slice."
+    },
+    {
+      "case_id": "go-sqli-elem-shared-map-001",
+      "file": "go/sqli/sqli_elem_check_shared_map.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          23,
+          23
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          19,
+          19
+        ]
+      ],
+      "tags": [
+        "sqli",
+        "element-check",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "A package-level map that another handler fills with request keys is not an allowlist."
+    },
+    {
+      "case_id": "go-sqli-elem-range-inline-map-001",
+      "file": "go/sqli/sqli_elem_check_range_inline_map.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          21,
+          21
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          17,
+          17
+        ]
+      ],
+      "tags": [
+        "sqli",
+        "element-check",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "A map filled in a loop over an inline split of request data is not an allowlist."
+    },
+    {
+      "case_id": "go-sqli-elem-shadowed-base-001",
+      "file": "go/sqli/sqli_elem_check_shadowed_base.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          20,
+          20
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          19,
+          19
+        ]
+      ],
+      "tags": [
+        "sqli",
+        "element-check",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "A guard on parts[0] does not cover parts[0] of a shadowing loop variable holding request data."
+    },
+    {
+      "case_id": "go-safe-elem-len-and-index-001",
+      "file": "go/safe/safe_elem_check_len_and_index.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "sqli",
+        "element-check"
+      ],
+      "disabled": false,
+      "notes": "parts is only read through len, constant and variable indexes after the check, so the check on parts[0] still holds."
+    },
+    {
+      "case_id": "go-safe-elem-shared-map-readonly-001",
+      "file": "go/safe/safe_elem_check_shared_map_readonly.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "sqli",
+        "element-check"
+      ],
+      "disabled": false,
+      "notes": "A package-level literal map that another handler only reads is a real allowlist."
+    },
+    {
+      "case_id": "go-safe-elem-range-literal-map-001",
+      "file": "go/safe/safe_elem_check_range_literal_map.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "sqli",
+        "element-check"
+      ],
+      "disabled": false,
+      "notes": "A map filled in a loop over a constant list is a real allowlist."
+    },
+    {
+      "case_id": "py-open_redirect-urlparse-path-001",
+      "file": "python/open_redirect/redirect_urlparse_path.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "urlparse",
+        "path",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "urlparse('////evil.com').path is '//evil.com', so the path alone can still leave the site."
     }
   ]
 }

@@ -4203,6 +4203,19 @@ fn sink_in_entrypoint(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
     }
 }
 
+/// Whether the sink reads the constant-index element `v` (`parts[0]`) of a
+/// base that is defined once and has no write route besides redefinition, so a guard on that element names the same value the sink reads.
+fn elem_read_pinned(cfg: &crate::cfg::Cfg, sink_info: &crate::cfg::NodeInfo, v: &str) -> bool {
+    if !sink_info.elem_reads.iter().any(|e| &**e == v) {
+        return false;
+    }
+    let Some((base, _)) = v.split_once('[') else {
+        return false;
+    };
+    let defs = crate::cfg::go_base_def_count(cfg, sink_info.ast.enclosing_func.as_deref(), base);
+    !sink_info.elem_base_unstable && defs <= 1
+}
+
 impl CfgAnalysis for UnguardedSink {
     fn run(&self, ctx: &AnalysisContext) -> Vec<CfgFinding> {
         let doms = dominators::compute_dominators(ctx.cfg, ctx.entry);
@@ -4238,7 +4251,7 @@ impl CfgAnalysis for UnguardedSink {
                 ctx.cfg[*guard_idx].ast.enclosing_func.as_deref() == sink_func
                     && vars.iter().any(|v| {
                         sink_info.taint.uses.iter().any(|u| u == v)
-                            || sink_info.elem_reads.iter().any(|e| &**e == v.as_str())
+                            || elem_read_pinned(ctx.cfg, sink_info, v)
                     })
                     && dominates(&doms, *guard_idx, *sink)
             });

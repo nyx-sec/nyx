@@ -1,0 +1,39 @@
+{
+  "description": "A map filled in a loop over a constant list is a real allowlist",
+  "tags": [
+    "taint",
+    "sqli",
+    "go",
+    "safe",
+    "allowlist"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        12,
+        23
+      ],
+      "evidence_contains": [],
+      "notes": "the loop keys are constants",
+      "must_match": false,
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [
+        12,
+        23
+      ],
+      "evidence_contains": [],
+      "notes": "the loop keys are constants",
+      "must_match": false,
+      "must_not_match": true
+    }
+  ]
+}

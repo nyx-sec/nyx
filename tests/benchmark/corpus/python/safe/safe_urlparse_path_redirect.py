@@ -9,10 +9,7 @@ app = Flask(__name__)
 def go():
     target = request.args.get("next", "/")
     parsed = urlparse(target)
-    # Only the path, query and fragment are kept: no scheme or host survives.
-    dest = parsed.path or "/"
-    if parsed.query:
-        dest += "?" + parsed.query
-    if parsed.fragment:
-        dest += "#" + parsed.fragment
+    dest = parsed.path
+    if not dest.startswith("/") or dest.startswith("//") or dest.startswith("/\\"):
+        dest = "/"
     return redirect(dest)

@@ -1,0 +1,25 @@
+{
+  "description": "A package-level map that another handler fills with request keys is not an allowlist",
+  "tags": [
+    "taint",
+    "sqli",
+    "go",
+    "positive"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        23,
+        23
+      ],
+      "evidence_contains": [],
+      "notes": "another function stores request keys into the map"
+    }
+  ]
+}

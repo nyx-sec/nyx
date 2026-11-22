@@ -48,14 +48,6 @@ impl FieldId {
     pub const ANY_FIELD: FieldId = FieldId(u32::MAX - 1);
 }
 
-/// Whether `callee` names Python's `urlparse` / `urlsplit`, bare or through
-/// `urllib.parse`.
-pub fn is_python_url_parse_callee(callee: &str) -> bool {
-    let last = callee.rsplit('.').next().unwrap_or(callee);
-    matches!(last, "urlparse" | "urlsplit")
-        && (callee == last || callee.starts_with("urllib.parse."))
-}
-
 /// Per-body interner for field names referenced by [`SsaOp::FieldProj`].
 ///
 /// Names are deduped within a single SSA body: every distinct field-name

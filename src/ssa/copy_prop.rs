@@ -890,6 +890,7 @@ mod tests {
             base: "allowed".into(),
             key: "cmd".into(),
             value_var: None,
+            filled_elsewhere: false,
         });
         let n1 = cfg.add_node(lookup);
 
