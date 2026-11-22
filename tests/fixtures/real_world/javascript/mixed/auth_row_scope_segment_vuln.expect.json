@@ -1,0 +1,32 @@
+{
+  "description": "Callee segments named create or insert are scopes, not writes; a row found by a request name still reports.",
+  "tags": [
+    "auth",
+    "javascript",
+    "row-provenance",
+    "positive"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "line_range": [8, 8],
+      "must_match": true,
+      "notes": "row fetched by request name through a create/insert-named accessor"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "line_range": [14, 14],
+      "must_match": true,
+      "notes": "row fetched by request name through a create/insert-named accessor"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "line_range": [20, 20],
+      "must_match": true,
+      "notes": "row fetched by request name through a create/insert-named accessor"
+    }
+  ]
+}

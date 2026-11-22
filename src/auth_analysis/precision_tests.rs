@@ -947,3 +947,158 @@ userRouter.delete('/open/:userId', async (req, res) => {
         assert_eq!(js(src), vec![10]);
     }
 }
+
+mod row_provenance {
+    use super::ownership_lines;
+
+    #[test]
+    fn go_field_of_a_scoped_fetch_is_a_row_attribute() {
+        let src = r#"package repo
+
+func DeletePackageFile(ctx *context.Context) {
+	owner := ctx.Package.Owner
+	pv, err := packages.GetVersionByNameAndVersion(ctx, owner.ID, 1, ctx.PathParam("name"))
+	if err != nil {
+		return
+	}
+	pf, err := packages.GetFileForVersionByName(ctx, pv.ID, ctx.PathParam("filename"))
+	_, _ = pf, err
+}
+"#;
+        assert!(ownership_lines("go", src).is_empty());
+    }
+
+    #[test]
+    fn go_range_variable_over_scoped_rows_is_a_row_attribute() {
+        let src = r#"package repo
+
+func Sweep(ctx *context.Context) {
+	tasks, err := auth.FindTasks(ctx, ctx.Repo.Repository.ID)
+	_ = err
+	for _, t := range tasks {
+		a, _ := auth.GetUserByID(ctx, t.UserID)
+		_ = a
+	}
+}
+"#;
+        assert!(ownership_lines("go", src).is_empty());
+    }
+
+    #[test]
+    fn go_field_of_a_name_only_fetch_still_fires() {
+        let src = r#"package repo
+
+func DeleteByName(ctx *context.Context) {
+	r, err := repo.GetRepoByName(ctx, ctx.PathParam("name"))
+	if err != nil {
+		return
+	}
+	repo.DeleteRepoByID(ctx, r.ID)
+}
+"#;
+        assert_eq!(ownership_lines("go", src), vec![8]);
+    }
+
+    #[test]
+    fn go_range_over_name_only_fetch_still_fires() {
+        let src = r#"package repo
+
+func Sweep(ctx *context.Context) {
+	tasks, err := auth.FindTasks(ctx, ctx.PathParam("repo"))
+	_ = err
+	for _, t := range tasks {
+		auth.DeleteTaskByID(ctx, t.ID)
+	}
+}
+"#;
+        assert_eq!(ownership_lines("go", src), vec![7]);
+    }
+
+    #[test]
+    fn js_fk_of_an_id_keyed_row_is_exempt_but_the_first_fetch_fires() {
+        let src = r#"router.get("/documents/:id", async (req, res) => {
+  const doc = await Document.findByPk(req.params.id);
+  const parent = await Document.findByPk(doc.parentDocumentId);
+  res.json({ doc, parent });
+});
+"#;
+        assert_eq!(ownership_lines("javascript", src), vec![2]);
+    }
+
+    #[test]
+    fn js_entity_param_fk_is_exempt_outside_a_request() {
+        let src = r#"async function moveDocument({ document, user }) {
+  return Collection.findByPk(document.collectionId);
+}
+"#;
+        assert!(ownership_lines("javascript", src).is_empty());
+    }
+
+    #[test]
+    fn js_raw_id_param_still_fires() {
+        let src = r#"async function moveDocument({ collectionId, user }) {
+  return Collection.findByPk(collectionId);
+}
+"#;
+        assert_eq!(ownership_lines("javascript", src), vec![2]);
+    }
+
+    #[test]
+    fn js_id_converted_from_a_request_value_is_not_a_row() {
+        let src = r#"router.delete("/docs/:id", async (req, res) => {
+  const docId = parseInt(req.params.id);
+  await Document.destroy({ where: { id: docId } });
+});
+"#;
+        assert_eq!(ownership_lines("javascript", src), vec![3]);
+    }
+
+    #[test]
+    fn js_insert_minted_id_and_rows_loop_are_exempt() {
+        let src = r#"const em = (db) => ({
+  async create(uid, params) {
+    const res = await db.createQueryBuilder(uid).insert(params.data).execute();
+    const id = isRecord(res[0]) ? res[0].id : res[0];
+    return this.findOne(uid, { where: { id } });
+  },
+  async remove(uid, params) {
+    const rows = await db.query(uid).findMany(params.where);
+    return Promise.all(rows.map((row) => entries.delete(row.id, {})));
+  },
+});
+"#;
+        assert!(ownership_lines("javascript", src).is_empty());
+    }
+
+    #[test]
+    fn js_scope_segments_named_create_or_insert_do_not_mint() {
+        let src = r#"app.post('/a', async (req, res) => {
+  const d = await Doc.createdBy(req.body.name).first();
+  await Doc.destroy({ where: { id: d.id } });
+});
+app.post('/b', async (req, res) => {
+  const d = await db.createSession().findOne({ name: req.body.name });
+  await Doc.destroy({ where: { id: d.id } });
+});
+app.post('/c', async (req, res) => {
+  const d = await db.insertedDocs.findOne({ name: req.body.name });
+  await Doc.destroy({ where: { id: d.id } });
+});
+"#;
+        let lines = ownership_lines("javascript", src);
+        for l in [3, 7, 11] {
+            assert!(lines.contains(&l), "line {l} missing in {lines:?}");
+        }
+    }
+
+    #[test]
+    fn js_row_id_mixed_with_a_request_id_in_a_ternary_still_fires() {
+        let src = r#"router.post("/docs", async (req, res) => {
+  const row = await Document.findByPk(req.body.docId);
+  const id = req.body.flag ? row.id : req.body.otherId;
+  await Document.destroy({ where: { id } });
+});
+"#;
+        assert!(ownership_lines("javascript", src).contains(&4));
+    }
+}

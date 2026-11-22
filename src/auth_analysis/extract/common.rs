@@ -1000,6 +1000,12 @@ pub fn build_function_unit_with_meta(
         row_field_vars: state.row_field_vars,
         var_alias_chain: state.var_alias_chain,
         row_population_data: state.row_population_data,
+        row_fetch_callees: state.row_fetch_callees,
+        row_derived_from: state
+            .row_derived_from
+            .into_iter()
+            .filter_map(|(name, roots)| roots.map(|roots| (name, roots)))
+            .collect(),
         self_actor_vars: state.self_actor_vars,
         self_actor_id_vars: state.self_actor_id_vars,
         authorized_sql_vars: state.authorized_sql_vars,
@@ -1249,6 +1255,13 @@ struct UnitState<'a> {
     /// argument value-refs into its subjects so the original fetch
     /// (e.g. `db.query_one(..., &[doc_id])`) is also covered.
     row_population_data: HashMap<String, Vec<(usize, Vec<ValueRef>)>>,
+    /// Row provenance of plain locals, see
+    /// [`crate::auth_analysis::model::AnalysisUnit::row_derived_from`].
+    /// `None` marks a name that was also bound to something that is not read
+    /// off a row, which disqualifies it.
+    row_derived_from: HashMap<String, Option<Vec<String>>>,
+    /// See [`crate::auth_analysis::model::AnalysisUnit::row_fetch_callees`].
+    row_fetch_callees: HashMap<usize, Vec<String>>,
     /// A3: local variables bound to the authenticated actor.
     /// Populated from `let V = require_auth(..).await?` (or any call
     /// matching `rules.is_login_guard` / `rules.is_authorization_check`)
@@ -1325,6 +1338,7 @@ fn collect_unit_state(
     }
     match node.kind() {
         "call_expression" | "call" | "method_invocation" | "method_call_expression" => {
+            collect_row_derived_callback_param(node, bytes, state);
             collect_call(node, bytes, rules, state)
         }
         "while_statement" | "do_statement" | "while_modifier" | "until_modifier"
@@ -1345,6 +1359,7 @@ fn collect_unit_state(
             collect_row_field_binding(node, bytes, state);
             collect_member_alias_binding(node, bytes, state);
             collect_row_population(node, bytes, state);
+            collect_row_derived_binding(node, bytes, state);
             collect_self_actor_binding(node, bytes, rules, state);
             collect_self_actor_id_binding(node, bytes, state);
             collect_sql_authorized_binding(node, bytes, rules, state);
@@ -1368,6 +1383,7 @@ fn collect_unit_state(
             // back to the row's let line. `collect_row_population`
             // accepts the `name` field used by `variable_declarator`.
             collect_row_population(node, bytes, state);
+            collect_row_derived_binding(node, bytes, state);
         }
         // Go `id := "id"` / Python `id = "id"` / Java `String id = "id";` /
         // Ruby `id = "id"`, language-specific binding nodes that the
@@ -1396,6 +1412,7 @@ fn collect_unit_state(
             ) {
                 collect_non_sink_binding(node, bytes, rules, state);
                 collect_row_population(node, bytes, state);
+                collect_row_derived_binding(node, bytes, state);
             }
             // Ruby `@issue = Issue.find(params[:id])` is the canonical
             // controller idiom: instance-variable assignment whose RHS
@@ -1407,6 +1424,7 @@ fn collect_unit_state(
             // `instance_variable`.
             if matches!(node.kind(), "assignment" | "assignment_expression") {
                 collect_row_population(node, bytes, state);
+                collect_row_derived_binding(node, bytes, state);
                 // Python `verified_ids = set()` /
                 // `cache: dict[str,int] = {}` and JS analogues bind a
                 // local non-sink container.  `collect_non_sink_binding`
@@ -1418,6 +1436,12 @@ fn collect_unit_state(
         }
         "for_expression" => {
             collect_for_row_binding(node, bytes, state);
+            collect_row_derived_loop_binding(node, bytes, state);
+        }
+        // JS `for (const row of rows)`, Go `for _, t := range tasks`, Python
+        // `for row in rows`, Java `for (Row row : rows)`.
+        "for_in_statement" | "range_clause" | "for_statement" | "enhanced_for_statement" => {
+            collect_row_derived_loop_binding(node, bytes, state);
         }
         "parameter" => {
             collect_typed_extractor_self_actor(node, bytes, state);
@@ -2084,6 +2108,231 @@ fn collect_row_population(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
     }
 }
 
+/// Binding names introduced by a declaration or loop pattern: plain
+/// identifiers, destructured names and tuple elements.  `_` is skipped.
+fn pattern_binding_names(node: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    match node.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" | "variable_name" => {
+            let name = text(node, bytes);
+            if !name.is_empty() && name != "_" {
+                out.push(name);
+            }
+        }
+        // `{ key: name }` binds `name`, not `key`.
+        "pair_pattern" => {
+            if let Some(value) = node.child_by_field_name("value") {
+                pattern_binding_names(value, bytes, out);
+            }
+        }
+        _ => {
+            for child in named_children(node) {
+                pattern_binding_names(child, bytes, out);
+            }
+        }
+    }
+}
+
+/// Leftmost identifier of a member or subscript chain (`res[0].id` gives
+/// `res`).  `None` when the chain starts at a call, `this`, or a literal.
+fn chain_root_identifier(node: Node<'_>, bytes: &[u8]) -> Option<String> {
+    let mut cur = node;
+    for _ in 0..32 {
+        match cur.kind() {
+            "identifier" => {
+                let name = text(cur, bytes);
+                return if name.is_empty() { None } else { Some(name) };
+            }
+            "member_expression"
+            | "attribute"
+            | "selector_expression"
+            | "field_expression"
+            | "field_access"
+            | "subscript_expression"
+            | "index_expression"
+            | "subscript"
+            | "element_reference" => {
+                cur = ["object", "operand", "value", "argument"]
+                    .iter()
+                    .find_map(|field| cur.child_by_field_name(field))?;
+            }
+            "non_null_expression"
+            | "parenthesized_expression"
+            | "as_expression"
+            | "type_assertion"
+            | "satisfies_expression" => {
+                cur = cur.named_child(0)?;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Roots of the variables a value expression is read from: a bare name, a
+/// member or subscript chain, or every arm of a ternary or `a ?? b` fallback.
+/// `None` when any arm is anything else (a call, a literal, a request value),
+/// so a mixed expression never counts as read off a row.
+fn row_source_roots(value: Node<'_>, bytes: &[u8]) -> Option<Vec<String>> {
+    let node = unwrap_try_like(value);
+    match node.kind() {
+        "ternary_expression" => {
+            let mut roots = Vec::new();
+            for field in ["consequence", "alternative"] {
+                roots.extend(row_source_roots(node.child_by_field_name(field)?, bytes)?);
+            }
+            Some(roots)
+        }
+        "binary_expression" => {
+            let op = node.child_by_field_name("operator")?;
+            if !matches!(op.kind(), "??" | "||") {
+                return None;
+            }
+            let mut roots = Vec::new();
+            for field in ["left", "right"] {
+                roots.extend(row_source_roots(node.child_by_field_name(field)?, bytes)?);
+            }
+            Some(roots)
+        }
+        _ => chain_root_identifier(node, bytes).map(|root| vec![root]),
+    }
+}
+
+/// Record the row provenance of `const id = res[0].id`, `const { a } = row`,
+/// Go `x, y := row.A, row.B`.  A name bound to any other kind of value is
+/// marked as not row-derived.  A call result is such a value: a fetch is
+/// tracked by `collect_row_population`, and the checker looks there first.
+fn collect_row_derived_binding(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
+    let Some(pattern) = node
+        .child_by_field_name("pattern")
+        .or_else(|| node.child_by_field_name("name"))
+        .or_else(|| node.child_by_field_name("left"))
+    else {
+        return;
+    };
+    if is_member_like_target(pattern) {
+        return;
+    }
+    let Some(value) = node
+        .child_by_field_name("value")
+        .or_else(|| node.child_by_field_name("right"))
+    else {
+        return;
+    };
+    let mut names = Vec::new();
+    pattern_binding_names(pattern, bytes, &mut names);
+    if names.is_empty() {
+        return;
+    }
+    // `a, b := x.A, x.B` pairs the names with the values by position.
+    let paired: Option<Vec<Node<'_>>> = (pattern.kind() == "expression_list"
+        && value.kind() == "expression_list"
+        && pattern.named_child_count() == value.named_child_count()
+        && value.named_child_count() > 1)
+        .then(|| named_children(value));
+    if let Some(values) = paired {
+        let mut idents = Vec::new();
+        for (name_node, value_node) in named_children(pattern).into_iter().zip(values) {
+            idents.clear();
+            pattern_binding_names(name_node, bytes, &mut idents);
+            let roots = row_source_roots(value_node, bytes);
+            for name in idents.drain(..) {
+                note_row_derived(state, name, roots.clone());
+            }
+        }
+        return;
+    }
+    let roots = row_source_roots(value, bytes);
+    for name in names {
+        note_row_derived(state, name, roots.clone());
+    }
+}
+
+fn note_row_derived(state: &mut UnitState, name: String, roots: Option<Vec<String>>) {
+    match (state.row_derived_from.get_mut(&name), roots) {
+        (Some(None), _) => {}
+        (Some(Some(existing)), Some(roots)) => existing.extend(roots),
+        (Some(slot), None) => *slot = None,
+        (None, roots) => {
+            state.row_derived_from.insert(name, roots);
+        }
+    }
+}
+
+/// `for (const row of rows)`, `for _, t := range tasks`, `for row in rows`,
+/// `for (Row row : rows)`: the loop variable is an element of the collection.
+fn collect_row_derived_loop_binding(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
+    let (Some(pattern), Some(value)) = (
+        node.child_by_field_name("left")
+            .or_else(|| node.child_by_field_name("pattern"))
+            .or_else(|| node.child_by_field_name("name")),
+        node.child_by_field_name("right")
+            .or_else(|| node.child_by_field_name("value")),
+    ) else {
+        return;
+    };
+    let roots = row_source_roots(value, bytes)
+        .or_else(|| single_iter_source_name(value, bytes).map(|root| vec![root]));
+    let mut names = Vec::new();
+    pattern_binding_names(pattern, bytes, &mut names);
+    for name in names {
+        note_row_derived(state, name, roots.clone());
+    }
+}
+
+/// `rows.map((row) => ..)`, `rows.forEach(function (row) {..})`: the callback
+/// parameter is an element of the receiver.
+fn collect_row_derived_callback_param(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
+    let Some(function) = node.child_by_field_name("function") else {
+        return;
+    };
+    if function.kind() != "member_expression" {
+        return;
+    }
+    let Some(callback) = node
+        .child_by_field_name("arguments")
+        .and_then(|args| args.named_child(0))
+        .filter(|arg| {
+            matches!(
+                arg.kind(),
+                "arrow_function" | "function_expression" | "function"
+            )
+        })
+    else {
+        return;
+    };
+    let Some(method) = function
+        .child_by_field_name("property")
+        .map(|p| text(p, bytes))
+    else {
+        return;
+    };
+    if !matches!(
+        method.as_str(),
+        "map" | "forEach" | "filter" | "flatMap" | "some" | "every" | "find" | "findIndex"
+    ) {
+        return;
+    }
+    let Some(receiver) = function.child_by_field_name("object") else {
+        return;
+    };
+    let Some(roots) = row_source_roots(receiver, bytes) else {
+        return;
+    };
+    let param = callback.child_by_field_name("parameter").or_else(|| {
+        callback
+            .child_by_field_name("parameters")
+            .and_then(|params| params.named_child(0))
+    });
+    let Some(param) = param else {
+        return;
+    };
+    let mut names = Vec::new();
+    pattern_binding_names(param, bytes, &mut names);
+    for name in names {
+        note_row_derived(state, name, Some(roots.clone()));
+    }
+}
+
 fn is_member_like_target(node: Node<'_>) -> bool {
     matches!(
         node.kind(),
@@ -2142,6 +2391,11 @@ fn record_row_binding(var_name: &str, call_node: Node<'_>, bytes: &[u8], state: 
         arg_refs.extend(extract_value_refs(arg, bytes, state.request_roots.as_ref()));
     }
     let call_line = call_node.start_position().row + 1;
+    state
+        .row_fetch_callees
+        .entry(call_line)
+        .or_default()
+        .push(call_name(call_node, bytes));
     state
         .row_population_data
         .entry(var_name.to_string())

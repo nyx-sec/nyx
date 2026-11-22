@@ -238,6 +238,19 @@ pub struct AnalysisUnit {
     /// fetch the row first to extract the resource id, then call
     /// `check_<resource>_<role>(&user, &row, ...)` to authorize it.
     pub row_population_data: HashMap<String, Vec<(usize, Vec<ValueRef>)>>,
+    /// Row provenance of plain locals.  Maps a local to the roots of the
+    /// expressions it was read from: `const id = res[0].id` gives `id -> [res]`,
+    /// `for _, t := range tasks` gives `t -> [tasks]`, and
+    /// `rows.map(row => ..)` gives `row -> [rows]`.  A local counts as read off
+    /// a held row only when every root does (see
+    /// `checks::is_row_derived_subject`).  A name that is also bound to
+    /// anything else is left out.
+    pub row_derived_from: HashMap<String, Vec<String>>,
+    /// Callee text of every call a row binding was fetched with, by the line of
+    /// the call.  Lets the checker tell a data fetch (`db.query(uid).findMany(..)`)
+    /// from a pure conversion (`parseInt(id)`) when the call is not itself a
+    /// modelled operation.
+    pub row_fetch_callees: HashMap<usize, Vec<String>>,
     /// Variables bound to an authenticated-user value. Populated from
     /// `let V = require_auth(..).await?` (or any call matching the
     /// configured login-guard / authorization-check names) and from
