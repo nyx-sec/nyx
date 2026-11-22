@@ -8,7 +8,7 @@
 //! - `NYX_TEST_LANG=python`    , run only fixtures for one language
 //! - `NYX_TEST_FIXTURE=cmdi_subprocess`, run only fixtures whose name contains this string
 //! - `NYX_TEST_VERBOSE=1`      , print full diff details for every fixture
-//! - `NYX_TEST_CATEGORY=taint` , run only one category (taint/cfg/state/mixed)
+//! - `NYX_TEST_CATEGORY=taint` , run only one category (taint/cfg/state/mixed/safe/auth)
 //!
 //! # Known-failure handling
 //!
@@ -140,7 +140,7 @@ fn discover_fixtures() -> Vec<Fixture> {
         "typescript",
         "javascript",
     ];
-    let categories = ["taint", "cfg", "state", "mixed", "safe"];
+    let categories = ["taint", "cfg", "state", "mixed", "safe", "auth"];
 
     for lang in &langs {
         for category in &categories {

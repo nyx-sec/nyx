@@ -622,6 +622,9 @@ pub struct FileMeta {
     pub in_memory_vars: HashSet<String>,
     /// JS/TS: imports and directives that say where the file runs.
     pub js: JsFileFacts,
+    /// Python: classes defined in the file that derive, through the file's
+    /// own imports, from the peewee or tortoise `Model`.
+    pub orm_models: HashSet<String>,
 }
 
 impl FileMeta {
@@ -633,6 +636,7 @@ impl FileMeta {
             package_names: go_scope::package_level_names(root, bytes),
             in_memory_vars: go_scope::package_in_memory_vars(root, bytes),
             js: js_scope::scan_file(root, bytes),
+            orm_models: super::py_models::orm_model_classes(root, bytes),
         }
     }
 }
@@ -873,6 +877,97 @@ fn find_top_level_function_node_in_child<'tree>(
     }
 }
 
+/// Callee names (last path segment) of a Rust admin gate that returns a
+/// `Result` and is used as `is_admin(&user)?;`.
+fn is_rust_admin_gate_name(callee: &str, rules: &AuthAnalysisRules) -> bool {
+    let last = callee.rsplit(['.', ':']).next().unwrap_or(callee);
+    matches!(
+        last,
+        "is_admin" | "require_admin" | "ensure_admin" | "check_admin" | "assert_admin"
+    ) || rules.is_admin_guard(last, &[])
+}
+
+/// Record `<admin gate>(..)?;` statements that sit directly in a Rust
+/// function body as `AdminGuard` checks flagged `dominates_body`.
+///
+/// Only an unconditional top-level statement qualifies: the `?` returns from
+/// the function on failure, so every later operation runs behind the gate.
+/// A gate inside an `if`, a closure or a match arm, one whose result is
+/// bound or tested (`.is_ok()`, `let ok = ..`), or one without `?` is left
+/// alone because none of those stops the operations that follow.
+fn collect_dominating_admin_gates(
+    function: Node<'_>,
+    bytes: &[u8],
+    rules: &AuthAnalysisRules,
+    state: &mut UnitState,
+) {
+    let Some(body) = function.child_by_field_name("body") else {
+        return;
+    };
+    if body.kind() != "block" {
+        return;
+    }
+    for stmt in named_children(body) {
+        if stmt.kind() != "expression_statement" {
+            continue;
+        }
+        let Some(mut expr) = stmt.named_child(0) else {
+            continue;
+        };
+        if expr.kind() != "try_expression" {
+            continue;
+        }
+        // `gate(..).await?` parses as try(await(call)).
+        let Some(mut inner) = expr.named_child(0) else {
+            continue;
+        };
+        if inner.kind() == "await_expression"
+            && let Some(awaited) = inner.named_child(0)
+        {
+            inner = awaited;
+        }
+        expr = inner;
+        if expr.kind() != "call_expression" {
+            continue;
+        }
+        let Some(function_node) = expr.child_by_field_name("function") else {
+            continue;
+        };
+        let callee = text(function_node, bytes);
+        if !is_rust_admin_gate_name(&callee, rules) {
+            continue;
+        }
+        let call_span = span(expr);
+        let mut subjects = call_receiver_subjects(expr, bytes, None);
+        if let Some(site) = state.call_sites.iter().find(|c| c.span == call_span) {
+            for refs in &site.args_value_refs {
+                subjects.extend(refs.iter().cloned());
+            }
+        }
+        // The gate must test the acting user.  `is_admin(&other)?` checks
+        // someone else, so it covers nothing.
+        let tests_actor = subjects.iter().any(|s| {
+            let full = s.base.as_deref().unwrap_or(s.name.as_str());
+            let root = full.split('.').next().unwrap_or(full);
+            state.self_actor_vars.contains(root)
+        });
+        if !tests_actor {
+            continue;
+        }
+        state.auth_checks.push(AuthCheck {
+            kind: AuthCheckKind::AdminGuard,
+            callee,
+            subjects,
+            span: call_span,
+            line: expr.start_position().row + 1,
+            args: Vec::new(),
+            condition_text: None,
+            is_route_level: false,
+            dominates_body: true,
+        });
+    }
+}
+
 pub fn build_function_unit(
     node: Node<'_>,
     kind: AnalysisUnitKind,
@@ -930,6 +1025,7 @@ pub fn build_function_unit_with_meta(
     }
     if let Some(meta) = file_meta {
         state.trpc_alias_names = meta.trpc_alias_names.clone();
+        state.orm_models = meta.orm_models.clone();
     }
     let is_go = rules.is_go_lang();
     if is_go {
@@ -953,6 +1049,9 @@ pub fn build_function_unit_with_meta(
         }
     }
     collect_unit_state(node, bytes, rules, &mut state);
+    if rules.is_rust_lang() {
+        collect_dominating_admin_gates(definition, bytes, rules, &mut state);
+    }
     let runtime = match file_meta {
         Some(meta) if rules.is_object_literal_lang() => js_scope::classify_unit(
             &meta.js,
@@ -962,6 +1061,11 @@ pub fn build_function_unit_with_meta(
             bytes[node.start_byte()..].starts_with(b"async"),
         ),
         _ => UnitRuntime::Unknown,
+    };
+    let runtime = if runtime == UnitRuntime::Unknown && state.saw_mirage_handler {
+        UnitRuntime::Browser
+    } else {
+        runtime
     };
     let (package_names, request_roots) = if is_go {
         let roots = state.request_roots.take().unwrap_or_default();
@@ -1042,6 +1146,7 @@ pub fn build_function_unit_with_meta(
             .cloned()
             .collect(),
         runtime,
+        internal_helper: false,
     }
 }
 
@@ -1334,6 +1439,10 @@ struct UnitState<'a> {
     /// resolves to a TRPC handler signature.  Empty for non-TS
     /// languages, the scanner only matches TS-grammar node kinds.
     trpc_alias_names: HashSet<String>,
+    /// JS/TS: the unit contains an ember-cli-mirage route handler.
+    saw_mirage_handler: bool,
+    /// Python ORM model classes of the file (see `py_models`).
+    orm_models: HashSet<String>,
     /// Go only: names bound to the request or a framework request context,
     /// grown as `:=` copies are met in source order.  `None` for other
     /// languages, where accessor calls are classified by name alone.
@@ -1376,6 +1485,15 @@ fn collect_unit_state(
         "jsx_element" | "jsx_self_closing_element" | "jsx_fragment"
     ) {
         state.saw_jsx = true;
+    }
+    if matches!(
+        node.kind(),
+        "function_expression" | "arrow_function" | "function"
+    ) && !state.saw_mirage_handler
+        && rules.is_object_literal_lang()
+        && js_scope::is_mirage_handler_signature(node, bytes)
+    {
+        state.saw_mirage_handler = true;
     }
     match node.kind() {
         "call_expression" | "call" | "method_invocation" | "method_call_expression" => {
@@ -1729,7 +1847,9 @@ fn collect_call(node: Node<'_>, bytes: &[u8], rules: &AuthAnalysisRules, state: 
             OperationKind::Mutation
         };
         (Some(kind), Some(SinkClass::OutboundNetwork))
-    } else if let Some(class) = rules.classify_sink_class(&callee, &state.non_sink_vars) {
+    } else if let Some(class) =
+        rules.classify_sink_class_with_models(&callee, &state.non_sink_vars, &state.orm_models)
+    {
         let op = match class {
             SinkClass::DbCrossTenantRead => OperationKind::Read,
             // InMemoryLocal: keep the verb for telemetry but the
@@ -1799,6 +1919,7 @@ fn collect_call(node: Node<'_>, bytes: &[u8], rules: &AuthAnalysisRules, state: 
             args: string_args,
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         });
     }
 
@@ -1919,6 +2040,7 @@ fn collect_condition(
             args: Vec::new(),
             condition_text: Some(condition_text.clone()),
             is_route_level: false,
+            dominates_body: false,
         });
     }
 
@@ -1932,6 +2054,7 @@ fn collect_condition(
             args: Vec::new(),
             condition_text: Some(condition_text),
             is_route_level: false,
+            dominates_body: false,
         });
     }
 }
@@ -3219,7 +3342,21 @@ fn value_is_self_actor_id_field(
             };
             let receiver_name = text(receiver, bytes);
             let field_name = text(field, bytes);
-            actor_vars.contains(&receiver_name) && is_self_actor_id_field_name(&field_name)
+            if !is_self_actor_id_field_name(&field_name) {
+                return false;
+            }
+            // `local_user_view.person.id`: resolve the root of the receiver
+            // chain, as the subject-level check does for `V.person.id`.
+            let root = receiver_name
+                .trim_start_matches(['&', '*'])
+                .split(['.', ':'])
+                .next()
+                .unwrap_or(&receiver_name);
+            let nested_id = matches!(
+                field_name.to_ascii_lowercase().as_str(),
+                "id" | "user_id" | "userid" | "uid"
+            );
+            actor_vars.contains(&receiver_name) || (nested_id && actor_vars.contains(root))
         }
         "type_cast_expression"
         | "as_expression"
@@ -3811,6 +3948,7 @@ fn collect_sql_authorized_binding(
         args: Vec::new(),
         condition_text: None,
         is_route_level: false,
+        dominates_body: false,
     });
 }
 
@@ -4349,6 +4487,7 @@ fn detect_ownership_equality_check(if_node: Node<'_>, bytes: &[u8], state: &mut 
         args: Vec::new(),
         condition_text: Some(condition_text),
         is_route_level: false,
+        dominates_body: false,
     });
 }
 
@@ -5663,6 +5802,7 @@ pub fn auth_check_from_call_site(
         args: call.args.clone(),
         condition_text: None,
         is_route_level: false,
+        dominates_body: false,
     })
 }
 

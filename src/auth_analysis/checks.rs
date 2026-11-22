@@ -178,10 +178,11 @@ fn check_ownership_gaps(
                 // to say, by what the method does.
                 let has_actor_co_subject = op.subjects.iter().enumerate().any(|(i, s)| {
                     !is_callee_receiver(s, &op.callee)
-                        && is_actor_context_subject(s, unit)
-                        && (lookup
-                            || (receiver_lookup && i < op.receiver_subjects)
-                            || !is_whole_actor_object(s))
+                        && ((is_actor_context_subject(s, unit)
+                            && (lookup
+                                || (receiver_lookup && i < op.receiver_subjects)
+                                || !is_whole_actor_object(s)))
+                            || is_viewer_argument_of_view_read(op, s, unit, lang))
                 });
                 if has_actor_co_subject {
                     continue;
@@ -574,6 +575,12 @@ fn auth_check_covers_subject(check: &AuthCheck, subject: &ValueRef, unit: &Analy
     // authorization-bearing decorator-level check.  Returning `true`
     // unconditionally for those is the correct semantics.
     if check.is_route_level {
+        return true;
+    }
+    // A body-level admin gate that propagates failure dominates every later
+    // operation, and an admin may act on any resource.  Line ordering is
+    // applied by the callers (`check.line <= op.line`).
+    if check.dominates_body && check.kind == AuthCheckKind::AdminGuard {
         return true;
     }
     let subject_key = canonical_subject_name(subject);
@@ -1345,6 +1352,52 @@ fn is_whole_actor_object(subject: &ValueRef) -> bool {
     is_actor_object(&subject.name)
 }
 
+/// Rust read-model lookup that takes the viewer: `CommentView::read(pool,
+/// comment_id, Some(&local_user_view.local_user), ..)`.  A `*View` type is a
+/// joined read model, and its `read`/`list` entry points take the signed-in
+/// viewer to filter what the row exposes (blocked, hidden and private
+/// content).  The viewer is a sub-object of the self-actor extractor binding
+/// (`local_user`, `person`, ...), so it is not an id the generic owner-pin
+/// rule can match.  Mutations never qualify: a viewer passed to a write is
+/// data being stored.
+fn is_viewer_argument_of_view_read(
+    op: &SensitiveOperation,
+    subject: &ValueRef,
+    unit: &AnalysisUnit,
+    lang: &str,
+) -> bool {
+    if !matches!(lang, "rust" | "rs") || op.kind != OperationKind::Read {
+        return false;
+    }
+    // Callees are normalized to `.` separators (`CommentView.read`).
+    let mut segments = op.callee.rsplit('.');
+    let (Some(method), Some(ty)) = (segments.next(), segments.next()) else {
+        return false;
+    };
+    let is_read_entry = method == "read"
+        || method == "list"
+        || method.starts_with("read_")
+        || method.starts_with("list_");
+    let is_view_type = ty.len() > 4
+        && ty.ends_with("View")
+        && ty.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+    if !is_read_entry || !is_view_type {
+        return false;
+    }
+    let root = subject
+        .base
+        .as_deref()
+        .map(|b| b.split('.').next().unwrap_or(b))
+        .unwrap_or(subject.name.as_str());
+    if !unit.self_actor_vars.contains(root) {
+        return false;
+    }
+    match subject.field.as_deref() {
+        None => subject.base.is_none(),
+        Some(f) => matches!(f, "local_user" | "person" | "user" | "account" | "profile"),
+    }
+}
+
 /// True when the subject is (a prefix of) the callee's own receiver chain:
 /// `req.user` and `req.user.documents` for `req.user.documents.find`.
 fn is_callee_receiver(subject: &ValueRef, callee: &str) -> bool {
@@ -1719,6 +1772,11 @@ fn unit_has_user_input_evidence(unit: &AnalysisUnit, web_signal: Option<bool>, l
     if !unit.context_inputs.is_empty() {
         return true;
     }
+    // A module-private Python helper that only non-route code calls is not
+    // an entry point (see `AnalysisUnit::internal_helper`).
+    if unit.internal_helper {
+        return false;
+    }
     unit.params
         .iter()
         .any(|p| is_external_input_param_name_for_lang(p, lang))
@@ -1878,6 +1936,7 @@ mod tests {
             is_nextauth_options_factory: false,
             package_names: HashSet::new(),
             runtime: UnitRuntime::Unknown,
+            internal_helper: false,
             request_roots: HashSet::new(),
             request_scope_roots: HashSet::new(),
             authorization_scoped_vars: HashSet::new(),
@@ -2386,6 +2445,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         });
 
         let fetch_op = SensitiveOperation {
@@ -2463,6 +2523,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         });
 
         let fetch_op = SensitiveOperation {
@@ -2505,6 +2566,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         };
 
         // Direct member subject `data.community_id` (the original
@@ -2555,6 +2617,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         };
 
         assert!(auth_check_covers_subject(
@@ -2596,6 +2659,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         };
 
         // Sink subject is the bare alias, covered via the chain.
@@ -2643,6 +2707,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: true,
+            dominates_body: false,
         };
 
         // Any subject is covered when the check is route-level ,
@@ -2678,6 +2743,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         };
         assert!(!auth_check_covers_subject(
             &in_body_check,

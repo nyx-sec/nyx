@@ -282,6 +282,7 @@ fn route_handler_edge(
             args: Vec::new(),
             condition_text: None,
             is_route_level: true,
+            dominates_body: false,
         }]
     } else {
         Vec::new()
@@ -537,6 +538,7 @@ fn inject_gitea_middleware_auth(
                 args: call.args.clone(),
                 condition_text: None,
                 is_route_level: true,
+                dominates_body: false,
             });
         }
     }

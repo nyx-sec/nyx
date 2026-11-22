@@ -175,6 +175,14 @@ pub struct AuthCheck {
     /// `community.creator_id` doesn't blanket-suppress every other
     /// subject in the unit.
     pub is_route_level: bool,
+    /// True for a gate that is an unconditional top-level statement of the
+    /// function body and propagates failure out of the function, such as
+    /// Rust `is_admin(&user)?;`.  Every later operation in the unit runs
+    /// behind it.  Unlike `is_route_level`, it only covers operations
+    /// that follow it in the body and is honoured only for
+    /// `AuthCheckKind::AdminGuard`: an admin may act on any resource, so
+    /// the check authorizes every subject.
+    pub dominates_body: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -349,6 +357,14 @@ pub struct AnalysisUnit {
     pub package_names: HashSet<String>,
     /// JS/TS: whether the unit is browser code, server code, or unknown.
     pub runtime: UnitRuntime,
+    /// Python: a module-private function (`_helper`, PEP 8) that other
+    /// functions of the file call and that no route handler reaches through
+    /// those calls.  Its id-like parameters come from a non-request caller
+    /// (a task, a management command), so the parameter-name heuristic does
+    /// not make it an entry point.  A private helper with no in-file caller
+    /// may be imported elsewhere, and one a route reaches is still reported,
+    /// so neither is marked.
+    pub internal_helper: bool,
     /// Go: parameters and locals bound to the request or the framework
     /// request context (`r *http.Request`, `c *gin.Context`,
     /// `ctx *context.APIContext`, and locals copied from them).  Accessor

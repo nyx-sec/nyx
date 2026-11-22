@@ -283,6 +283,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: true,
+            dominates_body: false,
         }
     }
 
@@ -328,6 +329,7 @@ mod tests {
             is_nextauth_options_factory: false,
             package_names: HashSet::new(),
             runtime: UnitRuntime::Unknown,
+            internal_helper: false,
             request_roots: HashSet::new(),
             request_scope_roots: HashSet::new(),
             authorization_scoped_vars: HashSet::new(),

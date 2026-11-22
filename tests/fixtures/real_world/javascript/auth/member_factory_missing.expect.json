@@ -1,0 +1,25 @@
+{
+  "description": "The same helper outside a test directory is a plain unscoped update by a caller supplied id",
+  "tags": [
+    "auth",
+    "auth",
+    "positive",
+    "test-file"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        4,
+        4
+      ],
+      "evidence_contains": [],
+      "notes": "The same helper outside a test directory is a plain unscoped update by a caller supplied id"
+    }
+  ]
+}

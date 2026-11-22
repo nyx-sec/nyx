@@ -749,6 +749,7 @@ pub(crate) fn inject_guard_checks(
             // …).  Tells `auth_check_covers_subject` to short-circuit
             // for any non-login-guard match.
             is_route_level: true,
+            dominates_body: false,
         });
     }
 }

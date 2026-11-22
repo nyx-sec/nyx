@@ -1,0 +1,25 @@
+{
+  "description": "A private helper called by a function view that takes request is reachable from the web",
+  "tags": [
+    "auth",
+    "auth",
+    "positive",
+    "private-helper"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "py.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        7,
+        7
+      ],
+      "evidence_contains": [],
+      "notes": "A private helper called by a function view that takes request is reachable from the web"
+    }
+  ]
+}

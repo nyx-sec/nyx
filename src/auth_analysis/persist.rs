@@ -201,6 +201,9 @@ impl From<AuthCheckRow> for AuthCheck {
             args: c.args,
             condition_text: c.condition_text,
             is_route_level: c.is_route_level,
+            // Only route-level checks are persisted; a body-dominating gate
+            // is local to the function it was found in.
+            dominates_body: false,
         }
     }
 }
@@ -354,6 +357,7 @@ mod tests {
             args: vec!["\"POST\"".into()],
             condition_text: Some("user.can_edit(dag)".into()),
             is_route_level: true,
+            dominates_body: false,
         }
     }
 

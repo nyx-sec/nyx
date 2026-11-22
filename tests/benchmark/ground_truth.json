@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 1056
+    "corpus_size": 1076
   },
   "cases": [
     {
@@ -33658,6 +33658,621 @@
       ],
       "disabled": false,
       "notes": "Commit read through the scope entity and a user fetched by the session id."
+    },
+    {
+      "case_id": "rs-auth-realrepo-018",
+      "file": "rust/auth/admin_gate_body_safe.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "admin-gate"
+      ],
+      "disabled": false,
+      "notes": "Body-level `is_admin(&user)?;` returns early for non-admins, so the later community read and delete act on behalf of an admin"
+    },
+    {
+      "case_id": "rs-auth-realrepo-019",
+      "file": "rust/auth/admin_gate_body_missing.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ],
+        [
+          11,
+          11
+        ],
+        [
+          24,
+          24
+        ],
+        [
+          35,
+          35
+        ],
+        [
+          45,
+          45
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "admin-gate"
+      ],
+      "disabled": false,
+      "notes": "No admin gate, a gate on one branch only, a discarded is_ok() result and a gate placed after the delete all leave the operations unguarded"
+    },
+    {
+      "case_id": "rs-auth-realrepo-020",
+      "file": "rust/auth/self_actor_alias_safe.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "self-actor"
+      ],
+      "disabled": false,
+      "notes": "`local_user_view.person.id` alias and a *View::read that takes the signed-in viewer scope the lookup to the caller"
+    },
+    {
+      "case_id": "rs-auth-realrepo-021",
+      "file": "rust/auth/self_actor_alias_missing.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ],
+        [
+          21,
+          21
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "self-actor"
+      ],
+      "disabled": false,
+      "notes": "A mutation that only receives the viewer, and a view read with no viewer argument, are still unscoped"
+    },
+    {
+      "case_id": "js-auth-realrepo-002",
+      "file": "javascript/auth/mirage_mock_server_safe.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "mirage"
+      ],
+      "disabled": false,
+      "notes": "ember-cli-mirage mock server handlers run in the browser against an in-memory database"
+    },
+    {
+      "case_id": "js-auth-realrepo-003",
+      "file": "javascript/auth/mirage_mock_server_unmarked_safe.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "mirage"
+      ],
+      "disabled": false,
+      "notes": "Mirage handler signature (schema plus destructured request) without a miragejs import is still a browser mock"
+    },
+    {
+      "case_id": "js-auth-realrepo-004",
+      "file": "javascript/auth/fastify_server_route_missing.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "fastify"
+      ],
+      "disabled": false,
+      "notes": "`server.get` in a file that requires fastify is a real route: the lookup by a client chosen id needs an ownership check"
+    },
+    {
+      "case_id": "js-auth-realrepo-005",
+      "file": "javascript/auth/react_bare_import_safe.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "react"
+      ],
+      "disabled": false,
+      "notes": "A file that imports react and calls hooks is browser code: the SDK call goes to the backend, where the check belongs"
+    },
+    {
+      "case_id": "js-auth-realrepo-006",
+      "file": "javascript/auth/react_bare_import_server_missing.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "react"
+      ],
+      "disabled": false,
+      "notes": "The same SDK call on the server side of an express route still needs a check"
+    },
+    {
+      "case_id": "js-auth-realrepo-007",
+      "file": "javascript/auth/e2e_factory_safe",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "test-file"
+      ],
+      "disabled": false,
+      "notes": "Test support under an e2e directory has no request boundary, so no ownership claim applies"
+    },
+    {
+      "case_id": "js-auth-realrepo-008",
+      "file": "javascript/auth/member_factory_missing.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "test-file"
+      ],
+      "disabled": false,
+      "notes": "The same helper outside a test directory is a plain unscoped update by a caller supplied id"
+    },
+    {
+      "case_id": "py-auth-realrepo-028",
+      "file": "python/auth/django_migration_safe",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "migration"
+      ],
+      "disabled": false,
+      "notes": "A Django migration runs from manage.py migrate, never from a request"
+    },
+    {
+      "case_id": "py-auth-realrepo-029",
+      "file": "python/auth/private_helper_safe.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "private-helper"
+      ],
+      "disabled": false,
+      "notes": "A module-private helper takes ids from its caller, which carries the finding"
+    },
+    {
+      "case_id": "py-auth-realrepo-030",
+      "file": "python/auth/public_helper_missing.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "private-helper"
+      ],
+      "disabled": false,
+      "notes": "A public helper with caller supplied ids and no scoping still fires"
+    },
+    {
+      "case_id": "py-auth-realrepo-031",
+      "file": "python/auth/peewee_model_get_missing.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "peewee"
+      ],
+      "disabled": false,
+      "notes": "Peewee `Note.get(Note.id == note_id)` on a Model defined in the file is a row read by a route id"
+    },
+    {
+      "case_id": "py-auth-realrepo-032",
+      "file": "python/auth/peewee_non_model_get_safe.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "peewee"
+      ],
+      "disabled": false,
+      "notes": "`Settings.get(key)` on a plain class is a registry lookup, not a row read"
+    },
+    {
+      "case_id": "py-auth-realrepo-033",
+      "file": "python/auth/tortoise_model_get_missing.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "tortoise"
+      ],
+      "disabled": false,
+      "notes": "Tortoise `await Note.get(id=note_id)` on a Model imported from tortoise.models is a row read by a route id"
+    },
+    {
+      "case_id": "js-auth-realrepo-009",
+      "file": "javascript/auth/react_server_loader_missing.jsx",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "react"
+      ],
+      "disabled": false,
+      "notes": "A server data loader beside a component that calls a hook still needs an ownership check"
+    },
+    {
+      "case_id": "py-auth-realrepo-034",
+      "file": "python/auth/private_helper_function_view_missing.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "private-helper"
+      ],
+      "disabled": false,
+      "notes": "A private helper called by a function view that takes request is reachable from the web"
+    },
+    {
+      "case_id": "rs-auth-realrepo-022",
+      "file": "rust/auth/admin_gate_other_user_missing.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "admin-gate"
+      ],
+      "disabled": false,
+      "notes": "An admin gate on a value other than the acting user does not guard the delete"
     }
   ]
 }
