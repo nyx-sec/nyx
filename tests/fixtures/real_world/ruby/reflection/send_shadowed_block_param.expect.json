@@ -1,0 +1,23 @@
+{
+  "description": "An inner block parameter that shadows the closed-set iterator variable takes its value from request data, so send stays flagged.",
+  "tags": [
+    "reflection",
+    "ruby",
+    "pattern",
+    "positive"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rb.reflection.send_dynamic",
+      "severity": null,
+      "line_range": [
+        3,
+        3
+      ],
+      "notes": "inner n shadows the literal iterator"
+    }
+  ]
+}

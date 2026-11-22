@@ -1,0 +1,36 @@
+{
+  "description": "db.Exec(ctx, \"...\"+name) with request data concatenated into the SQL at arg 1 must still fire, and taint now reaches it.",
+  "tags": [
+    "sqli",
+    "context",
+    "payload-position",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "evidence_contains": [],
+      "notes": "db.Exec(ctx, \"...\"+name) with request data concatenated into the SQL at arg 1 must still fire, and taint now reaches it."
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        18,
+        18
+      ],
+      "evidence_contains": [],
+      "notes": "db.Exec(ctx, \"...\"+name) with request data concatenated into the SQL at arg 1 must still fire, and taint now reaches it."
+    }
+  ]
+}

@@ -12,7 +12,10 @@ use crate::auth_analysis::model::{
     Framework, HttpMethod, OperationKind, RouteRegistration, SensitiveOperation, SinkClass,
     UnitRuntime, ValueRef, ValueSourceKind,
 };
-use crate::auth_analysis::naming::is_id_like_name;
+use crate::auth_analysis::naming::{
+    is_actor_ref_text, is_id_like_name, is_request_payload_segment, is_request_scope_path,
+    is_session_identity_key, is_session_identity_ref, is_session_store_receiver,
+};
 use crate::labels::bare_method_name;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -615,8 +618,13 @@ pub struct FileMeta {
     /// Go: imported package names and file-level consts.  Empty for other
     /// languages, whose top-level nodes never match.
     pub package_names: HashSet<String>,
+    /// Go: package-level variables holding an in-memory container.
+    pub in_memory_vars: HashSet<String>,
     /// JS/TS: imports and directives that say where the file runs.
     pub js: JsFileFacts,
+    /// Python: classes defined in the file that derive, through the file's
+    /// own imports, from the peewee or tortoise `Model`.
+    pub orm_models: HashSet<String>,
 }
 
 impl FileMeta {
@@ -626,7 +634,9 @@ impl FileMeta {
         Self {
             trpc_alias_names,
             package_names: go_scope::package_level_names(root, bytes),
+            in_memory_vars: go_scope::package_in_memory_vars(root, bytes),
             js: js_scope::scan_file(root, bytes),
+            orm_models: super::py_models::orm_model_classes(root, bytes),
         }
     }
 }
@@ -867,6 +877,97 @@ fn find_top_level_function_node_in_child<'tree>(
     }
 }
 
+/// Callee names (last path segment) of a Rust admin gate that returns a
+/// `Result` and is used as `is_admin(&user)?;`.
+fn is_rust_admin_gate_name(callee: &str, rules: &AuthAnalysisRules) -> bool {
+    let last = callee.rsplit(['.', ':']).next().unwrap_or(callee);
+    matches!(
+        last,
+        "is_admin" | "require_admin" | "ensure_admin" | "check_admin" | "assert_admin"
+    ) || rules.is_admin_guard(last, &[])
+}
+
+/// Record `<admin gate>(..)?;` statements that sit directly in a Rust
+/// function body as `AdminGuard` checks flagged `dominates_body`.
+///
+/// Only an unconditional top-level statement qualifies: the `?` returns from
+/// the function on failure, so every later operation runs behind the gate.
+/// A gate inside an `if`, a closure or a match arm, one whose result is
+/// bound or tested (`.is_ok()`, `let ok = ..`), or one without `?` is left
+/// alone because none of those stops the operations that follow.
+fn collect_dominating_admin_gates(
+    function: Node<'_>,
+    bytes: &[u8],
+    rules: &AuthAnalysisRules,
+    state: &mut UnitState,
+) {
+    let Some(body) = function.child_by_field_name("body") else {
+        return;
+    };
+    if body.kind() != "block" {
+        return;
+    }
+    for stmt in named_children(body) {
+        if stmt.kind() != "expression_statement" {
+            continue;
+        }
+        let Some(mut expr) = stmt.named_child(0) else {
+            continue;
+        };
+        if expr.kind() != "try_expression" {
+            continue;
+        }
+        // `gate(..).await?` parses as try(await(call)).
+        let Some(mut inner) = expr.named_child(0) else {
+            continue;
+        };
+        if inner.kind() == "await_expression"
+            && let Some(awaited) = inner.named_child(0)
+        {
+            inner = awaited;
+        }
+        expr = inner;
+        if expr.kind() != "call_expression" {
+            continue;
+        }
+        let Some(function_node) = expr.child_by_field_name("function") else {
+            continue;
+        };
+        let callee = text(function_node, bytes);
+        if !is_rust_admin_gate_name(&callee, rules) {
+            continue;
+        }
+        let call_span = span(expr);
+        let mut subjects = call_receiver_subjects(expr, bytes, None);
+        if let Some(site) = state.call_sites.iter().find(|c| c.span == call_span) {
+            for refs in &site.args_value_refs {
+                subjects.extend(refs.iter().cloned());
+            }
+        }
+        // The gate must test the acting user.  `is_admin(&other)?` checks
+        // someone else, so it covers nothing.
+        let tests_actor = subjects.iter().any(|s| {
+            let full = s.base.as_deref().unwrap_or(s.name.as_str());
+            let root = full.split('.').next().unwrap_or(full);
+            state.self_actor_vars.contains(root)
+        });
+        if !tests_actor {
+            continue;
+        }
+        state.auth_checks.push(AuthCheck {
+            kind: AuthCheckKind::AdminGuard,
+            callee,
+            subjects,
+            span: call_span,
+            line: expr.start_position().row + 1,
+            args: Vec::new(),
+            condition_text: None,
+            is_route_level: false,
+            dominates_body: true,
+        });
+    }
+}
+
 pub fn build_function_unit(
     node: Node<'_>,
     kind: AnalysisUnitKind,
@@ -924,9 +1025,22 @@ pub fn build_function_unit_with_meta(
     }
     if let Some(meta) = file_meta {
         state.trpc_alias_names = meta.trpc_alias_names.clone();
+        state.orm_models = meta.orm_models.clone();
     }
     let is_go = rules.is_go_lang();
     if is_go {
+        if let Some(meta) = file_meta
+            && !meta.in_memory_vars.is_empty()
+        {
+            // A local of the same name shadows the package-level variable.
+            let own = go_scope::declared_names(definition, bytes);
+            state.non_sink_vars.extend(
+                meta.in_memory_vars
+                    .iter()
+                    .filter(|name| !own.contains(*name))
+                    .cloned(),
+            );
+        }
         state.request_roots = Some(go_scope::request_root_params(definition, bytes));
         if let Some(meta) = file_meta
             && !meta.package_names.is_empty()
@@ -935,6 +1049,9 @@ pub fn build_function_unit_with_meta(
         }
     }
     collect_unit_state(node, bytes, rules, &mut state);
+    if rules.is_rust_lang() {
+        collect_dominating_admin_gates(definition, bytes, rules, &mut state);
+    }
     let runtime = match file_meta {
         Some(meta) if rules.is_object_literal_lang() => js_scope::classify_unit(
             &meta.js,
@@ -944,6 +1061,11 @@ pub fn build_function_unit_with_meta(
             bytes[node.start_byte()..].starts_with(b"async"),
         ),
         _ => UnitRuntime::Unknown,
+    };
+    let runtime = if runtime == UnitRuntime::Unknown && state.saw_mirage_handler {
+        UnitRuntime::Browser
+    } else {
+        runtime
     };
     let (package_names, request_roots) = if is_go {
         let roots = state.request_roots.take().unwrap_or_default();
@@ -1000,6 +1122,12 @@ pub fn build_function_unit_with_meta(
         row_field_vars: state.row_field_vars,
         var_alias_chain: state.var_alias_chain,
         row_population_data: state.row_population_data,
+        row_fetch_callees: state.row_fetch_callees,
+        row_derived_from: state
+            .row_derived_from
+            .into_iter()
+            .filter_map(|(name, roots)| roots.map(|roots| (name, roots)))
+            .collect(),
         self_actor_vars: state.self_actor_vars,
         self_actor_id_vars: state.self_actor_id_vars,
         authorized_sql_vars: state.authorized_sql_vars,
@@ -1011,7 +1139,14 @@ pub fn build_function_unit_with_meta(
         is_nextauth_options_factory,
         package_names,
         request_roots,
+        request_scope_roots: state.request_scope_roots,
+        authorization_scoped_vars: state
+            .scope_bound_vars
+            .difference(&state.unscoped_bound_vars)
+            .cloned()
+            .collect(),
         runtime,
+        internal_helper: false,
     }
 }
 
@@ -1249,6 +1384,13 @@ struct UnitState<'a> {
     /// argument value-refs into its subjects so the original fetch
     /// (e.g. `db.query_one(..., &[doc_id])`) is also covered.
     row_population_data: HashMap<String, Vec<(usize, Vec<ValueRef>)>>,
+    /// Row provenance of plain locals, see
+    /// [`crate::auth_analysis::model::AnalysisUnit::row_derived_from`].
+    /// `None` marks a name that was also bound to something that is not read
+    /// off a row, which disqualifies it.
+    row_derived_from: HashMap<String, Option<Vec<String>>>,
+    /// See [`crate::auth_analysis::model::AnalysisUnit::row_fetch_callees`].
+    row_fetch_callees: HashMap<usize, Vec<String>>,
     /// A3: local variables bound to the authenticated actor.
     /// Populated from `let V = require_auth(..).await?` (or any call
     /// matching `rules.is_login_guard` / `rules.is_authorization_check`)
@@ -1297,10 +1439,31 @@ struct UnitState<'a> {
     /// resolves to a TRPC handler signature.  Empty for non-TS
     /// languages, the scanner only matches TS-grammar node kinds.
     trpc_alias_names: HashSet<String>,
+    /// JS/TS: the unit contains an ember-cli-mirage route handler.
+    saw_mirage_handler: bool,
+    /// Python ORM model classes of the file (see `py_models`).
+    orm_models: HashSet<String>,
     /// Go only: names bound to the request or a framework request context,
     /// grown as `:=` copies are met in source order.  `None` for other
     /// languages, where accessor calls are classified by name alone.
     request_roots: Option<HashSet<String>>,
+    /// Go: locals bound to a scope entity read off the request context.
+    request_scope_roots: HashSet<String>,
+    /// Locals bound to a relation confined by an authorization scope, and
+    /// locals bound to anything else.  A name is scoped only when every
+    /// binding of it is.
+    scope_bound_vars: HashSet<String>,
+    unscoped_bound_vars: HashSet<String>,
+    /// Names bound to anything but the caller's session id somewhere in the
+    /// unit.  Sticky: a later session read does not make the name trusted,
+    /// since the earlier value may reach the use through the other branch.
+    non_identity_bound_vars: HashSet<String>,
+    /// Bare locals named like a session store (`session`, `sess`) that are
+    /// bound to request input or an HTTP client session, so `.get("user_id")`
+    /// on them reads the request, not the server-side store.
+    foreign_session_names: HashSet<String>,
+    /// Go: names bound at least once to something other than a scope entity.
+    request_scope_rebound: HashSet<String>,
     /// The unit builds JSX somewhere in its body.
     saw_jsx: bool,
 }
@@ -1323,8 +1486,18 @@ fn collect_unit_state(
     ) {
         state.saw_jsx = true;
     }
+    if matches!(
+        node.kind(),
+        "function_expression" | "arrow_function" | "function"
+    ) && !state.saw_mirage_handler
+        && rules.is_object_literal_lang()
+        && js_scope::is_mirage_handler_signature(node, bytes)
+    {
+        state.saw_mirage_handler = true;
+    }
     match node.kind() {
         "call_expression" | "call" | "method_invocation" | "method_call_expression" => {
+            collect_row_derived_callback_param(node, bytes, state);
             collect_call(node, bytes, rules, state)
         }
         "while_statement" | "do_statement" | "while_modifier" | "until_modifier"
@@ -1345,6 +1518,7 @@ fn collect_unit_state(
             collect_row_field_binding(node, bytes, state);
             collect_member_alias_binding(node, bytes, state);
             collect_row_population(node, bytes, state);
+            collect_row_derived_binding(node, bytes, state);
             collect_self_actor_binding(node, bytes, rules, state);
             collect_self_actor_id_binding(node, bytes, state);
             collect_sql_authorized_binding(node, bytes, rules, state);
@@ -1368,6 +1542,7 @@ fn collect_unit_state(
             // back to the row's let line. `collect_row_population`
             // accepts the `name` field used by `variable_declarator`.
             collect_row_population(node, bytes, state);
+            collect_row_derived_binding(node, bytes, state);
         }
         // Go `id := "id"` / Python `id = "id"` / Java `String id = "id";` /
         // Ruby `id = "id"`, language-specific binding nodes that the
@@ -1387,6 +1562,8 @@ fn collect_unit_state(
         | "assignment_statement"
         | "expression_statement" => {
             collect_const_string_binding(node, bytes, state);
+            collect_session_identity_alias(node, bytes, state);
+            collect_authorization_scoped_alias(node, bytes, rules, state);
             // Go `x := ...`, `x = ...` and `var x = ...`.  The helpers read
             // `left`/`right` expression lists and `name`/`value` on a
             // `var_spec`.
@@ -1396,6 +1573,7 @@ fn collect_unit_state(
             ) {
                 collect_non_sink_binding(node, bytes, rules, state);
                 collect_row_population(node, bytes, state);
+                collect_row_derived_binding(node, bytes, state);
             }
             // Ruby `@issue = Issue.find(params[:id])` is the canonical
             // controller idiom: instance-variable assignment whose RHS
@@ -1407,6 +1585,7 @@ fn collect_unit_state(
             // `instance_variable`.
             if matches!(node.kind(), "assignment" | "assignment_expression") {
                 collect_row_population(node, bytes, state);
+                collect_row_derived_binding(node, bytes, state);
                 // Python `verified_ids = set()` /
                 // `cache: dict[str,int] = {}` and JS analogues bind a
                 // local non-sink container.  `collect_non_sink_binding`
@@ -1418,6 +1597,12 @@ fn collect_unit_state(
         }
         "for_expression" => {
             collect_for_row_binding(node, bytes, state);
+            collect_row_derived_loop_binding(node, bytes, state);
+        }
+        // JS `for (const row of rows)`, Go `for _, t := range tasks`, Python
+        // `for row in rows`, Java `for (Row row : rows)`.
+        "for_in_statement" | "range_clause" | "for_statement" | "enhanced_for_statement" => {
+            collect_row_derived_loop_binding(node, bytes, state);
         }
         "parameter" => {
             collect_typed_extractor_self_actor(node, bytes, state);
@@ -1493,11 +1678,40 @@ fn track_go_request_roots(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
             let Some(right) = node.child_by_field_name("right") else {
                 return;
             };
-            let rooted = go_scope::expression_items(right).into_iter().any(|expr| {
-                go_scope::expr_root(expr, bytes).is_some_and(|root| roots.contains(&root))
+            let items = go_scope::expression_items(right);
+            let names = go_scope::bound_names(node, bytes);
+            let rooted = items.iter().any(|expr| {
+                go_scope::expr_root(*expr, bytes).is_some_and(|root| roots.contains(&root))
             });
+            // `gitRepo := ctx.Repo.GitRepo` keeps the scope tag, so a lookup
+            // through the alias is read the same way as one through the
+            // chain.  A rebinding to anything else drops it.
+            let scoped = rooted
+                && match items.as_slice() {
+                    [only] => go_scope::selector_chain(*only, bytes).is_some_and(|(root, rest)| {
+                        let rest: Vec<&str> = rest.iter().map(String::as_str).collect();
+                        if state.request_scope_roots.contains(&root) {
+                            !rest.iter().any(|seg| is_request_payload_segment(seg))
+                        } else {
+                            roots.contains(&root) && is_request_scope_path(&rest)
+                        }
+                    }),
+                    _ => false,
+                };
+            // Every binding of a name must be a scope entity: an earlier
+            // rebinding keeps the tag off just as a later one removes it.
+            for name in &names {
+                if !scoped {
+                    state.request_scope_rebound.insert(name.clone());
+                }
+                if scoped && !state.request_scope_rebound.contains(name) {
+                    state.request_scope_roots.insert(name.clone());
+                } else {
+                    state.request_scope_roots.remove(name);
+                }
+            }
             if rooted {
-                roots.extend(go_scope::bound_names(node, bytes));
+                roots.extend(names);
             }
         }
         _ => {}
@@ -1633,7 +1847,9 @@ fn collect_call(node: Node<'_>, bytes: &[u8], rules: &AuthAnalysisRules, state: 
             OperationKind::Mutation
         };
         (Some(kind), Some(SinkClass::OutboundNetwork))
-    } else if let Some(class) = rules.classify_sink_class(&callee, &state.non_sink_vars) {
+    } else if let Some(class) =
+        rules.classify_sink_class_with_models(&callee, &state.non_sink_vars, &state.orm_models)
+    {
         let op = match class {
             SinkClass::DbCrossTenantRead => OperationKind::Read,
             // InMemoryLocal: keep the verb for telemetry but the
@@ -1703,21 +1919,63 @@ fn collect_call(node: Node<'_>, bytes: &[u8], rules: &AuthAnalysisRules, state: 
             args: string_args,
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         });
     }
 
     if let Some(kind) = op_kind {
+        // Go driver calls take a context first (`UpdateOne(ctx, filter, update)`),
+        // so positions differ there; Go carries `request_roots`.
+        let payload_subjects_start = if state.request_roots.is_none()
+            && is_filter_then_update_callee(&callee)
+            && call_sites_arg_count(&state.call_sites) >= 2
+        {
+            state
+                .call_sites
+                .last()
+                .and_then(|c| c.args_value_refs.first())
+                .map(|first| receiver_subjects + first.len())
+        } else {
+            None
+        };
         state.operations.push(SensitiveOperation {
             kind,
             sink_class,
             callee,
             subjects,
             receiver_subjects,
+            payload_subjects_start,
             span: span(node),
             line,
             text: node_text.to_string(),
         });
     }
+}
+
+fn call_sites_arg_count(sites: &[CallSite]) -> usize {
+    sites.last().map_or(0, |c| c.args_value_refs.len())
+}
+
+/// MongoDB / Mongoose write methods whose first argument is the query filter
+/// and whose later arguments are the update or replacement document.
+fn is_filter_then_update_callee(callee: &str) -> bool {
+    let method = callee.rsplit('.').next().unwrap_or(callee);
+    [
+        "findoneandupdate",
+        "findbyidandupdate",
+        "findoneandreplace",
+        "findbyidandreplace",
+        "updateone",
+        "updatemany",
+        "replaceone",
+        "find_one_and_update",
+        "find_one_and_replace",
+        "update_one",
+        "update_many",
+        "replace_one",
+    ]
+    .iter()
+    .any(|m| method.eq_ignore_ascii_case(m))
 }
 
 /// `<client>.<verb>(<url>, ..)` in JS/TS: an HTTP client request.  Either the
@@ -1823,6 +2081,7 @@ fn collect_condition(
             args: Vec::new(),
             condition_text: Some(condition_text.clone()),
             is_route_level: false,
+            dominates_body: false,
         });
     }
 
@@ -1836,6 +2095,7 @@ fn collect_condition(
             args: Vec::new(),
             condition_text: Some(condition_text),
             is_route_level: false,
+            dominates_body: false,
         });
     }
 }
@@ -2084,6 +2344,231 @@ fn collect_row_population(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
     }
 }
 
+/// Binding names introduced by a declaration or loop pattern: plain
+/// identifiers, destructured names and tuple elements.  `_` is skipped.
+fn pattern_binding_names(node: Node<'_>, bytes: &[u8], out: &mut Vec<String>) {
+    match node.kind() {
+        "identifier" | "shorthand_property_identifier_pattern" | "variable_name" => {
+            let name = text(node, bytes);
+            if !name.is_empty() && name != "_" {
+                out.push(name);
+            }
+        }
+        // `{ key: name }` binds `name`, not `key`.
+        "pair_pattern" => {
+            if let Some(value) = node.child_by_field_name("value") {
+                pattern_binding_names(value, bytes, out);
+            }
+        }
+        _ => {
+            for child in named_children(node) {
+                pattern_binding_names(child, bytes, out);
+            }
+        }
+    }
+}
+
+/// Leftmost identifier of a member or subscript chain (`res[0].id` gives
+/// `res`).  `None` when the chain starts at a call, `this`, or a literal.
+fn chain_root_identifier(node: Node<'_>, bytes: &[u8]) -> Option<String> {
+    let mut cur = node;
+    for _ in 0..32 {
+        match cur.kind() {
+            "identifier" => {
+                let name = text(cur, bytes);
+                return if name.is_empty() { None } else { Some(name) };
+            }
+            "member_expression"
+            | "attribute"
+            | "selector_expression"
+            | "field_expression"
+            | "field_access"
+            | "subscript_expression"
+            | "index_expression"
+            | "subscript"
+            | "element_reference" => {
+                cur = ["object", "operand", "value", "argument"]
+                    .iter()
+                    .find_map(|field| cur.child_by_field_name(field))?;
+            }
+            "non_null_expression"
+            | "parenthesized_expression"
+            | "as_expression"
+            | "type_assertion"
+            | "satisfies_expression" => {
+                cur = cur.named_child(0)?;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Roots of the variables a value expression is read from: a bare name, a
+/// member or subscript chain, or every arm of a ternary or `a ?? b` fallback.
+/// `None` when any arm is anything else (a call, a literal, a request value),
+/// so a mixed expression never counts as read off a row.
+fn row_source_roots(value: Node<'_>, bytes: &[u8]) -> Option<Vec<String>> {
+    let node = unwrap_try_like(value);
+    match node.kind() {
+        "ternary_expression" => {
+            let mut roots = Vec::new();
+            for field in ["consequence", "alternative"] {
+                roots.extend(row_source_roots(node.child_by_field_name(field)?, bytes)?);
+            }
+            Some(roots)
+        }
+        "binary_expression" => {
+            let op = node.child_by_field_name("operator")?;
+            if !matches!(op.kind(), "??" | "||") {
+                return None;
+            }
+            let mut roots = Vec::new();
+            for field in ["left", "right"] {
+                roots.extend(row_source_roots(node.child_by_field_name(field)?, bytes)?);
+            }
+            Some(roots)
+        }
+        _ => chain_root_identifier(node, bytes).map(|root| vec![root]),
+    }
+}
+
+/// Record the row provenance of `const id = res[0].id`, `const { a } = row`,
+/// Go `x, y := row.A, row.B`.  A name bound to any other kind of value is
+/// marked as not row-derived.  A call result is such a value: a fetch is
+/// tracked by `collect_row_population`, and the checker looks there first.
+fn collect_row_derived_binding(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
+    let Some(pattern) = node
+        .child_by_field_name("pattern")
+        .or_else(|| node.child_by_field_name("name"))
+        .or_else(|| node.child_by_field_name("left"))
+    else {
+        return;
+    };
+    if is_member_like_target(pattern) {
+        return;
+    }
+    let Some(value) = node
+        .child_by_field_name("value")
+        .or_else(|| node.child_by_field_name("right"))
+    else {
+        return;
+    };
+    let mut names = Vec::new();
+    pattern_binding_names(pattern, bytes, &mut names);
+    if names.is_empty() {
+        return;
+    }
+    // `a, b := x.A, x.B` pairs the names with the values by position.
+    let paired: Option<Vec<Node<'_>>> = (pattern.kind() == "expression_list"
+        && value.kind() == "expression_list"
+        && pattern.named_child_count() == value.named_child_count()
+        && value.named_child_count() > 1)
+        .then(|| named_children(value));
+    if let Some(values) = paired {
+        let mut idents = Vec::new();
+        for (name_node, value_node) in named_children(pattern).into_iter().zip(values) {
+            idents.clear();
+            pattern_binding_names(name_node, bytes, &mut idents);
+            let roots = row_source_roots(value_node, bytes);
+            for name in idents.drain(..) {
+                note_row_derived(state, name, roots.clone());
+            }
+        }
+        return;
+    }
+    let roots = row_source_roots(value, bytes);
+    for name in names {
+        note_row_derived(state, name, roots.clone());
+    }
+}
+
+fn note_row_derived(state: &mut UnitState, name: String, roots: Option<Vec<String>>) {
+    match (state.row_derived_from.get_mut(&name), roots) {
+        (Some(None), _) => {}
+        (Some(Some(existing)), Some(roots)) => existing.extend(roots),
+        (Some(slot), None) => *slot = None,
+        (None, roots) => {
+            state.row_derived_from.insert(name, roots);
+        }
+    }
+}
+
+/// `for (const row of rows)`, `for _, t := range tasks`, `for row in rows`,
+/// `for (Row row : rows)`: the loop variable is an element of the collection.
+fn collect_row_derived_loop_binding(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
+    let (Some(pattern), Some(value)) = (
+        node.child_by_field_name("left")
+            .or_else(|| node.child_by_field_name("pattern"))
+            .or_else(|| node.child_by_field_name("name")),
+        node.child_by_field_name("right")
+            .or_else(|| node.child_by_field_name("value")),
+    ) else {
+        return;
+    };
+    let roots = row_source_roots(value, bytes)
+        .or_else(|| single_iter_source_name(value, bytes).map(|root| vec![root]));
+    let mut names = Vec::new();
+    pattern_binding_names(pattern, bytes, &mut names);
+    for name in names {
+        note_row_derived(state, name, roots.clone());
+    }
+}
+
+/// `rows.map((row) => ..)`, `rows.forEach(function (row) {..})`: the callback
+/// parameter is an element of the receiver.
+fn collect_row_derived_callback_param(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
+    let Some(function) = node.child_by_field_name("function") else {
+        return;
+    };
+    if function.kind() != "member_expression" {
+        return;
+    }
+    let Some(callback) = node
+        .child_by_field_name("arguments")
+        .and_then(|args| args.named_child(0))
+        .filter(|arg| {
+            matches!(
+                arg.kind(),
+                "arrow_function" | "function_expression" | "function"
+            )
+        })
+    else {
+        return;
+    };
+    let Some(method) = function
+        .child_by_field_name("property")
+        .map(|p| text(p, bytes))
+    else {
+        return;
+    };
+    if !matches!(
+        method.as_str(),
+        "map" | "forEach" | "filter" | "flatMap" | "some" | "every" | "find" | "findIndex"
+    ) {
+        return;
+    }
+    let Some(receiver) = function.child_by_field_name("object") else {
+        return;
+    };
+    let Some(roots) = row_source_roots(receiver, bytes) else {
+        return;
+    };
+    let param = callback.child_by_field_name("parameter").or_else(|| {
+        callback
+            .child_by_field_name("parameters")
+            .and_then(|params| params.named_child(0))
+    });
+    let Some(param) = param else {
+        return;
+    };
+    let mut names = Vec::new();
+    pattern_binding_names(param, bytes, &mut names);
+    for name in names {
+        note_row_derived(state, name, Some(roots.clone()));
+    }
+}
+
 fn is_member_like_target(node: Node<'_>) -> bool {
     matches!(
         node.kind(),
@@ -2142,6 +2627,11 @@ fn record_row_binding(var_name: &str, call_node: Node<'_>, bytes: &[u8], state: 
         arg_refs.extend(extract_value_refs(arg, bytes, state.request_roots.as_ref()));
     }
     let call_line = call_node.start_position().row + 1;
+    state
+        .row_fetch_callees
+        .entry(call_line)
+        .or_default()
+        .push(call_name(call_node, bytes));
     state
         .row_population_data
         .entry(var_name.to_string())
@@ -2863,7 +3353,7 @@ fn collect_self_actor_id_binding(node: Node<'_>, bytes: &[u8], state: &mut UnitS
         return;
     };
     if value_is_self_actor_id_field(value, bytes, &state.self_actor_vars)
-        || value_is_self_scoped_session_id_chain(value, bytes)
+        || value_is_self_scoped_session_id_chain(value, bytes, &state.foreign_session_names)
     {
         state.self_actor_id_vars.insert(var_name);
     }
@@ -2893,7 +3383,21 @@ fn value_is_self_actor_id_field(
             };
             let receiver_name = text(receiver, bytes);
             let field_name = text(field, bytes);
-            actor_vars.contains(&receiver_name) && is_self_actor_id_field_name(&field_name)
+            if !is_self_actor_id_field_name(&field_name) {
+                return false;
+            }
+            // `local_user_view.person.id`: resolve the root of the receiver
+            // chain, as the subject-level check does for `V.person.id`.
+            let root = receiver_name
+                .trim_start_matches(['&', '*'])
+                .split(['.', ':'])
+                .next()
+                .unwrap_or(&receiver_name);
+            let nested_id = matches!(
+                field_name.to_ascii_lowercase().as_str(),
+                "id" | "user_id" | "userid" | "uid"
+            );
+            actor_vars.contains(&receiver_name) || (nested_id && actor_vars.contains(root))
         }
         "type_cast_expression"
         | "as_expression"
@@ -2971,7 +3475,16 @@ fn is_self_actor_id_field_name(field: &str) -> bool {
 /// session.user.id; await repo.get(userId); }`. The use site sees
 /// a plain `userId` subject, so without binding-time recognition the
 /// classifier can't tell it's actor context.
-fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
+fn value_is_self_scoped_session_id_chain(
+    node: Node<'_>,
+    bytes: &[u8],
+    foreign: &HashSet<String>,
+) -> bool {
+    if !foreign.is_empty()
+        && chain_root_name(node, bytes).is_some_and(|root| foreign.contains(&root))
+    {
+        return false;
+    }
     match node.kind() {
         "field_expression" | "member_expression" | "field_access" | "scoped_identifier" => {
             // Build the dotted chain and reuse the same predicate the
@@ -2982,6 +3495,11 @@ fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
             if chain.len() < 2 {
                 return false;
             }
+            // `req.session.userId`, `session.user_id`: the identity key of a
+            // session container.
+            if is_session_identity_ref(&chain.join(".")) {
+                return true;
+            }
             let field = chain.last().expect("len >= 2");
             if !is_self_actor_id_field_name(field) {
                 return false;
@@ -2990,6 +3508,13 @@ fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
             let base = base_chain.join(".");
             classify_member_chain(base_chain) == ValueSourceKind::Session
                 && is_self_scoped_session_base_text(&base)
+        }
+        // `session['user_id']`, `session[:uid]`, `req.session["userId"]`.
+        "subscript_expression" | "subscript" | "element_reference" => {
+            subscript_value_ref(node, bytes).is_some_and(|value| {
+                value.source_kind == ValueSourceKind::Session
+                    && is_session_identity_ref(&value.name)
+            })
         }
         "type_cast_expression"
         | "as_expression"
@@ -3003,7 +3528,7 @@ fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
                 .child_by_field_name("value")
                 .or_else(|| node.child_by_field_name("expression"));
             if let Some(v) = value
-                && value_is_self_scoped_session_id_chain(v, bytes)
+                && value_is_self_scoped_session_id_chain(v, bytes, foreign)
             {
                 return true;
             }
@@ -3011,7 +3536,7 @@ fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
                 let Some(child) = node.named_child(idx as u32) else {
                     continue;
                 };
-                if value_is_self_scoped_session_id_chain(child, bytes) {
+                if value_is_self_scoped_session_id_chain(child, bytes, foreign) {
                     return true;
                 }
             }
@@ -3019,17 +3544,20 @@ fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
         }
         // `(req.user.id as number).toString()` / `session.user.id.toString()`
         "call_expression" | "call" | "method_invocation" | "method_call_expression" => {
+            if is_session_identity_store_read(node, bytes) {
+                return true;
+            }
             let receiver = node
                 .child_by_field_name("function")
                 .or_else(|| node.child_by_field_name("object"));
             if let Some(r) = receiver {
-                if value_is_self_scoped_session_id_chain(r, bytes) {
+                if value_is_self_scoped_session_id_chain(r, bytes, foreign) {
                     return true;
                 }
                 if let Some(inner) = r
                     .child_by_field_name("value")
                     .or_else(|| r.child_by_field_name("object"))
-                    && value_is_self_scoped_session_id_chain(inner, bytes)
+                    && value_is_self_scoped_session_id_chain(inner, bytes, foreign)
                 {
                     return true;
                 }
@@ -3037,6 +3565,286 @@ fn value_is_self_scoped_session_id_chain(node: Node<'_>, bytes: &[u8]) -> bool {
             false
         }
         _ => false,
+    }
+}
+
+/// `session.get('user_id')`, `ctx.Session.Get("uid")`, `session.fetch(:user_id)`:
+/// a read of an identity key from a session store, whatever the language's
+/// accessor spelling.  The key must be a string or symbol literal naming the
+/// caller's own id, so `sess.Get(name)` and `ctx.Req.Form.Get("uid")` (the
+/// request, not the store) do not qualify.
+fn is_session_identity_store_read(call: Node<'_>, bytes: &[u8]) -> bool {
+    let callee = call_name(call, bytes);
+    let Some((receiver, method)) = callee.rsplit_once('.') else {
+        return false;
+    };
+    if !matches!(method, "get" | "Get" | "fetch" | "Fetch") || !is_session_store_receiver(receiver)
+    {
+        return false;
+    }
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let Some(first) = args.named_child(0) else {
+        return false;
+    };
+    if !matches!(
+        first.kind(),
+        "string"
+            | "string_literal"
+            | "interpreted_string_literal"
+            | "raw_string_literal"
+            | "simple_symbol"
+            | "string_content"
+    ) {
+        return false;
+    }
+    is_session_identity_key(&strip_quotes(&text(first, bytes)))
+}
+
+/// Left and right side of a one-name binding: Python/Ruby `uid = ...`, Go
+/// `uid := ...` and `var uid = ...`.  The right side is the only expression
+/// of a Go expression list; `None` for anything else.
+fn single_binding_sides<'a>(node: Node<'a>, bytes: &[u8]) -> Option<(String, Node<'a>)> {
+    let left = node
+        .child_by_field_name("left")
+        .or_else(|| node.child_by_field_name("name"))?;
+    let right = node
+        .child_by_field_name("right")
+        .or_else(|| node.child_by_field_name("value"))?;
+    let first_of = |n: Node<'a>| -> Option<Node<'a>> {
+        if n.kind() == "expression_list" || n.kind() == "identifier_list" {
+            n.named_child(0)
+        } else {
+            Some(n)
+        }
+    };
+    let left = first_of(left)?;
+    if !matches!(left.kind(), "identifier" | "instance_variable") {
+        return None;
+    }
+    let right = if right.kind() == "expression_list" {
+        if right.named_child_count() != 1 {
+            return None;
+        }
+        right.named_child(0)?
+    } else {
+        right
+    };
+    Some((text(left, bytes), right))
+}
+
+/// `uid = session['user_id']`, `uid := sess.Get("uid")`, `id := uid.(int64)`:
+/// the local holds the caller's own id from the session store, so it joins
+/// `self_actor_id_vars`.  The walk is flow-insensitive, so every binding of the
+/// name must be a session identity read: one binding to anything else, before
+/// or after, keeps the name out.
+fn collect_session_identity_alias(node: Node<'_>, bytes: &[u8], state: &mut UnitState) {
+    let Some((name, mut rhs)) = single_binding_sides(node, bytes) else {
+        return;
+    };
+    note_foreign_session_name(&name, rhs, bytes, state);
+    // A Go type assertion keeps the value: `idSess.(int64)`.
+    while matches!(
+        rhs.kind(),
+        "type_assertion_expression" | "parenthesized_expression"
+    ) {
+        let Some(inner) = rhs
+            .child_by_field_name("operand")
+            .or_else(|| rhs.named_child(0))
+        else {
+            break;
+        };
+        rhs = inner;
+    }
+    let identity = if rhs.kind() == "identifier" {
+        state.self_actor_id_vars.contains(&text(rhs, bytes))
+    } else {
+        value_is_self_scoped_session_id_chain(rhs, bytes, &state.foreign_session_names)
+    };
+    if identity && !state.non_identity_bound_vars.contains(&name) {
+        state.self_actor_id_vars.insert(name);
+    } else {
+        state.self_actor_id_vars.remove(&name);
+        state.non_identity_bound_vars.insert(name);
+    }
+}
+
+/// Record a session-looking local that is bound to request input
+/// (`session = request.GET`) or to an HTTP client session
+/// (`session = requests.Session()`).
+fn note_foreign_session_name(name: &str, rhs: Node<'_>, bytes: &[u8], state: &mut UnitState) {
+    if !is_session_store_receiver(name) {
+        return;
+    }
+    let chain = member_chain(rhs, bytes);
+    let foreign = if matches!(rhs.kind(), "call" | "call_expression") {
+        matches!(
+            chain.join(".").as_str(),
+            "requests.Session"
+                | "requests.session"
+                | "httpx.Client"
+                | "httpx.AsyncClient"
+                | "aiohttp.ClientSession"
+        )
+    } else {
+        // Anything read off the request object that is not its session.
+        chain.first().is_some_and(|root| {
+            matches!(
+                root.to_ascii_lowercase().as_str(),
+                "request" | "req" | "params" | "ctx" | "r"
+            )
+        }) && classify_member_chain(&chain) != ValueSourceKind::Session
+            && !chain
+                .iter()
+                .any(|seg| matches!(seg.to_ascii_lowercase().as_str(), "session" | "sess"))
+    };
+    if foreign {
+        state.foreign_session_names.insert(name.to_string());
+    }
+}
+
+/// Leftmost identifier of an access chain (`session` in `session.get("k")`,
+/// `session["k"]`).
+fn chain_root_name(mut node: Node<'_>, bytes: &[u8]) -> Option<String> {
+    loop {
+        if node.kind() == "identifier" {
+            return Some(text(node, bytes));
+        }
+        node = ["function", "receiver", "object", "operand", "value"]
+            .iter()
+            .find_map(|f| node.child_by_field_name(f))
+            .or_else(|| node.named_child(0))?;
+    }
+}
+
+/// Calls of a method chain, innermost receiver last: the method name and its
+/// argument list.  Handles Python `call(attribute(..))` and Ruby
+/// `call(receiver, method, arguments)`.
+fn chain_calls<'a>(mut node: Node<'a>, bytes: &[u8]) -> Vec<(String, Option<Node<'a>>)> {
+    let mut out = Vec::new();
+    loop {
+        match node.kind() {
+            "call" => {
+                if let Some(function) = node.child_by_field_name("function") {
+                    let args = node.child_by_field_name("arguments");
+                    if function.kind() == "attribute"
+                        && let (Some(object), Some(attr)) = (
+                            function.child_by_field_name("object"),
+                            function.child_by_field_name("attribute"),
+                        )
+                    {
+                        out.push((text(attr, bytes), args));
+                        node = object;
+                        continue;
+                    }
+                    out.push((text(function, bytes), args));
+                    return out;
+                }
+                let Some(method) = node.child_by_field_name("method") else {
+                    return out;
+                };
+                out.push((text(method, bytes), node.child_by_field_name("arguments")));
+                match node.child_by_field_name("receiver") {
+                    Some(receiver) => node = receiver,
+                    None => return out,
+                }
+            }
+            "attribute" => match node.child_by_field_name("object") {
+                Some(object) => node = object,
+                None => return out,
+            },
+            _ => return out,
+        }
+    }
+}
+
+/// True when some argument of the call is the caller: `visible_to_user(requestor)`,
+/// `visible_to_user(user=request.user)`.
+fn args_name_actor(args: Node<'_>, bytes: &[u8]) -> bool {
+    named_children(args).into_iter().any(|arg| {
+        let value = match arg.kind() {
+            "keyword_argument" | "pair" => arg.child_by_field_name("value").unwrap_or(arg),
+            _ => arg,
+        };
+        is_actor_ref_text(&text(value, bytes))
+    })
+}
+
+/// True when a top-level keyword argument pins the rows to the caller:
+/// `filter(owner=request.user)`, `where(user_id: current_user.id)`.  An
+/// argument nested in `Q(a) | Q(b)` or a block does not count, since it may be
+/// one branch of an `or`.
+fn args_pin_actor(args: Node<'_>, bytes: &[u8]) -> bool {
+    named_children(args).into_iter().any(|arg| {
+        // Ruby wraps `where(user_id: x)` pairs in a `hash` only with braces.
+        let pairs = if arg.kind() == "hash" {
+            named_children(arg)
+        } else {
+            vec![arg]
+        };
+        pairs.into_iter().any(|pair| {
+            matches!(pair.kind(), "keyword_argument" | "pair")
+                && pair
+                    .child_by_field_name("value")
+                    .is_some_and(|value| is_actor_ref_text(&text(value, bytes)))
+        })
+    })
+}
+
+/// `scope = Project.visible`, `qs = Product.objects.visible_to_user(requestor)`,
+/// `qs = Note.objects.filter(owner=request.user)`: the local holds a relation
+/// the caller's authorization already confined, so a later
+/// `scope.find(params[:id])` can only return rows the caller may see.
+fn collect_authorization_scoped_alias(
+    node: Node<'_>,
+    bytes: &[u8],
+    rules: &AuthAnalysisRules,
+    state: &mut UnitState,
+) {
+    if rules.authorization_scope_segments.is_empty() && rules.actor_scope_segments.is_empty() {
+        return;
+    }
+    let Some((name, rhs)) = single_binding_sides(node, bytes) else {
+        return;
+    };
+    let calls = chain_calls(rhs, bytes);
+    let in_list = |list: &[String], method: &str| list.iter().any(|m| m == method);
+    let mut scoped = calls.iter().any(|(method, args)| {
+        in_list(&rules.authorization_scope_segments, method)
+            || (in_list(&rules.actor_scope_segments, method)
+                && args.is_some_and(|a| args_name_actor(a, bytes)))
+            || (matches!(
+                method.as_str(),
+                "filter" | "where" | "filter_by" | "find_by" | "get"
+            ) && args.is_some_and(|a| args_pin_actor(a, bytes)))
+    });
+    if !scoped {
+        // `qs = qs.filter(..)` keeps the scope of the relation it extends.
+        // A hop through `.model` / `.objects` / `_default_manager` leaves the
+        // relation and reaches an unscoped manager again.
+        let chain = member_chain(rhs, bytes);
+        scoped = chain.len() > 1
+            && state.scope_bound_vars.contains(&chain[0])
+            && !state.unscoped_bound_vars.contains(&chain[0])
+            && !chain[1..].iter().any(|seg| {
+                matches!(
+                    seg.as_str(),
+                    "model"
+                        | "objects"
+                        | "_default_manager"
+                        | "_base_manager"
+                        | "class"
+                        | "klass"
+                        | "constructor"
+                        | "__class__"
+                )
+            });
+    }
+    if scoped {
+        state.scope_bound_vars.insert(name);
+    } else {
+        state.unscoped_bound_vars.insert(name);
     }
 }
 
@@ -3181,6 +3989,7 @@ fn collect_sql_authorized_binding(
         args: Vec::new(),
         condition_text: None,
         is_route_level: false,
+        dominates_body: false,
     });
 }
 
@@ -3653,19 +4462,31 @@ fn detect_ownership_equality_check(if_node: Node<'_>, bytes: &[u8], state: &mut 
 
     let (owner_ref, _self_ref) = match (
         pick_owner_field_ref(&left_refs),
-        pick_self_actor_ref(&right_refs),
+        pick_self_actor_ref(&right_refs, &state.self_actor_vars),
     ) {
         (Some(o), Some(s)) => (o, s),
         _ => match (
             pick_owner_field_ref(&right_refs),
-            pick_self_actor_ref(&left_refs),
+            pick_self_actor_ref(&left_refs, &state.self_actor_vars),
         ) {
             (Some(o), Some(s)) => (o, s),
             _ => return,
         },
     };
 
-    let row_binding = state.row_field_vars.get(&owner_ref.name).cloned();
+    // `if actor.id != orig.creator_id`: the owner field is read straight off
+    // the fetched row, so the row is the root of the chain.
+    let row_binding = state
+        .row_field_vars
+        .get(&owner_ref.name)
+        .cloned()
+        .or_else(|| {
+            let root = owner_ref.base.as_deref()?.split('.').next()?;
+            state
+                .row_population_data
+                .contains_key(root)
+                .then(|| root.to_string())
+        });
     let if_line = if_node.start_position().row + 1;
     let if_span = span(if_node);
     let condition_text = text(condition, bytes);
@@ -3681,16 +4502,19 @@ fn detect_ownership_equality_check(if_node: Node<'_>, bytes: &[u8], state: &mut 
         Some((row, nearest))
     });
     let (check_line, mut subjects) = match nearest_binding {
-        Some((row, (row_line, arg_refs))) => {
-            let mut subjects = arg_refs.clone();
-            subjects.push(ValueRef {
+        // Only the row itself is a subject. The ids the row was fetched with
+        // are covered through the row-population reverse-walk; listing them
+        // here would let the `data` base of `data.message_id` match any other
+        // request field (`data.second_id`) as related.
+        Some((row, (row_line, _))) => {
+            let subjects = vec![ValueRef {
                 source_kind: ValueSourceKind::Identifier,
                 name: row.clone(),
                 base: None,
                 field: None,
                 index: None,
                 span: if_span,
-            });
+            }];
             (*row_line, subjects)
         }
         None => match row_binding.as_ref() {
@@ -3719,6 +4543,7 @@ fn detect_ownership_equality_check(if_node: Node<'_>, bytes: &[u8], state: &mut 
         args: Vec::new(),
         condition_text: Some(condition_text),
         is_route_level: false,
+        dominates_body: false,
     });
 }
 
@@ -3910,8 +4735,23 @@ fn pick_owner_field_ref(refs: &[ValueRef]) -> Option<ValueRef> {
     refs.iter().find(|v| is_owner_field_subject(v)).cloned()
 }
 
-fn pick_self_actor_ref(refs: &[ValueRef]) -> Option<ValueRef> {
-    refs.iter().find(|v| is_self_actor_subject(v)).cloned()
+/// The caller's id on one side of an owner comparison: the usual `req.user.id`
+/// shapes, or an id field reached through a binding known to be the caller
+/// (`local_user_view.person.id` with `local_user_view` in `self_actor_vars`).
+fn pick_self_actor_ref(refs: &[ValueRef], self_actor_vars: &HashSet<String>) -> Option<ValueRef> {
+    refs.iter()
+        .find(|v| {
+            is_self_actor_subject(v)
+                || (v
+                    .field
+                    .as_deref()
+                    .is_some_and(|f| matches!(f, "id" | "person_id" | "user_id"))
+                    && v.base
+                        .as_deref()
+                        .and_then(|b| b.split('.').next())
+                        .is_some_and(|root| self_actor_vars.contains(root)))
+        })
+        .cloned()
 }
 
 fn classify_auth_check(callee: &str, rules: &AuthAnalysisRules) -> AuthCheckKind {
@@ -5033,6 +5873,7 @@ pub fn auth_check_from_call_site(
         args: call.args.clone(),
         condition_text: None,
         is_route_level: false,
+        dominates_body: false,
     })
 }
 
@@ -5388,7 +6229,15 @@ fn subscript_value_ref(node: Node<'_>, bytes: &[u8]) -> Option<ValueRef> {
         base_chain.join(".")
     };
     let index_text = text(index, bytes);
-    let field = Some(strip_quotes(&index_text));
+    // A Ruby symbol key (`session[:user_id]`) names the field without its
+    // colon.  Only symbol nodes: `items[:n]` in Python is a slice.
+    let key = strip_quotes(&index_text);
+    let key = if matches!(index.kind(), "simple_symbol" | "bare_symbol") {
+        key.trim_start_matches(':').to_string()
+    } else {
+        key
+    };
+    let field = Some(key.clone());
     let source_kind = if base_chain.is_empty() {
         ValueSourceKind::ArrayIndex
     } else {
@@ -5403,7 +6252,7 @@ fn subscript_value_ref(node: Node<'_>, bytes: &[u8]) -> Option<ValueRef> {
         name: if source_kind == ValueSourceKind::ArrayIndex {
             format!("{base}[{index_text}]")
         } else {
-            format!("{base}.{}", strip_quotes(&index_text))
+            format!("{base}.{key}")
         },
         base: Some(base),
         field,

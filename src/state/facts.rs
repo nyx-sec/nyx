@@ -225,7 +225,16 @@ pub fn extract_findings(
             } else {
                 None
             };
-            let acquire_node = find_acquire_node(cfg, sym, interner, scope);
+            // The node that acquired the handle, as recorded when it went
+            // OPEN; a name search is the fallback for states without one.
+            let recorded_span = state.acquire_spans.get(&sym).copied();
+            let acquire_node = recorded_span
+                .and_then(|sp| {
+                    cfg.node_references()
+                        .find(|(_, n)| n.kind == StmtKind::Call && n.ast.span == sp)
+                        .map(|(i, _)| i)
+                })
+                .or_else(|| find_acquire_node(cfg, sym, interner, scope));
 
             // At the file-level Exit, skip variables whose acquire site is
             // inside a function, those are already handled by the per-
@@ -386,7 +395,8 @@ pub fn extract_findings(
                     // `return &W{f: f}`); `return f.read()` merely mentions it.
                     // C / C++ keep the mention rule, see `return_hands_off`.
                     let returns_var = super::transfer::return_hands_off(lang, &cfg[pred], |u| {
-                        interner.get_scoped(scope, u) == Some(sym)
+                        let id = interner.get_scoped(scope, u);
+                        id == Some(sym) || id.and_then(|i| ps.sub_aliases.get(&i)) == Some(&sym)
                     });
                     if returns_var {
                         returned_open += 1;

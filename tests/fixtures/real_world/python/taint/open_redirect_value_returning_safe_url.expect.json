@@ -1,0 +1,10 @@
+{
+  "description": "Only a name that states a yes/no question vouches for a redirect target; value-returning safe_url / url_safe_* helpers do not.",
+  "tags": ["taint", "open-redirect", "safe-redirect-helper"],
+  "modes": ["full"],
+  "expected": [
+    {"rule_id": "taint-open-redirect", "must_match": true, "line_range": [7, 7], "notes": "an encoder is truthy for any input"},
+    {"rule_id": "taint-open-redirect", "must_match": true, "line_range": [14, 14], "notes": "a value-returning helper validates nothing"},
+    {"rule_id": "taint-open-redirect", "must_not_match": true, "line_range": [21, 21], "notes": "named boolean predicate"}
+  ]
+}

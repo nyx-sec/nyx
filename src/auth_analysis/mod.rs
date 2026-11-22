@@ -1001,6 +1001,7 @@ fn synthesise_checks_for_unit(
             args: call.args.clone(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         });
     }
     out
@@ -1098,6 +1099,7 @@ fn synthesise_cross_file_checks_for_unit(
             args: call.args.clone(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         });
     }
     out
@@ -1179,6 +1181,7 @@ mod tests {
             callee: callee.to_string(),
             subjects: Vec::new(),
             receiver_subjects: 0,
+            payload_subjects_start: None,
             span: (0, 0),
             line: 1,
             text: callee.to_string(),
@@ -1201,6 +1204,8 @@ mod tests {
             row_field_vars: HashMap::new(),
             var_alias_chain: HashMap::new(),
             row_population_data: HashMap::new(),
+            row_derived_from: HashMap::new(),
+            row_fetch_callees: HashMap::new(),
             self_actor_vars: HashSet::new(),
             self_actor_id_vars: HashSet::new(),
             authorized_sql_vars: HashSet::new(),
@@ -1212,7 +1217,10 @@ mod tests {
             is_nextauth_options_factory: false,
             package_names: HashSet::new(),
             runtime: UnitRuntime::Unknown,
+            internal_helper: false,
             request_roots: HashSet::new(),
+            request_scope_roots: HashSet::new(),
+            authorization_scoped_vars: HashSet::new(),
         }
     }
 
@@ -1321,6 +1329,8 @@ mod tests {
             row_field_vars: HashMap::new(),
             var_alias_chain: HashMap::new(),
             row_population_data: HashMap::new(),
+            row_derived_from: HashMap::new(),
+            row_fetch_callees: HashMap::new(),
             self_actor_vars: HashSet::new(),
             self_actor_id_vars: HashSet::new(),
             authorized_sql_vars: HashSet::new(),
@@ -1332,7 +1342,10 @@ mod tests {
             is_nextauth_options_factory: false,
             package_names: HashSet::new(),
             runtime: UnitRuntime::Unknown,
+            internal_helper: false,
             request_roots: HashSet::new(),
+            request_scope_roots: HashSet::new(),
+            authorization_scoped_vars: HashSet::new(),
         }
     }
 
@@ -1346,6 +1359,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: true,
+            dominates_body: false,
         }
     }
 

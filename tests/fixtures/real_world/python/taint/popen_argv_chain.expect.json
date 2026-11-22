@@ -1,0 +1,38 @@
+{
+  "description": "Popen in argv form without shell=True never starts a shell",
+  "tags": [
+    "taint",
+    "cmdi",
+    "python",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "argv form"
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "argv form"
+    }
+  ]
+}

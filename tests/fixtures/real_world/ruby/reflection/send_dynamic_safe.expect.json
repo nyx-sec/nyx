@@ -1,0 +1,14 @@
+{
+  "description": "send whose first argument is a symbol, or an iterator element over a closed literal or single-assignment constant, cannot select an arbitrary method.",
+  "tags": ["reflection", "ruby", "negative", "pattern"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "rb.reflection.send_dynamic",
+      "severity": null,
+      "line_range": [1, 35],
+      "notes": "only the first argument selects the method; closed literal sets are not dynamic dispatch",
+      "must_not_match": true
+    }
+  ]
+}

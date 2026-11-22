@@ -1,0 +1,24 @@
+{
+  "description": "Methods on package-level in-memory containers (lru.Cache, map) are process bookkeeping, not data-layer operations.",
+  "tags": [
+    "auth",
+    "go",
+    "negative",
+    "in-memory"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "severity": null,
+      "line_range": [
+        1,
+        23
+      ],
+      "notes": "no ownership finding anywhere in the fixture",
+      "must_not_match": true
+    }
+  ]
+}

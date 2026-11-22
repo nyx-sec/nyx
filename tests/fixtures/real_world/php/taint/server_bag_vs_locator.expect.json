@@ -1,0 +1,25 @@
+{
+  "description": "A request object's server bag still taints a filesystem sink. Pairs with server_bag_vs_locator_safe.php.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "source",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        6,
+        6
+      ],
+      "evidence_contains": [],
+      "notes": "Request::createFromGlobals data reaches unlink"
+    }
+  ]
+}

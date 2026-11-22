@@ -3,6 +3,11 @@ use super::model::{
     AnalysisUnit, AnalysisUnitKind, AuthCheck, AuthCheckKind, AuthorizationModel, OperationKind,
     SensitiveOperation, SinkClass, UnitRuntime, ValueRef, ValueSourceKind,
 };
+use super::naming::{
+    is_actor_object, is_caller_identity_name, is_caller_scope_entity_name,
+    is_request_payload_segment, is_request_scope_path, is_request_scope_segment,
+    is_session_identity_ref,
+};
 use crate::patterns::Severity;
 
 #[derive(Debug, Clone)]
@@ -115,6 +120,7 @@ fn check_ownership_gaps(
                 .subjects
                 .iter()
                 .filter(|s| is_relevant_target_subject(s, unit, lang))
+                .filter(|s| !is_row_derived_subject(s, unit, op))
                 .collect();
             if relevant_subjects.is_empty() {
                 continue;
@@ -143,11 +149,13 @@ fn check_ownership_gaps(
                 // `me.id` does not qualify, so unrelated co-occurrences
                 // do not over-suppress.
                 //
-                // Trade-off: a privesc-via-`data` shape like
-                // `db.update({where: {id: input.id}, data: {ownerId: ctx.user.id}})`
-                // would also be suppressed because both subjects appear
-                // at the call site without arg-position info.  That
-                // pattern is rare and would need its own rule.  The
+                // Written documents of filter-then-update calls
+                // (`Note.findOneAndUpdate({_id: id}, {owner: req.user.id})`)
+                // are skipped via `payload_subjects_start`: storing the caller
+                // as owner is a write, not a scope.  Other call shapes
+                // (`db.update({where: {id}, data: {ownerId: ctx.user.id}})`)
+                // have no argument positions to tell apart and stay
+                // suppressed.  The
                 // owner-eq common case removes ~70 cal.com FPs and
                 // matches the canonical Express / TRPC scoping idiom.
                 //
@@ -172,10 +180,12 @@ fn check_ownership_gaps(
                 // to say, by what the method does.
                 let has_actor_co_subject = op.subjects.iter().enumerate().any(|(i, s)| {
                     !is_callee_receiver(s, &op.callee)
-                        && is_actor_context_subject(s, unit)
-                        && (lookup
-                            || (receiver_lookup && i < op.receiver_subjects)
-                            || !is_whole_actor_object(s))
+                        && op.payload_subjects_start.is_none_or(|start| i < start)
+                        && ((is_actor_context_subject(s, unit)
+                            && (lookup
+                                || (receiver_lookup && i < op.receiver_subjects)
+                                || !is_whole_actor_object(s)))
+                            || is_viewer_argument_of_view_read(op, s, unit, lang))
                 });
                 if has_actor_co_subject {
                     continue;
@@ -183,7 +193,10 @@ fn check_ownership_gaps(
                 // Association scoping: `current_user.notes.find(params[:id])`,
                 // `request.user.documents.filter(id=doc_id)`.  The query
                 // starts at the caller, so it can only return their rows.
-                if is_owner_scoped_callee(&op.callee) {
+                if is_owner_scoped_callee(&op.callee, rules)
+                    || is_request_scope_rooted_lookup(&op.callee, unit)
+                    || is_authorization_scoped_var_lookup(&op.callee, unit)
+                {
                     continue;
                 }
                 // Scope co-subject: the same call also binds the caller's
@@ -197,6 +210,14 @@ fn check_ownership_gaps(
                     .iter()
                     .any(|s| is_caller_scope_entity_subject(s, unit));
                 if has_scope_co_subject {
+                    continue;
+                }
+                // Tenant pin from an authorised row: the same call also binds
+                // the tenant of a row an earlier check covers
+                // (`Attachment.findAll({ where: { teamId: document.teamId, id:
+                // ids } })` after `authorize(user, "read", document)`), so the
+                // lookup cannot leave the tenant the caller was cleared for.
+                if has_authorised_tenant_pin(unit, op) {
                     continue;
                 }
                 if !has_prior_subject_auth(unit, op, &relevant_subjects) {
@@ -457,6 +478,39 @@ fn has_prior_subject_auth(
     })
 }
 
+/// The call binds a tenant field of a row that an earlier authorization check
+/// already covers (`teamId: document.teamId` after `authorize(user, "read",
+/// document)`).  Only a tenant-like field qualifies: the row's own fields say
+/// nothing about which other rows the caller may reach.
+fn has_authorised_tenant_pin(unit: &AnalysisUnit, op: &SensitiveOperation) -> bool {
+    op.subjects.iter().any(|s| {
+        !is_callee_receiver(s, &op.callee)
+            && s.base.is_some()
+            && !matches!(
+                s.source_kind,
+                ValueSourceKind::RequestParam
+                    | ValueSourceKind::RequestBody
+                    | ValueSourceKind::RequestQuery
+                    | ValueSourceKind::Session
+            )
+            && s.base
+                .as_deref()
+                .map(|b| b.split(['.', '[', '(']).next().unwrap_or(b))
+                .is_some_and(|root| !unit.request_roots.contains(root))
+            && s.field.as_deref().is_some_and(is_actor_tenant_field)
+            && unit.auth_checks.iter().any(|check| {
+                check.line <= op.line
+                    && !matches!(
+                        check.kind,
+                        AuthCheckKind::LoginGuard
+                            | AuthCheckKind::TokenExpiry
+                            | AuthCheckKind::TokenRecipient
+                    )
+                    && auth_check_covers_subject(check, s, unit)
+            })
+    })
+}
+
 /// Row-fetch exemption.
 ///
 /// Recognises the "fetch-then-authorize" idiom: a handler fetches a
@@ -487,6 +541,10 @@ fn has_row_fetch_exemption(unit: &AnalysisUnit, op: &SensitiveOperation) -> bool
     if row_vars.is_empty() {
         return false;
     }
+    // A check on a row fetched through this row's own foreign key
+    // (`let community = Community::read(pool, tag.community_id)`) authorises
+    // the fetch of the child as well.
+    let row_vars = rows_with_derived(unit, row_vars);
 
     // Look for any non-login auth check whose subjects mention a row.
     // Match against the *root* of the subject's chain (`a.b.c` → `a`)
@@ -567,6 +625,12 @@ fn auth_check_covers_subject(check: &AuthCheck, subject: &ValueRef, unit: &Analy
     if check.is_route_level {
         return true;
     }
+    // A body-level admin gate that propagates failure dominates every later
+    // operation, and an admin may act on any resource.  Line ordering is
+    // applied by the callers (`check.line <= op.line`).
+    if check.dominates_body && check.kind == AuthCheckKind::AdminGuard {
+        return true;
+    }
     let subject_key = canonical_subject_name(subject);
     let subject_related_base = related_subject_base(subject);
     // A2 + B3: walk the row-binding chain from this subject so a
@@ -609,7 +673,7 @@ fn auth_check_covers_subject(check: &AuthCheck, subject: &ValueRef, unit: &Analy
     } else {
         None
     };
-    let subject_populates: Vec<&str> = unit
+    let direct_populates: Vec<&str> = unit
         .row_population_data
         .iter()
         .filter_map(|(row_var, bindings)| {
@@ -631,6 +695,10 @@ fn auth_check_covers_subject(check: &AuthCheck, subject: &ValueRef, unit: &Analy
             }
         })
         .collect();
+    // Authorising a row reached through the foreign key of a populated row
+    // (fetch the child by the request id, then its parent by `child.parent_id`,
+    // then check the parent) covers the request id too.
+    let subject_populates = rows_with_derived(unit, direct_populates);
 
     check.subjects.iter().any(|check_subject| {
         let check_key = canonical_subject_name(check_subject);
@@ -660,6 +728,60 @@ fn auth_check_covers_subject(check: &AuthCheck, subject: &ValueRef, unit: &Analy
         // var family this check anchors to, accept the coverage.
         subject_anchor_authorized && unit.authorized_sql_vars.contains(&check_key)
     })
+}
+
+/// Close `seed` over rows fetched with an argument rooted at a row already in
+/// the set (`let parent = Parent::read(pool, child.parent_id)` adds `parent`
+/// once `child` is in).  Only row-to-row derivations are followed, so a parent
+/// fetched with an unrelated request id is never added.  Bounded by the number
+/// of rows in the unit, and cycle-safe because rows are only ever added.
+fn rows_with_derived<'a>(unit: &'a AnalysisUnit, seed: Vec<&'a str>) -> Vec<&'a str> {
+    let mut rows = seed;
+    if rows.is_empty() {
+        return rows;
+    }
+    loop {
+        let before = rows.len();
+        for (row_var, bindings) in &unit.row_population_data {
+            if rows.contains(&row_var.as_str()) {
+                continue;
+            }
+            let derived = bindings.iter().flat_map(|(_line, args)| args).any(|arg| {
+                arg.base.is_some()
+                    && rows.contains(&chain_root(arg))
+                    && is_parent_link(row_var, arg)
+            });
+            if derived {
+                rows.push(row_var.as_str());
+            }
+        }
+        if rows.len() == before {
+            return rows;
+        }
+    }
+}
+
+/// Whether `arg` (`child.<field>`) reads like the foreign key to the row
+/// bound as `row_var`: the field stem (`community_id` -> `community`) must be
+/// the row variable's name or its trailing word (`parent_community`).  A field
+/// such as `sibling_id` fetched into `sib` names a peer, not an owner, so a
+/// check on that peer does not authorise the child.  When the naming does not
+/// line up the derivation is not followed and the finding stays.
+fn is_parent_link(row_var: &str, arg: &ValueRef) -> bool {
+    let field = arg.name.rsplit('.').next().unwrap_or(arg.name.as_str());
+    let lower = field.to_ascii_lowercase();
+    let stem = lower
+        .strip_suffix("_id")
+        .or_else(|| lower.strip_suffix("id"))
+        .unwrap_or(lower.as_str())
+        .trim_end_matches('_');
+    if stem.is_empty() {
+        return false;
+    }
+    let row = row_var.to_ascii_lowercase();
+    let norm = |v: &str| v.replace('_', "");
+    let (row_n, stem_n) = (norm(&row), norm(stem));
+    row_n == stem_n || row_n.ends_with(&stem_n)
 }
 
 /// Walk `unit.row_field_vars` transitively from `start` (inclusive)
@@ -719,6 +841,241 @@ fn is_relevant_target_subject(subject: &ValueRef, unit: &AnalysisUnit, lang: &st
         && !is_caller_scope_entity_subject(subject, unit)
         && !is_package_level_subject(subject, unit)
         && !is_model_selector_subject(subject, unit, lang)
+}
+
+/// True iff `subject` is read off a row the unit already holds, so it names
+/// something the code found rather than something the caller supplied.
+///
+/// A subject counts when its root variable is
+///   * a row bound earlier in the unit by a modelled fetch (`pv := Get(..)`,
+///     `const doc = await Doc.findByPk(id)`), including an insert's result,
+///     whose id the database minted,
+///   * a local read off such a row (`const id = res[0].id`), a loop variable
+///     over one (`for _, t := range tasks`), or a callback parameter of one
+///     (`rows.map(row => ..)`), or
+///   * outside a route handler, an entity parameter (`document` in
+///     `move(document)`): the caller hands the helper an entity it already
+///     loaded.
+///
+/// The fetch itself is what must be authorised.  In request-bearing code the
+/// row only counts when that fetch was keyed by an id or pinned to the
+/// caller's scope, so it either reports on its own or is covered by a check.
+/// A row found by a bare request-supplied name has no such site, and its
+/// fields keep reporting.
+fn is_row_derived_subject(
+    subject: &ValueRef,
+    unit: &AnalysisUnit,
+    op: &SensitiveOperation,
+) -> bool {
+    if matches!(
+        subject.source_kind,
+        ValueSourceKind::RequestParam
+            | ValueSourceKind::RequestBody
+            | ValueSourceKind::RequestQuery
+            | ValueSourceKind::Session
+    ) {
+        return false;
+    }
+    let chain = subject.base.as_deref().unwrap_or(subject.name.as_str());
+    let root = chain.split(['.', '[', '(']).next().unwrap_or(chain);
+    if root.is_empty() || unit.request_roots.contains(root) {
+        return false;
+    }
+    var_is_held_row(unit, root, op, 0)
+}
+
+/// The unit is a route handler or reads the request or request context
+/// directly.  A helper that only takes an options bag named `params` or `input`
+/// is not: whoever calls it owns the question of where the bag came from.
+fn unit_handles_request(unit: &AnalysisUnit) -> bool {
+    const REQUEST_NAMES: &[&str] = &["req", "request", "ctx", "event", "res", "response"];
+    let is_request_name = |name: &str| REQUEST_NAMES.contains(&name.to_ascii_lowercase().as_str());
+    unit.kind == AnalysisUnitKind::RouteHandler
+        || !unit.request_roots.is_empty()
+        || unit.params.iter().any(|p| is_request_name(p))
+        || unit.context_inputs.iter().any(|input| {
+            let chain = input.base.as_deref().unwrap_or(input.name.as_str());
+            is_request_name(chain.split(['.', '[', '(']).next().unwrap_or(chain))
+        })
+}
+
+fn var_is_held_row(unit: &AnalysisUnit, var: &str, op: &SensitiveOperation, depth: usize) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    if let Some(bindings) = unit.row_population_data.get(var) {
+        let mut prior = bindings
+            .iter()
+            .filter(|(line, _)| *line < op.line)
+            .peekable();
+        if prior.peek().is_none() {
+            return false;
+        }
+        return prior.all(|(line, args)| fetch_site_is_authorised_elsewhere(unit, *line, args));
+    }
+    if let Some(sources) = unit.row_derived_from.get(var) {
+        return !sources.is_empty()
+            && sources
+                .iter()
+                .all(|source| source != var && var_is_held_row(unit, source, op, depth + 1));
+    }
+    // A helper is handed an entity it did not load; a registered handler or a
+    // function holding the framework request context is not.
+    unit.kind != AnalysisUnitKind::RouteHandler
+        && unit.request_roots.is_empty()
+        && unit.params.iter().any(|p| p == var)
+        && is_entity_param_name(var)
+}
+
+/// The fetch at `line` is a data fetch, and it either minted the row (an
+/// insert), or it is not in request-bearing code, or it was keyed by an id or
+/// scoped to the caller.  A pure conversion such as `parseInt(id)` is not a
+/// fetch.
+fn fetch_site_is_authorised_elsewhere(unit: &AnalysisUnit, line: usize, args: &[ValueRef]) -> bool {
+    let callees = unit.row_fetch_callees.get(&line);
+    if callees.is_some_and(|callees| callees.iter().any(|c| is_minting_callee(c))) {
+        return true;
+    }
+    let modelled = unit
+        .operations
+        .iter()
+        .any(|o| o.line == line && o.sink_class.is_none_or(|c| c.is_auth_relevant()));
+    let fetch_like = callees.is_some_and(|callees| callees.iter().any(|c| is_row_fetch_callee(c)));
+    if !modelled && !fetch_like {
+        return false;
+    }
+    if !unit_handles_request(unit) {
+        return true;
+    }
+    // Pinned to the caller or to a scope the caller holds: nothing outside it
+    // can come back, so there is no first fetch left to report.
+    if args
+        .iter()
+        .any(|s| is_actor_context_subject(s, unit) || is_caller_scope_entity_subject(s, unit))
+    {
+        return true;
+    }
+    // Keyed by an id: the fetch is a modelled operation that reports, or is
+    // covered by a check, on its own.
+    unit.operations.iter().any(|o| {
+        o.line == line
+            && o.sink_class.is_none_or(|c| c.is_auth_relevant())
+            && o.subjects
+                .iter()
+                .any(|s| is_id_like(s) || is_route_primary_key(s, unit))
+    })
+}
+
+/// A call that reads rows: a lookup, or a query, load, list or search.
+fn is_row_fetch_callee(callee: &str) -> bool {
+    if is_lookup_callee(callee) {
+        return true;
+    }
+    let method = callee.rsplit('.').next().unwrap_or(callee);
+    let lower = method
+        .trim_end_matches(['!', '?'])
+        .trim_end_matches("()")
+        .to_ascii_lowercase();
+    [
+        "query", "select", "read", "load", "list", "search", "lookup", "retrieve",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+}
+
+/// `insert`, `create`, `createMany`: the call writes a new row, so the id on
+/// the result was minted by the database.  `createQueryBuilder` only starts a
+/// query.
+fn is_minting_callee(callee: &str) -> bool {
+    // The write must be the last real step of the chain. Earlier segments are
+    // scopes or accessors (`createdBy`, `createSession().findOne`), so a read
+    // after a create/insert-named segment means the row was looked up, not
+    // inserted. Only builder and promise tails may follow the write.
+    const TAILS: &[&str] = &[
+        "then",
+        "catch",
+        "finally",
+        "execute",
+        "exec",
+        "values",
+        "into",
+        "returning",
+        "save",
+    ];
+    let normalise = |s: &str| {
+        s.trim_end_matches(['!', '?'])
+            .trim_end_matches("()")
+            .to_ascii_lowercase()
+    };
+    // Drop call arguments so a dot inside `insert(params.data)` does not
+    // split the chain.
+    let mut depth = 0usize;
+    let bare: String = callee
+        .chars()
+        .filter(|&c| match c {
+            '(' => {
+                depth += 1;
+                false
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                false
+            }
+            _ => depth == 0,
+        })
+        .collect();
+    for segment in bare.rsplit(['.', ':']).filter(|s| !s.is_empty()) {
+        let lower = normalise(segment);
+        if TAILS.contains(&lower.as_str()) {
+            continue;
+        }
+        return (lower.starts_with("create") && !lower.starts_with("createquery"))
+            || lower.starts_with("insert")
+            || lower == "bulkcreate";
+    }
+    false
+}
+
+/// A parameter named for a domain entity, as opposed to an id, a request or an
+/// options bag.
+fn is_entity_param_name(name: &str) -> bool {
+    if is_id_like_name(name) || is_external_input_param_name_for_lang(name, "") {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    const BAGS: &[&str] = &[
+        "args",
+        "arguments",
+        "body",
+        "criteria",
+        "data",
+        "dto",
+        "event",
+        "filter",
+        "filters",
+        "form",
+        "headers",
+        "input",
+        "opts",
+        "options",
+        "params",
+        "payload",
+        "props",
+        "query",
+        "req",
+        "request",
+        "settings",
+        "this",
+        "self",
+    ];
+    if BAGS.contains(&lower.as_str()) {
+        return false;
+    }
+    const BAG_SUFFIXES: &[&str] = &[
+        "form", "opts", "options", "request", "req", "dto", "payload", "input", "params", "args",
+        "body", "data", "query", "filter", "filters", "criteria",
+    ];
+    !BAG_SUFFIXES.iter().any(|suffix| lower.ends_with(suffix))
 }
 
 /// `pk`, the Django and DRF name for the row id a viewset action receives
@@ -830,70 +1187,7 @@ fn is_request_context_scope_subject(base: &str, root: &str, unit: &AnalysisUnit)
     if rest.is_empty() {
         return is_request_scope_segment(root);
     }
-    rest.iter().any(|seg| is_request_scope_segment(seg))
-        && !rest.iter().any(|seg| is_request_payload_segment(seg))
-}
-
-fn is_request_scope_segment(segment: &str) -> bool {
-    is_caller_scope_entity_name(segment)
-        || matches!(
-            segment.to_ascii_lowercase().as_str(),
-            "package" | "owner" | "contextuser"
-        )
-}
-
-fn is_request_payload_segment(segment: &str) -> bool {
-    matches!(
-        segment.to_ascii_lowercase().as_str(),
-        "body"
-            | "form"
-            | "postform"
-            | "multipartform"
-            | "query"
-            | "params"
-            | "input"
-            | "data"
-            | "req"
-            | "request"
-            | "header"
-            | "headers"
-            | "url"
-            | "args"
-            | "json"
-            | "values"
-    )
-}
-
-/// Recognises parameter names that conventionally carry a *scope*
-/// entity — the multi-tenant ownership boundary inherited from the
-/// caller — rather than a user-controlled target identifier.  Used
-/// only by `is_caller_scope_entity_subject` to suppress
-/// `missing_ownership_check` on `<entity>.id` arguments to ORM /
-/// query / mutation calls.
-///
-/// Vocabulary matches the canonical multi-tenant primitives across
-/// Django (Sentry, Saleor), Rails (Discourse, Mastodon), and Laravel
-/// /  Symfony idioms.  Both singular and short forms are matched
-/// (`organization` / `org`, `repository` / `repo`).  Excluded:
-/// `user`, `member`, `actor` (actor semantics, covered by
-/// `is_actor_context_subject` and per-actor self-id detectors).
-fn is_caller_scope_entity_name(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    matches!(
-        lower.as_str(),
-        "organization"
-            | "org"
-            | "project"
-            | "team"
-            | "workspace"
-            | "tenant"
-            | "account"
-            | "community"
-            | "group"
-            | "repository"
-            | "repo"
-            | "company"
-    )
+    is_request_scope_path(&rest)
 }
 
 /// True iff `subject` is a plain identifier whose declaration binds
@@ -963,6 +1257,15 @@ fn is_actor_context_subject(subject: &ValueRef, unit: &AnalysisUnit) -> bool {
     // resolves the signed-in user onto the context before the handler runs.
     if let Some(base) = subject.base.as_deref()
         && is_request_context_actor_base(base, unit)
+        && subject.field.as_deref().is_some_and(is_self_actor_id_field)
+    {
+        return true;
+    }
+
+    // `requester.id`, `requestor.pk`: resolvers receive the authenticated
+    // caller under these names, and its own id is not a foreign target.
+    if let Some(base) = subject.base.as_deref()
+        && is_caller_identity_name(base)
         && subject.field.as_deref().is_some_and(is_self_actor_id_field)
     {
         return true;
@@ -1128,6 +1431,11 @@ fn is_self_scoped_session_subject(subject: &ValueRef) -> bool {
     if subject.source_kind != ValueSourceKind::Session {
         return false;
     }
+    // The identity key of a session container: `session.user_id`,
+    // `req.session.userId`, `request.session.uid`, `session[:user_id]`.
+    if is_session_identity_ref(&subject.name) {
+        return true;
+    }
     // `req.session.user.id` has base `req.session.user`; `req.session.userId`
     // has base `req.session` and the whole chain is the entry the allowlist
     // names.  Match either.
@@ -1144,33 +1452,56 @@ fn is_self_scoped_session_subject(subject: &ValueRef) -> bool {
         && subject.field.as_deref().is_some_and(is_self_actor_id_field)
 }
 
-/// Chains that name the authenticated caller itself.  `current_user` and
-/// `current_account` are the Devise / Flask-Login / Rails helpers; the rest are
-/// the request-bound user of Django, Express, Koa and Flask.
-fn is_actor_object(chain: &str) -> bool {
-    matches!(
-        chain,
-        "current_user"
-            | "current_account"
-            | "current_member"
-            | "g.user"
-            | "self.request.user"
-            | "req.user"
-            | "request.user"
-            | "req.currentUser"
-            | "request.currentUser"
-            | "ctx.state.user"
-            | "ctx.state.currentUser"
-            | "ctx.state.auth.user"
-            | "ctx.session.user"
-            | "session.user"
-    )
-}
-
 /// The caller as a whole object (`current_user`, `request.user`) rather than
 /// one of its fields.
 fn is_whole_actor_object(subject: &ValueRef) -> bool {
     is_actor_object(&subject.name)
+}
+
+/// Rust read-model lookup that takes the viewer: `CommentView::read(pool,
+/// comment_id, Some(&local_user_view.local_user), ..)`.  A `*View` type is a
+/// joined read model, and its `read`/`list` entry points take the signed-in
+/// viewer to filter what the row exposes (blocked, hidden and private
+/// content).  The viewer is a sub-object of the self-actor extractor binding
+/// (`local_user`, `person`, ...), so it is not an id the generic owner-pin
+/// rule can match.  Mutations never qualify: a viewer passed to a write is
+/// data being stored.
+fn is_viewer_argument_of_view_read(
+    op: &SensitiveOperation,
+    subject: &ValueRef,
+    unit: &AnalysisUnit,
+    lang: &str,
+) -> bool {
+    if !matches!(lang, "rust" | "rs") || op.kind != OperationKind::Read {
+        return false;
+    }
+    // Callees are normalized to `.` separators (`CommentView.read`).
+    let mut segments = op.callee.rsplit('.');
+    let (Some(method), Some(ty)) = (segments.next(), segments.next()) else {
+        return false;
+    };
+    let is_read_entry = method == "read"
+        || method == "list"
+        || method.starts_with("read_")
+        || method.starts_with("list_");
+    let is_view_type = ty.len() > 4
+        && ty.ends_with("View")
+        && ty.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+    if !is_read_entry || !is_view_type {
+        return false;
+    }
+    let root = subject
+        .base
+        .as_deref()
+        .map(|b| b.split('.').next().unwrap_or(b))
+        .unwrap_or(subject.name.as_str());
+    if !unit.self_actor_vars.contains(root) {
+        return false;
+    }
+    match subject.field.as_deref() {
+        None => subject.base.is_none(),
+        Some(f) => matches!(f, "local_user" | "person" | "user" | "account" | "profile"),
+    }
 }
 
 /// True when the subject is (a prefix of) the callee's own receiver chain:
@@ -1226,7 +1557,7 @@ fn is_lookup_callee(callee: &str) -> bool {
 /// (`current_user.memberships.create(project_id: id)`, `req.user.setRoles(ids)`)
 /// is not covered, and neither is a lookup that leaves the caller for its
 /// model (`current_user.class.find(id)`).
-fn is_owner_scoped_callee(callee: &str) -> bool {
+fn is_owner_scoped_callee(callee: &str, rules: &AuthAnalysisRules) -> bool {
     let Some((receiver, _method)) = callee.rsplit_once('.') else {
         return false;
     };
@@ -1251,10 +1582,22 @@ fn is_owner_scoped_callee(callee: &str) -> bool {
     let mut scoped = false;
     for (idx, segment) in receiver.split('.').enumerate() {
         let name = segment.trim_end_matches("()");
-        if scoped && matches!(name, "class" | "klass" | "constructor" | "__class__") {
+        if scoped
+            && matches!(
+                name,
+                "class" | "klass" | "constructor" | "__class__" | "model" | "_default_manager"
+            )
+        {
             return false;
         }
-        if !scoped && (name == "accessible_by" || (idx == 0 && name == "policy_scope")) {
+        if !scoped
+            && (name == "accessible_by"
+                || (idx == 0 && name == "policy_scope")
+                || rules
+                    .authorization_scope_segments
+                    .iter()
+                    .any(|scope| scope == name))
+        {
             scoped = true;
         }
         prefix_end += segment.len();
@@ -1264,6 +1607,84 @@ fn is_owner_scoped_callee(callee: &str) -> bool {
         prefix_end += 1;
     }
     scoped
+}
+
+/// `scope = Project.visible; scope.find(params[:id])`: the receiver is a local
+/// bound to a relation an authorization scope already confined.  The callee
+/// must be a lookup, like the chain form.
+fn is_authorization_scoped_var_lookup(callee: &str, unit: &AnalysisUnit) -> bool {
+    if unit.authorization_scoped_vars.is_empty() {
+        return false;
+    }
+    let Some((receiver, _)) = callee.rsplit_once('.') else {
+        return false;
+    };
+    let root = receiver.split('.').next().unwrap_or(receiver);
+    unit.authorization_scoped_vars.contains(root)
+        && (is_lookup_callee(callee) || receiver.split('.').any(is_lookup_callee))
+        && !receiver.split('.').any(|seg| {
+            matches!(
+                seg,
+                "class" | "klass" | "constructor" | "__class__" | "model" | "_default_manager"
+            )
+        })
+}
+
+/// `GetUserByID`, `FindMemberByName`: a fetch of a user, member or team by key.
+/// Reaching it through a scope entity does not confine it, since the method
+/// reads the entity type's table, not the scope's own rows.
+fn is_keyed_identity_fetch(lower_method: &str) -> bool {
+    let rest = ["get", "find", "load", "fetch", "lookup"]
+        .iter()
+        .find_map(|p| lower_method.strip_prefix(p))
+        .unwrap_or(lower_method);
+    [
+        "user",
+        "member",
+        "team",
+        "org",
+        "account",
+        "collaborator",
+        "owner",
+    ]
+    .iter()
+    .any(|entity| {
+        rest.strip_prefix(entity)
+            .is_some_and(|tail| tail.trim_start_matches('s').starts_with("by"))
+    })
+}
+
+/// Go: a read through the scope entity the request context already holds,
+/// `ctx.Repo.GitRepo.GetCommit(sha)` or `gitRepo.GetCommit(sha)` after
+/// `gitRepo := ctx.Repo.GitRepo`.  The router middleware resolved that entity
+/// and checked the caller's access to it, so a lookup on it returns only what
+/// lies inside.  Only reading methods qualify: removing or adding through the
+/// entity (`ctx.Org.Team.RemoveRepository(id)`) acts on a foreign id and
+/// still fires, as does a lookup that goes through request payload.
+fn is_request_scope_rooted_lookup(callee: &str, unit: &AnalysisUnit) -> bool {
+    if unit.request_roots.is_empty() || callee.contains('(') {
+        return false;
+    }
+    let Some((receiver, method)) = callee.rsplit_once('.') else {
+        return false;
+    };
+    if !is_lookup_callee(method) {
+        return false;
+    }
+    let lower = method.to_ascii_lowercase();
+    if lower.starts_with("delete") || lower.starts_with("destroy") || lower.starts_with("remove") {
+        return false;
+    }
+    if is_keyed_identity_fetch(&lower) {
+        return false;
+    }
+    let mut segments = receiver.split('.');
+    let root = segments.next().unwrap_or(receiver);
+    let rest: Vec<&str> = segments.collect();
+    if unit.request_scope_roots.contains(root) {
+        return !rest.iter().any(|seg| is_request_payload_segment(seg));
+    }
+    unit.request_roots.contains(root) && is_request_scope_path(&rest)
 }
 
 fn is_self_scoped_session_base(base: &str) -> bool {
@@ -1286,24 +1707,6 @@ fn is_self_scoped_session_base(base: &str) -> bool {
             | "ctx.state.auth.user"
             | "g.user"
             | "self.request.user"
-            // The caller's own id from the session is self-scoped: fetching
-            // your own record with it is not IDOR (only a foreign,
-            // request-supplied id is). The `.user` forms above missed the
-            // `req.session.userId` / `session.uid` idiom.
-            | "req.session.userId"
-            | "request.session.userId"
-            | "session.userId"
-            | "req.session.userid"
-            | "request.session.userid"
-            | "session.userid"
-            | "req.session.uid"
-            | "request.session.uid"
-            | "session.uid"
-            | "ctx.session.userId"
-            | "ctx.session.userid"
-            | "ctx.session.uid"
-            | "ctx.state.userId"
-            | "ctx.state.uid"
     )
 }
 
@@ -1475,6 +1878,11 @@ fn unit_has_user_input_evidence(unit: &AnalysisUnit, web_signal: Option<bool>, l
     if !unit.context_inputs.is_empty() {
         return true;
     }
+    // A module-private Python helper that only non-route code calls is not
+    // an entry point (see `AnalysisUnit::internal_helper`).
+    if unit.internal_helper {
+        return false;
+    }
     unit.params
         .iter()
         .any(|p| is_external_input_param_name_for_lang(p, lang))
@@ -1621,6 +2029,8 @@ mod tests {
             row_field_vars: HashMap::new(),
             var_alias_chain: HashMap::new(),
             row_population_data: HashMap::new(),
+            row_derived_from: HashMap::new(),
+            row_fetch_callees: HashMap::new(),
             self_actor_vars: HashSet::new(),
             self_actor_id_vars: HashSet::new(),
             authorized_sql_vars: HashSet::new(),
@@ -1632,7 +2042,10 @@ mod tests {
             is_nextauth_options_factory: false,
             package_names: HashSet::new(),
             runtime: UnitRuntime::Unknown,
+            internal_helper: false,
             request_roots: HashSet::new(),
+            request_scope_roots: HashSet::new(),
+            authorization_scoped_vars: HashSet::new(),
         }
     }
 
@@ -2138,6 +2551,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         });
 
         let fetch_op = SensitiveOperation {
@@ -2146,6 +2560,7 @@ mod tests {
             callee: "Community.read".into(),
             subjects: vec![member("data", "community_id")],
             receiver_subjects: 0,
+            payload_subjects_start: None,
             span: (0, 0),
             line: 10,
             text: String::new(),
@@ -2160,6 +2575,7 @@ mod tests {
             callee: "delete_post".into(),
             subjects: vec![member("data", "post_id")],
             receiver_subjects: 0,
+            payload_subjects_start: None,
             span: (0, 0),
             line: 15,
             text: String::new(),
@@ -2185,6 +2601,7 @@ mod tests {
             callee: "Community.read".into(),
             subjects: vec![member("data", "community_id")],
             receiver_subjects: 0,
+            payload_subjects_start: None,
             span: (0, 0),
             line: 10,
             text: String::new(),
@@ -2215,6 +2632,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         });
 
         let fetch_op = SensitiveOperation {
@@ -2223,6 +2641,7 @@ mod tests {
             callee: "Community.read".into(),
             subjects: vec![member("data", "community_id")],
             receiver_subjects: 0,
+            payload_subjects_start: None,
             span: (0, 0),
             line: 10,
             text: String::new(),
@@ -2257,6 +2676,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         };
 
         // Direct member subject `data.community_id` (the original
@@ -2307,6 +2727,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         };
 
         assert!(auth_check_covers_subject(
@@ -2348,6 +2769,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         };
 
         // Sink subject is the bare alias, covered via the chain.
@@ -2395,6 +2817,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: true,
+            dominates_body: false,
         };
 
         // Any subject is covered when the check is route-level ,
@@ -2430,6 +2853,7 @@ mod tests {
             args: Vec::new(),
             condition_text: None,
             is_route_level: false,
+            dominates_body: false,
         };
         assert!(!auth_check_covers_subject(
             &in_body_check,
@@ -2616,7 +3040,11 @@ mod tests {
 
     #[test]
     fn owner_scoped_callees_start_at_the_caller_or_a_policy_scope() {
-        use super::is_owner_scoped_callee as scoped;
+        let rules = crate::auth_analysis::config::build_auth_rules(
+            &crate::utils::config::Config::default(),
+            "ruby",
+        );
+        let scoped = |callee: &str| super::is_owner_scoped_callee(callee, &rules);
         assert!(scoped("current_user.notes.find"));
         assert!(scoped("current_user.notes.where().find"));
         assert!(scoped("request.user.documents.filter"));
@@ -2648,6 +3076,26 @@ mod tests {
         assert!(!scoped("find"));
         // The user's name in a later segment does not scope the query.
         assert!(!scoped("Note.current_user.find"));
+        // An authorization scope confines the lookup that follows it.
+        assert!(scoped("Issue.viewable_by.find"));
+        assert!(scoped("project.issues.readable_by.find_by"));
+        assert!(scoped("User.viewable_by.active.find"));
+        assert!(!scoped("Issue.viewable_by"));
+        assert!(!scoped("Issue.find"));
+        assert!(!scoped("Issue.where.visible_by.find"));
+        assert!(!scoped("Issue.viewable_by.klass.find"));
+        assert!(!scoped("Issue.viewable_by.model.find"));
+        // Bare `visible` is usually a publish flag, so it scopes nothing.
+        assert!(!scoped("Issue.visible.find"));
+        // Other languages carry no such scope vocabulary.
+        let py = crate::auth_analysis::config::build_auth_rules(
+            &crate::utils::config::Config::default(),
+            "python",
+        );
+        assert!(!super::is_owner_scoped_callee(
+            "Issue.viewable_by.find",
+            &py
+        ));
     }
 
     #[test]

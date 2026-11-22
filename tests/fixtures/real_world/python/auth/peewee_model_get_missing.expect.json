@@ -1,0 +1,25 @@
+{
+  "description": "Peewee `Note.get(Note.id == note_id)` on a Model defined in the file is a row read by a route id",
+  "tags": [
+    "auth",
+    "auth",
+    "positive",
+    "peewee"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "py.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        13,
+        13
+      ],
+      "evidence_contains": [],
+      "notes": "Peewee `Note.get(Note.id == note_id)` on a Model defined in the file is a row read by a route id"
+    }
+  ]
+}

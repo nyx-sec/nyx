@@ -1,0 +1,24 @@
+{
+  "description": "An own-origin read joined with location.hash still lets the visitor pick the redirect host",
+  "tags": [
+    "taint",
+    "open_redirect",
+    "dom"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        2,
+        2
+      ],
+      "evidence_contains": [],
+      "notes": "An own-origin read joined with location.hash still lets the visitor pick the redirect host"
+    }
+  ]
+}

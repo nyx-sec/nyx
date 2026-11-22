@@ -67,6 +67,15 @@ pub struct AuthAnalysisRules {
     /// in `classify_sink_class` for SQLAlchemy / similar query-builder
     /// idioms whose first call returns an opaque builder object.
     pub db_query_builder_roots: Vec<String>,
+    /// Receiver-chain segments that confine a lookup to the rows the caller
+    /// may see (`Issue.visible.find(id)`, Redmine's `visible(user)` scope).
+    /// `accessible_by` and `policy_scope` are always scopes, in every
+    /// language; this list adds the framework-specific spellings.
+    pub authorization_scope_segments: Vec<String>,
+    /// Scope methods that confine rows only when the caller is passed to
+    /// them: `Model.objects.visible_to_user(requestor)`.  A call with another
+    /// argument (a channel, a slug) is not a scope on its own.
+    pub actor_scope_segments: Vec<String>,
 }
 
 impl AuthAnalysisRules {
@@ -93,6 +102,8 @@ impl AuthAnalysisRules {
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
             db_query_builder_roots: Vec::new(),
+            authorization_scope_segments: Vec::new(),
+            actor_scope_segments: Vec::new(),
         }
     }
 
@@ -121,6 +132,12 @@ impl AuthAnalysisRules {
     #[inline]
     pub fn is_python_lang(&self) -> bool {
         self.finding_prefix == "py.auth"
+    }
+
+    /// True for the Rust auth family (finding prefix `rs.auth`).
+    #[inline]
+    pub fn is_rust_lang(&self) -> bool {
+        self.finding_prefix == "rs.auth"
     }
 
     /// Last path segment of a type name (e.g. `std::collections::HashMap` → `HashMap`).
@@ -283,6 +300,21 @@ impl AuthAnalysisRules {
         callee: &str,
         non_sink_vars: &std::collections::HashSet<String>,
     ) -> Option<SinkClass> {
+        self.classify_sink_class_with_models(
+            callee,
+            non_sink_vars,
+            &std::collections::HashSet::new(),
+        )
+    }
+
+    /// [`Self::classify_sink_class`] with the file's ORM model classes
+    /// (Python), so a bare `Model.get(..)` on one is a row read.
+    pub fn classify_sink_class_with_models(
+        &self,
+        callee: &str,
+        non_sink_vars: &std::collections::HashSet<String>,
+        orm_models: &std::collections::HashSet<String>,
+    ) -> Option<SinkClass> {
         if self.callee_has_non_sink_receiver(callee, non_sink_vars) {
             return Some(SinkClass::InMemoryLocal);
         }
@@ -303,7 +335,7 @@ impl AuthAnalysisRules {
         // `cache.get(k)`, `request.GET.get("id")`) and `.get_*(..)` an ordinary
         // method (`group.get_absolute_url`).  Both are reads of rows only on an
         // ORM receiver (`Model.objects.get`, `db.session.get`).
-        if self.is_python_lang() && is_non_orm_get(callee) {
+        if self.is_python_lang() && is_non_orm_get(callee, orm_models) {
             return None;
         }
         // An id, or a collection of ids, is a value and never a data-layer
@@ -760,6 +792,13 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             // chain *root* primitive itself is the DB-anchor evidence.
             // Closes airflow-style `session.scalar(select(C).filter_by(...))`.
             db_query_builder_roots: vec!["select".into(), "query".into()],
+            authorization_scope_segments: Vec::new(),
+            actor_scope_segments: vec![
+                "visible_to_user".into(),
+                "visible_to".into(),
+                "viewable_by".into(),
+                "readable_by".into(),
+            ],
         }
     } else if matches!(lang_slug, "ruby") {
         AuthAnalysisRules {
@@ -938,6 +977,11 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
             db_query_builder_roots: Vec::new(),
+            // Bare `visible` is not here: in most Rails apps it is a publish
+            // flag scope, not an authorization scope.  `visible(current_user)`
+            // counts through `actor_scope_segments`.
+            authorization_scope_segments: vec!["viewable_by".into(), "readable_by".into()],
+            actor_scope_segments: vec!["visible".into()],
         }
     } else if matches!(lang_slug, "go") {
         AuthAnalysisRules {
@@ -1046,6 +1090,8 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
             db_query_builder_roots: Vec::new(),
+            authorization_scope_segments: Vec::new(),
+            actor_scope_segments: Vec::new(),
         }
     } else if matches!(lang_slug, "java") {
         AuthAnalysisRules {
@@ -1139,6 +1185,8 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
             db_query_builder_roots: Vec::new(),
+            authorization_scope_segments: Vec::new(),
+            actor_scope_segments: Vec::new(),
         }
     } else if matches!(lang_slug, "rust") {
         AuthAnalysisRules {
@@ -1323,6 +1371,8 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
                 "share_grants".into(),
             ],
             db_query_builder_roots: Vec::new(),
+            authorization_scope_segments: Vec::new(),
+            actor_scope_segments: Vec::new(),
         }
     } else {
         AuthAnalysisRules {
@@ -1487,6 +1537,8 @@ pub fn build_auth_rules(config: &Config, lang_slug: &str) -> AuthAnalysisRules {
             cache_receiver_prefixes: Vec::new(),
             acl_tables: Vec::new(),
             db_query_builder_roots: Vec::new(),
+            authorization_scope_segments: Vec::new(),
+            actor_scope_segments: Vec::new(),
         }
     };
 
@@ -1856,7 +1908,7 @@ pub fn matches_name(name: &str, pattern: &str) -> bool {
 /// (`db.session`) or a queryset chain (`Model.objects.select_related(..).get`).
 /// Off an ORM these are dictionary lookups (`options.get(k)`), HTTP clients
 /// (`client.get(url)`) and ordinary object methods (`group.get_absolute_url`).
-fn is_non_orm_get(callee: &str) -> bool {
+fn is_non_orm_get(callee: &str, orm_models: &std::collections::HashSet<String>) -> bool {
     const ORM_SEGMENTS: &[&str] = &[
         "objects",
         "query",
@@ -1889,7 +1941,8 @@ fn is_non_orm_get(callee: &str) -> bool {
     // A bare `.get` on a class is as often a registry or settings lookup
     // (`Settings.get(key)`, `Cache.get(item_id)`) as a model read, so a
     // PascalCase receiver counts only for the ORM-only `get_by_*` spellings
-    // (`Note.get_by_id(pk)`).
+    // (`Note.get_by_id(pk)`), or for a class the file derives from the peewee
+    // or tortoise `Model` (`orm_models`).
     let model_lookup = method.starts_with("get_by");
     matches_name(method, "get")
         && !receiver.split('.').any(|segment| {
@@ -1897,6 +1950,7 @@ fn is_non_orm_get(callee: &str) -> bool {
             ORM_SEGMENTS.contains(&segment)
                 || is_queryset_variable(segment)
                 || (model_lookup && is_model_class_name(segment))
+                || orm_models.contains(segment)
         })
 }
 

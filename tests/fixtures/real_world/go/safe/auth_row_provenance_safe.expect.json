@@ -1,0 +1,13 @@
+{
+  "description": "Ids read off rows fetched with an owner or repo scope, and range variables over those rows, are not request-supplied ids.",
+  "tags": ["auth", "go", "row-provenance", "negative"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "line_range": [1, 28],
+      "must_not_match": true,
+      "notes": "pv.ID and t.UserID are attributes of rows the unit loaded under a scope"
+    }
+  ]
+}

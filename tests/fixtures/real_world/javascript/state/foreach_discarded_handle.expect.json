@@ -1,0 +1,23 @@
+{
+  "description": "An expression-bodied callback passed to forEach discards its result, so the handle it opens leaks. A thunk that is returned hands the handle to its caller.",
+  "tags": ["state", "resource-leak", "callback"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "cfg-resource-leak",
+      "severity": null,
+      "must_match": true,
+      "line_range": [4, 4],
+      "evidence_contains": [],
+      "notes": "forEach throws the opened descriptor away"
+    },
+    {
+      "rule_id": "cfg-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [8, 8],
+      "evidence_contains": [],
+      "notes": "the returned thunk gives the descriptor to its caller"
+    }
+  ]
+}

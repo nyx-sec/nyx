@@ -1,0 +1,25 @@
+{
+  "description": "read_to_end / read_to_string on a reader that is not a file (a Cursor over constants) is not a source.",
+  "tags": [
+    "taint",
+    "rust",
+    "cmdi",
+    "stream-read",
+    "negative"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        30
+      ],
+      "notes": "nothing external reaches Command::new"
+    }
+  ]
+}

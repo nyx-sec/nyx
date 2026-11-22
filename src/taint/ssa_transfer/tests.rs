@@ -540,7 +540,7 @@ mod binding_key_tests {
 
         let mut toplevel = HashSet::new();
         toplevel.insert(BindingKey::new("x", BodyId(0)));
-        let filtered = filter_seed_to_toplevel(&seed, &toplevel);
+        let filtered = filter_seed_to_toplevel(&seed, &toplevel, &[]);
         assert_eq!(filtered.len(), 1);
         // Every surviving entry is re-keyed onto BodyId(0).
         assert!(filtered.contains_key(&BindingKey::new("x", BodyId(0))));
@@ -557,7 +557,7 @@ mod binding_key_tests {
 
         let mut toplevel = HashSet::new();
         toplevel.insert(BindingKey::new("x", BodyId(0)));
-        let filtered = filter_seed_to_toplevel(&seed, &toplevel);
+        let filtered = filter_seed_to_toplevel(&seed, &toplevel, &[]);
         assert_eq!(filtered.len(), 1);
         assert!(filtered.contains_key(&BindingKey::new("x", BodyId(0))));
     }
@@ -572,7 +572,7 @@ mod binding_key_tests {
         seed.insert(BindingKey::new("x", BodyId(2)), taint(0b0010));
         let mut toplevel = HashSet::new();
         toplevel.insert(BindingKey::new("x", BodyId(0)));
-        let filtered = filter_seed_to_toplevel(&seed, &toplevel);
+        let filtered = filter_seed_to_toplevel(&seed, &toplevel, &[]);
         assert_eq!(filtered.len(), 1);
         let merged = filtered.get(&BindingKey::new("x", BodyId(0))).unwrap();
         assert_eq!(merged.caps, Cap::from_bits_truncate(0b0011));
@@ -5043,5 +5043,132 @@ mod resolve_memo_tests {
             assert_eq!(depth(), base + 2);
         }
         assert_eq!(depth(), base);
+    }
+}
+
+mod root_lock_tests {
+    use super::super::{PathBranchClass, classify_path_branch, root_checked_path_class};
+    use crate::abstract_interp::path_domain::PathAssertion;
+    use crate::symbol::Lang;
+
+    fn kept(cond: &str, root_unterminated: bool, lang: Lang, receiver_is_string: bool) -> bool {
+        let class: PathBranchClass = classify_path_branch(cond);
+        assert!(
+            !matches!(class.assertion, PathAssertion::None),
+            "{cond} should classify as a prefix test"
+        );
+        !matches!(
+            root_checked_path_class(&class, root_unterminated, lang, || receiver_is_string)
+                .assertion,
+            PathAssertion::None
+        )
+    }
+
+    #[test]
+    fn literal_root_needs_a_trailing_separator_for_string_tests() {
+        assert!(kept(
+            "p.startsWith('/srv/data/')",
+            false,
+            Lang::JavaScript,
+            false
+        ));
+        assert!(!kept(
+            "p.startsWith('/srv/data')",
+            false,
+            Lang::JavaScript,
+            false
+        ));
+        assert!(!kept("p.startsWith('/s')", false, Lang::JavaScript, false));
+        assert!(kept(
+            "p.startswith('/srv/data/')",
+            false,
+            Lang::Python,
+            false
+        ));
+        assert!(!kept(
+            "p.startswith('/srv/data')",
+            false,
+            Lang::Python,
+            false
+        ));
+        assert!(kept(
+            "strings.HasPrefix(p, \"/srv/data/\")",
+            false,
+            Lang::Go,
+            false
+        ));
+        assert!(!kept(
+            "strings.HasPrefix(p, \"/srv/data\")",
+            false,
+            Lang::Go,
+            false
+        ));
+    }
+
+    #[test]
+    fn resolved_unterminated_root_drops_the_lock_but_opaque_root_keeps_it() {
+        assert!(kept("p.startsWith(ROOT)", false, Lang::JavaScript, false));
+        assert!(!kept("p.startsWith(ROOT)", true, Lang::JavaScript, false));
+        assert!(kept(
+            "p.startswith(ROOT + os.sep)",
+            false,
+            Lang::Python,
+            false
+        ));
+    }
+
+    #[test]
+    fn component_wise_tests_accept_any_root() {
+        // Python `is_relative_to` compares components.
+        assert!(kept(
+            "p.is_relative_to('/srv/data')",
+            false,
+            Lang::Python,
+            false
+        ));
+        // Rust `Path::starts_with` and Java `Path.startsWith` too, unless the
+        // receiver is a string.
+        assert!(kept(
+            "p.starts_with(\"/srv/data\")",
+            false,
+            Lang::Rust,
+            false
+        ));
+        assert!(!kept(
+            "p.starts_with(\"/srv/data\")",
+            false,
+            Lang::Rust,
+            true
+        ));
+        assert!(!kept(
+            "p.to_str().unwrap().starts_with(\"/srv/data\")",
+            false,
+            Lang::Rust,
+            false
+        ));
+        assert!(kept(
+            "p.startsWith(\"/srv/data\")",
+            false,
+            Lang::Java,
+            false
+        ));
+        assert!(!kept(
+            "p.startsWith(\"/srv/data\")",
+            false,
+            Lang::Java,
+            true
+        ));
+        assert!(!kept(
+            "p.toString().startsWith(\"/srv/data\")",
+            false,
+            Lang::Java,
+            false
+        ));
+        assert!(kept(
+            "p.toString().startsWith(\"/srv/data/\")",
+            false,
+            Lang::Java,
+            false
+        ));
     }
 }

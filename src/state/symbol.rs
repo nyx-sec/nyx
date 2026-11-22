@@ -119,6 +119,9 @@ impl SymbolInterner {
             for u in &info.taint.uses {
                 interner.intern(u);
             }
+            for e in &info.elem_reads {
+                interner.intern(e);
+            }
         }
         interner
     }

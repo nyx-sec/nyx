@@ -139,6 +139,39 @@ fn maybe_inject_test_panic(path: &Path) {
 }
 
 /// Convenience alias for node indices.
+/// Reliability rules that stay silent inside a C / C++ preprocessor group.
+fn is_preproc_silenced_rule(id: &str) -> bool {
+    matches!(
+        id,
+        "state-resource-leak"
+            | "state-resource-leak-possible"
+            | "state-double-close"
+            | "state-use-after-close"
+            | "cfg-resource-leak"
+            | "cfg-error-fallthrough"
+    ) || id.starts_with("cfg-unreachable-")
+}
+
+/// 1-based inclusive line ranges of every preprocessor conditional group
+/// (`#if`, `#ifdef`, `#elif`, `#else`) in a C / C++ tree.
+fn preproc_group_line_ranges(tree: &tree_sitter::Tree) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(n) = stack.pop() {
+        if matches!(
+            n.kind(),
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef" | "preproc_else"
+        ) {
+            out.push((n.start_position().row + 1, n.end_position().row + 1));
+        }
+        let mut c = n.walk();
+        for ch in n.children(&mut c) {
+            stack.push(ch);
+        }
+    }
+    out
+}
+
 fn byte_offset_to_point(tree: &tree_sitter::Tree, byte: usize) -> tree_sitter::Point {
     tree.root_node()
         .descendant_for_byte_range(byte, byte)
@@ -1103,6 +1136,16 @@ fn is_spec_tree_path(path: &Path) -> bool {
         .any(|w| w[0] == "features" && matches!(w[1], "step_definitions" | "support"))
 }
 
+/// JS/TS test modules: `*.test.ts`, `*.spec.js`, spec trees and files under
+/// a `test`, `tests`, `__tests__` or `e2e` directory (factories, fixtures,
+/// page objects).  Unlike Python, where a `tests` package can sit next to
+/// production code, a JS/TS tree with such a directory is test-only.
+fn is_js_test_module_path(path: &Path) -> bool {
+    is_test_file(path)
+        || is_spec_tree_path(path)
+        || dir_components(path).any(|d| matches!(d, "test" | "tests" | "__tests__" | "e2e"))
+}
+
 /// Test-support code that is not itself a test module: helpers under
 /// test directories and PHPUnit base classes, traits and helpers
 /// (`FieldTestBase.php`, `TestFileCreationTrait.php`, `GLPITestCase.php`).
@@ -1669,6 +1712,24 @@ impl<'a> ParsedSource<'a> {
         {
             return None;
         }
+        // Layer N: Rust `as u8/i8/u16/i16` whose operand provably fits the
+        // target (same-file `repr` enum variant, in-range literal or const,
+        // masked value, bool, ASCII char).
+        if meta.id == "rs.memory.narrow_cast"
+            && self.lang_slug == "rust"
+            && let Some(cast) = vuln_node.filter(|v| v.kind() == "type_cast_expression")
+            && crate::patterns::rust_cast::is_provably_lossless_cast(cast, self.bytes)
+        {
+            return None;
+        }
+        // Layer I2: Ruby `send(name)` where `name` iterates a closed literal
+        // set (`%w[a b].each { |n| obj.send(n) }`).
+        if meta.id == "rb.reflection.send_dynamic"
+            && self.lang_slug == "ruby"
+            && vuln_node.is_some_and(|arg| is_ruby_send_closed_set_arg(arg, self.bytes))
+        {
+            return None;
+        }
         // Layer J: JS/TS `setHeader('Access-Control-Allow-Origin', origin)`
         // where an allowlist test on `origin` guards the call, either as the
         // enclosing `if` (`if (ALLOWED.includes(origin)) ...`) or as an
@@ -1712,6 +1773,18 @@ impl<'a> ParsedSource<'a> {
             meta.id,
             "js.config.verbose_error_response" | "ts.config.verbose_error_response"
         ) && is_js_error_shorthand_a_message(cap_node, self.bytes)
+        {
+            return None;
+        }
+        // Layer J2: Java `execute(..)` / `Type.execute(..)` without an
+        // instance receiver.  JDBC `execute*` runs on a Statement or
+        // Connection, but a user helper of that name also wraps one, so the
+        // call is kept when its concatenation visibly builds SQL and dropped
+        // otherwise (CLI wrappers such as `Exec.execute("get " + url)`).
+        if meta.id == "java.sqli.execute_concat"
+            && self.lang_slug == "java"
+            && let Some(call) = vuln_node.filter(|v| v.kind() == "method_invocation")
+            && !java_execute_concat_may_be_sql(call, self.bytes)
         {
             return None;
         }
@@ -1776,8 +1849,19 @@ impl<'a> ParsedSource<'a> {
     /// can reach a function defined in one and the auth rules (a handler
     /// missing an authorization step) have nothing to report there.
     /// `--keep-nonprod-severity` keeps them.
+    ///
+    /// JS/TS test, e2e and factory modules are never part of a served
+    /// bundle either, so the same gate applies to them, including files
+    /// under a `test`, `tests`, `__tests__` or `e2e` directory.
     fn reports_auth_findings(&self, cfg: &Config) -> bool {
-        cfg.scanner.include_nonprod || !(self.lang_slug == "go" && is_test_file(self.rel_path))
+        if cfg.scanner.include_nonprod {
+            return true;
+        }
+        match self.lang_slug {
+            "go" => !is_test_file(self.rel_path),
+            "javascript" | "typescript" | "tsx" | "jsx" => !is_js_test_module_path(self.rel_path),
+            _ => true,
+        }
     }
 
     /// Sort, dedup, and optionally downgrade severity for non-production paths.
@@ -2265,6 +2349,22 @@ impl<'a> ParsedFile<'a> {
                 continue;
             }
 
+            // A flow analysed in a test file whose sink sits in another,
+            // non-test file: the test supplies mock inputs (`req.query = {..}`),
+            // which no attacker controls, and the production flow into that
+            // sink is reported from the production file's own sources.
+            if !cfg.scanner.include_nonprod
+                && let Some(loc) = finding.primary_location.as_ref()
+                && (is_test_file(self.source.rel_path)
+                    || is_test_support_path(self.source.rel_path))
+                && !is_test_file(Path::new(&loc.file_rel))
+                && !is_test_support_path(Path::new(&loc.file_rel))
+                && resolve_file_rel(&loc.file_rel, scan_root, self.source.path)
+                    != self.source.path.to_string_lossy()
+            {
+                continue;
+            }
+
             if let Some(diag) = build_taint_diag(
                 finding,
                 body_cfg,
@@ -2291,6 +2391,8 @@ impl<'a> ParsedFile<'a> {
             state::collect_closure_released_var_names(&self.file_cfg.bodies, caller_lang);
         let empty_set: std::collections::HashSet<String> = std::collections::HashSet::new();
         let module_constants = cfg_analysis::module_constant_names(&self.file_cfg.bodies);
+        let module_constant_collections =
+            cfg_analysis::module_constant_collection_names(&self.file_cfg.bodies);
         for body in &self.file_cfg.bodies {
             let body_taint: Vec<_> = taint_results
                 .iter()
@@ -2333,6 +2435,7 @@ impl<'a> ParsedFile<'a> {
                 body_params: &body.meta.params,
                 captured_params: &captured_params,
                 module_constants: Some(&module_constants),
+                module_constant_collections: Some(&module_constant_collections),
             };
             for cf in cfg_analysis::run_all(&cfg_ctx) {
                 // Layer C4 mirror at the CFG-emission point: Python
@@ -2537,6 +2640,23 @@ impl<'a> ParsedFile<'a> {
                 out.retain(|d| {
                     !((d.id == "cfg-resource-leak" || d.id == "cfg-auth-gap")
                         && state_lines.contains(&d.line))
+                });
+            }
+        }
+
+        // C / C++ preprocessor groups are lowered as branch-and-merge so
+        // taint can follow their contents, but the lowering cannot tell which
+        // arm is compiled.  Resource-lifecycle and structural reliability
+        // rules need a faithful path structure (a `#if` that wraps only an
+        // `if` head, a free in one arm, a whole file wrapped in a guard), so
+        // they stay silent inside a group, as they were before groups were
+        // lowered.
+        if matches!(self.source.lang_slug, "c" | "cpp") {
+            let ranges = preproc_group_line_ranges(&self.source.tree);
+            if !ranges.is_empty() {
+                out.retain(|d| {
+                    !(is_preproc_silenced_rule(&d.id)
+                        && ranges.iter().any(|&(a, b)| d.line >= a && d.line <= b))
                 });
             }
         }
@@ -4731,6 +4851,291 @@ fn is_ruby_eval_string_arg(cap_node: tree_sitter::Node) -> bool {
             continue;
         }
         return true;
+    }
+    false
+}
+
+/// A `execute*` call on an instance receiver is judged JDBC.  With no
+/// receiver or a class-name receiver, the concatenation must contain a string
+/// literal that starts like a SQL statement.
+fn java_execute_concat_may_be_sql(call: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let class_like = |t: &str| {
+        let mut ch = t.chars();
+        ch.next().is_some_and(|c| c.is_ascii_uppercase())
+            && ch
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    if let Some(o) = call.child_by_field_name("object") {
+        let Ok(t) = o.utf8_text(bytes) else {
+            return true;
+        };
+        if !class_like(t) {
+            return true;
+        }
+    }
+    let Some(arg) = call
+        .child_by_field_name("arguments")
+        .and_then(|a| a.named_child(0))
+    else {
+        return true;
+    };
+    let mut stack = vec![arg];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "string_literal"
+            && let Ok(t) = n.utf8_text(bytes)
+        {
+            let t = t.trim_matches('"').trim_start().to_ascii_lowercase();
+            if [
+                "select ",
+                "insert ",
+                "update ",
+                "delete ",
+                "drop ",
+                "create ",
+                "alter ",
+                "call ",
+                "merge ",
+                "with ",
+                "replace ",
+                "truncate ",
+            ]
+            .iter()
+            .any(|k| t.starts_with(k))
+            {
+                return true;
+            }
+        }
+        let mut w = n.walk();
+        stack.extend(n.named_children(&mut w));
+    }
+    false
+}
+
+/// True iff `ident` (the first argument of a Ruby `send`) is the element
+/// parameter of an enclosing iterator block whose receiver is a closed set of
+/// literals: an array / `%w` / `%i` literal, or a constant assigned exactly
+/// once in this file to such a literal and never mutated here.
+///
+/// `[:scheme, :host].each { |c| uri.send(c) }` can only dispatch to the
+/// listed names, so it is not arbitrary method dispatch.  Constants defined
+/// in other files, scoped constants and constants that are appended to keep
+/// firing, because the set is then not provably closed.
+fn is_ruby_send_closed_set_arg(ident: tree_sitter::Node, bytes: &[u8]) -> bool {
+    if ident.kind() != "identifier" {
+        return false;
+    }
+    let Ok(name) = ident.utf8_text(bytes) else {
+        return false;
+    };
+    let mut cur = ident.parent();
+    while let Some(n) = cur {
+        if matches!(n.kind(), "block" | "do_block") && ruby_block_binds_name(n, name, bytes) {
+            // The nearest block that binds `name` decides: an inner block
+            // parameter shadows any outer literal-iterating block.
+            return ruby_iterator_literal_receiver(n, name, bytes).is_some_and(|recv| {
+                ruby_receiver_is_closed_literal_set(recv, bytes)
+                    && !ruby_node_assigns_identifier(n, name, bytes)
+            });
+        }
+        if matches!(n.kind(), "method" | "singleton_method" | "program") {
+            return false;
+        }
+        cur = n.parent();
+    }
+    false
+}
+
+/// True iff any parameter (or block-local) of `block` is named `name`.
+fn ruby_block_binds_name(block: tree_sitter::Node, name: &str, bytes: &[u8]) -> bool {
+    let Some(params) = block.child_by_field_name("parameters") else {
+        return false;
+    };
+    let mut stack = vec![params];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "identifier" && n.utf8_text(bytes).ok() == Some(name) {
+            return true;
+        }
+        let mut w = n.walk();
+        stack.extend(n.named_children(&mut w));
+    }
+    false
+}
+
+/// For an iterator block whose FIRST parameter is `name`, the receiver of the
+/// call the block is attached to.
+fn ruby_iterator_literal_receiver<'a>(
+    block: tree_sitter::Node<'a>,
+    name: &str,
+    bytes: &[u8],
+) -> Option<tree_sitter::Node<'a>> {
+    let params = block.child_by_field_name("parameters")?;
+    let first = params.named_child(0)?;
+    if first.kind() != "identifier" || first.utf8_text(bytes).ok()? != name {
+        return None;
+    }
+    let call = block.parent()?;
+    if call.kind() != "call" {
+        return None;
+    }
+    let method = call.child_by_field_name("method")?.utf8_text(bytes).ok()?;
+    if !matches!(
+        method,
+        "each"
+            | "map"
+            | "collect"
+            | "flat_map"
+            | "filter_map"
+            | "select"
+            | "reject"
+            | "each_with_index"
+            | "each_with_object"
+            | "any?"
+            | "all?"
+            | "none?"
+            | "find"
+            | "detect"
+            | "sum"
+    ) {
+        return None;
+    }
+    call.child_by_field_name("receiver")
+}
+
+fn ruby_literal_collection_is_closed(node: tree_sitter::Node) -> bool {
+    match node.kind() {
+        "string_array" | "symbol_array" => (0..node.named_child_count() as u32).all(|i| {
+            node.named_child(i as _).is_some_and(|c| {
+                let mut w = c.walk();
+                !c.named_children(&mut w)
+                    .any(|g| g.kind() == "interpolation")
+            })
+        }),
+        "array" => (0..node.named_child_count() as u32).all(|i| {
+            node.named_child(i as _).is_some_and(|c| match c.kind() {
+                "simple_symbol" | "integer" | "float" | "true" | "false" | "nil" => true,
+                "string" => {
+                    let mut w = c.walk();
+                    !c.named_children(&mut w)
+                        .any(|g| g.kind() == "interpolation")
+                }
+                _ => false,
+            })
+        }),
+        _ => false,
+    }
+}
+
+fn ruby_receiver_is_closed_literal_set(recv: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let mut recv = recv;
+    // `LIST.freeze` / `%w[a b].freeze`
+    if recv.kind() == "call"
+        && recv
+            .child_by_field_name("method")
+            .and_then(|m| m.utf8_text(bytes).ok())
+            == Some("freeze")
+        && let Some(inner) = recv.child_by_field_name("receiver")
+    {
+        recv = inner;
+    }
+    match recv.kind() {
+        "constant" => ruby_constant_is_closed_literal_set(recv, bytes),
+        _ => ruby_literal_collection_is_closed(recv),
+    }
+}
+
+fn ruby_constant_is_closed_literal_set(constant: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let Ok(name) = constant.utf8_text(bytes) else {
+        return false;
+    };
+    let mut root = constant;
+    while let Some(p) = root.parent() {
+        root = p;
+    }
+    let mut assigned = 0usize;
+    let mut closed = false;
+    let mut mutated = false;
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "assignment" | "operator_assignment" => {
+                if n.child_by_field_name("left").is_some_and(|l| {
+                    l.kind() == "constant" && l.utf8_text(bytes).ok() == Some(name)
+                }) {
+                    assigned += 1;
+                    if n.kind() == "assignment"
+                        && let Some(mut r) = n.child_by_field_name("right")
+                    {
+                        if r.kind() == "call"
+                            && r.child_by_field_name("method")
+                                .and_then(|m| m.utf8_text(bytes).ok())
+                                == Some("freeze")
+                            && let Some(inner) = r.child_by_field_name("receiver")
+                        {
+                            r = inner;
+                        }
+                        closed = ruby_literal_collection_is_closed(r);
+                    }
+                }
+            }
+            "call" => {
+                if n.child_by_field_name("receiver").is_some_and(|r| {
+                    r.kind() == "constant" && r.utf8_text(bytes).ok() == Some(name)
+                }) && n
+                    .child_by_field_name("method")
+                    .and_then(|m| m.utf8_text(bytes).ok())
+                    .is_some_and(|m| {
+                        matches!(
+                            m,
+                            "push"
+                                | "append"
+                                | "<<"
+                                | "concat"
+                                | "unshift"
+                                | "prepend"
+                                | "insert"
+                                | "replace"
+                                | "[]="
+                                | "map!"
+                                | "collect!"
+                                | "fill"
+                        )
+                    })
+                {
+                    mutated = true;
+                }
+            }
+            "binary"
+                if n.child_by_field_name("left").is_some_and(|l| {
+                    l.kind() == "constant" && l.utf8_text(bytes).ok() == Some(name)
+                }) && n
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "<<") =>
+            {
+                mutated = true;
+            }
+            _ => {}
+        }
+        let mut w = n.walk();
+        stack.extend(n.children(&mut w));
+    }
+    assigned == 1 && closed && !mutated
+}
+
+/// True iff `scope` assigns to a local named `name`, which would let the
+/// iterator element be replaced by something other than the literal.
+fn ruby_node_assigns_identifier(scope: tree_sitter::Node, name: &str, bytes: &[u8]) -> bool {
+    let mut stack = vec![scope];
+    while let Some(n) = stack.pop() {
+        if matches!(n.kind(), "assignment" | "operator_assignment")
+            && n.child_by_field_name("left")
+                .is_some_and(|l| l.kind() == "identifier" && l.utf8_text(bytes).ok() == Some(name))
+        {
+            return true;
+        }
+        let mut w = n.walk();
+        stack.extend(n.children(&mut w));
     }
     false
 }
@@ -7660,6 +8065,29 @@ fn binary_file_guard_triggers() {
 
     let diags = run_rules_on_file(&bin, &Config::default(), None, None).unwrap();
     assert!(diags.is_empty(), "binary files are skipped");
+}
+
+#[test]
+fn js_test_module_paths_skip_auth_findings() {
+    for path in [
+        "e2e/tests/admin/members.test.ts",
+        "ghost/core/test/e2e-api/admin/recommendations.test.js",
+        "server/test/factories.ts",
+        "tests/api/settings.test.api.ts",
+        "src/__tests__/helpers.js",
+        "e2e/helpers/pages/admin.ts",
+        "spec/support/helpers.js",
+    ] {
+        assert!(is_js_test_module_path(Path::new(path)), "{path}");
+    }
+    for path in [
+        "server/routes/members.ts",
+        "src/testing_utils.js",
+        "apps/portal/src/components/Latest.js",
+        "server/contest/handler.js",
+    ] {
+        assert!(!is_js_test_module_path(Path::new(path)), "{path}");
+    }
 }
 
 #[test]

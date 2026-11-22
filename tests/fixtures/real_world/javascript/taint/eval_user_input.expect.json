@@ -44,19 +44,18 @@
         7
       ],
       "evidence_contains": [],
-      "notes": "noise: req.query.expr flows to res.json — returning computed result is standard API behavior, not XSS"
+      "notes": "noise: req.query.expr flows to res.json, which is not an XSS sink; returning the computed result is standard API behavior"
     },
     {
       "rule_id": "taint-unsanitised-flow",
       "severity": "HIGH",
-      "must_match": true,
-      "max_count": 1,
+      "must_not_match": true,
       "line_range": [
         16,
         16
       ],
       "evidence_contains": [],
-      "notes": "Known noise: taint flow to res.json in safe handler — parseFloat sanitizes input, but scanner does not model it. Exactly one finding after dedup; cross-handler two-level-solve leak collapses into this one."
+      "notes": "res.json sends application/json and is not modelled as an XSS sink, so the parseFloat-validated result reports no flow; the /calc handler's expr must not leak into it through the top-level seed"
     },
     {
       "rule_id": "cfg-unguarded-sink",

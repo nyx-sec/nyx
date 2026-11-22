@@ -1,0 +1,24 @@
+{
+  "description": "A request parameter used as a redirect target is an open redirect",
+  "tags": [
+    "taint",
+    "open_redirect",
+    "servlet"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        5,
+        5
+      ],
+      "evidence_contains": [],
+      "notes": "A request parameter used as a redirect target is an open redirect"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "description": "A public helper with caller supplied ids and no scoping still fires",
+  "tags": [
+    "auth",
+    "auth",
+    "positive",
+    "private-helper"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "py.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        6,
+        6
+      ],
+      "evidence_contains": [],
+      "notes": "A public helper with caller supplied ids and no scoping still fires"
+    }
+  ]
+}

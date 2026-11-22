@@ -801,10 +801,12 @@ pub fn handle(
         retain_converged_findings(&mut diags);
     }
 
-    // Inline suppressions were applied in `post_process_diags`.
+    // Inline suppressions were applied in `post_process_diags`.  A
+    // single-file scan reads the triage file of the enclosing project.
+    let triage_root = crate::server::triage_sync::triage_root_for_scan_path(&scan_path);
     if !show_suppressed {
         let triage_summary =
-            crate::server::triage_sync::apply_triage_file_to_diags(&mut diags, &scan_path)
+            crate::server::triage_sync::apply_triage_file_to_diags(&mut diags, &triage_root)
                 .map_err(|e| crate::errors::NyxError::Msg(format!("triage sync failed: {e}")))?;
         if !suppress_status
             && triage_summary.decisions_applied + triage_summary.suppression_rules_applied > 0
@@ -822,7 +824,7 @@ pub fn handle(
         }
         diags.retain(|d| !is_inactive_for_cli(d));
     } else {
-        crate::server::triage_sync::apply_triage_file_to_diags(&mut diags, &scan_path)
+        crate::server::triage_sync::apply_triage_file_to_diags(&mut diags, &triage_root)
             .map_err(|e| crate::errors::NyxError::Msg(format!("triage sync failed: {e}")))?;
     }
 
@@ -1542,6 +1544,61 @@ fn topo_refine_enabled() -> bool {
     }
 }
 
+/// Run `f` over `items` on the rayon pool, handing out the largest files
+/// first, and return the results in `items` order.
+///
+/// A plain `par_iter` visits files in path order, so a multi-megabyte
+/// bundle that sorts last starts last and runs alone while every other
+/// worker idles.  Dispatching by descending file size (ties by position)
+/// from a shared cursor starts the long jobs first and lets the short ones
+/// backfill.  Results are slotted back by input index, so everything
+/// downstream (summary merge order, diagnostics order) sees exactly what
+/// the ordered `par_iter().map().collect()` produced.
+fn par_map_largest_first<T, R, F>(items: &[T], f: F) -> Vec<R>
+where
+    T: AsRef<Path> + Sync,
+    R: Send,
+    F: Fn(&T) -> R + Sync,
+{
+    let n = items.len();
+    let workers = rayon::current_num_threads().min(n);
+    if workers <= 1 {
+        return items.iter().map(&f).collect();
+    }
+    let sizes: Vec<u64> = items
+        .iter()
+        .map(|p| std::fs::metadata(p.as_ref()).map_or(0, |m| m.len()))
+        .collect();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| (std::cmp::Reverse(sizes[i]), i));
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<std::sync::Mutex<Option<R>>> =
+        (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+    rayon::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|_| {
+                loop {
+                    let k = cursor.fetch_add(1, Ordering::Relaxed);
+                    if k >= n {
+                        break;
+                    }
+                    let i = order[k];
+                    let r = f(&items[i]);
+                    *slots[i].lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+                }
+            });
+        }
+    });
+    slots
+        .into_iter()
+        .map(|m| {
+            m.into_inner()
+                .unwrap_or_else(|e| e.into_inner())
+                .expect("every slot is filled before the scope ends")
+        })
+        .collect()
+}
+
 /// Run pass 2 analysis on a sequence of topo-ordered file batches.
 ///
 /// Batches come from [`crate::callgraph::scc_file_batches_with_metadata`],
@@ -1681,73 +1738,58 @@ fn run_topo_batches(
                         crate::symbol::FuncKey,
                         crate::taint::ssa_transfer::CalleeSsaBody,
                     )>,
-                )> = iter_files
-                    .par_iter()
-                    .map(|path| {
-                        if let Some(p) = progress {
-                            p.set_current_file(&path.to_string_lossy());
-                        }
-                        let bytes = match std::fs::read(path) {
-                            Ok(b) => b,
-                            Err(e) => {
-                                tracing::warn!(
-                                    "pass 2 (SCC iter {}): cannot read {}: {e}",
-                                    iter,
-                                    path.display()
+                )> = par_map_largest_first(&iter_files, |path| {
+                    if let Some(p) = progress {
+                        p.set_current_file(&path.to_string_lossy());
+                    }
+                    let bytes = match std::fs::read(path) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            tracing::warn!(
+                                "pass 2 (SCC iter {}): cannot read {}: {e}",
+                                iter,
+                                path.display()
+                            );
+                            if let Some(l) = logs {
+                                l.warn(
+                                    format!("Cannot read file for pass 2: {e}"),
+                                    Some(path.display().to_string()),
+                                    None,
                                 );
-                                if let Some(l) = logs {
-                                    l.warn(
-                                        format!("Cannot read file for pass 2: {e}"),
-                                        Some(path.display().to_string()),
-                                        None,
-                                    );
-                                }
-                                return (path.to_path_buf(), false, vec![], vec![], vec![], vec![]);
                             }
-                        };
-                        match recover_or_propagate(
-                            cfg.scanner.enable_panic_recovery,
-                            path,
-                            logs,
-                            || {
-                                analyse_file_fused(
-                                    &bytes,
-                                    path,
-                                    cfg,
-                                    Some(global_summaries),
-                                    scan_root,
-                                )
-                            },
-                        ) {
-                            Ok(r) => {
-                                pb.inc(0); // don't double-count iterations in progress bar
-                                (
-                                    path.to_path_buf(),
-                                    true,
-                                    r.diags,
-                                    r.summaries,
-                                    r.ssa_summaries,
-                                    r.ssa_bodies,
-                                )
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "pass 2 (SCC iter {}): {}: {e}",
-                                    iter,
-                                    path.display()
-                                );
-                                if let Some(l) = logs {
-                                    l.warn(
-                                        format!("Pass 2 (SCC iter {iter}) analysis failed: {e}"),
-                                        Some(path.display().to_string()),
-                                        None,
-                                    );
-                                }
-                                (path.to_path_buf(), false, vec![], vec![], vec![], vec![])
-                            }
+                            return (path.to_path_buf(), false, vec![], vec![], vec![], vec![]);
                         }
-                    })
-                    .collect();
+                    };
+                    match recover_or_propagate(
+                        cfg.scanner.enable_panic_recovery,
+                        path,
+                        logs,
+                        || analyse_file_fused(&bytes, path, cfg, Some(global_summaries), scan_root),
+                    ) {
+                        Ok(r) => {
+                            pb.inc(0); // don't double-count iterations in progress bar
+                            (
+                                path.to_path_buf(),
+                                true,
+                                r.diags,
+                                r.summaries,
+                                r.ssa_summaries,
+                                r.ssa_bodies,
+                            )
+                        }
+                        Err(e) => {
+                            tracing::warn!("pass 2 (SCC iter {}): {}: {e}", iter, path.display());
+                            if let Some(l) = logs {
+                                l.warn(
+                                    format!("Pass 2 (SCC iter {iter}) analysis failed: {e}"),
+                                    Some(path.display().to_string()),
+                                    None,
+                                );
+                            }
+                            (path.to_path_buf(), false, vec![], vec![], vec![], vec![])
+                        }
+                    }
+                });
 
                 let mut ssa_count: usize = 0;
                 let mg = cfg.module_graph.as_deref();
@@ -2065,72 +2107,65 @@ fn run_topo_batches(
                     crate::symbol::FuncKey,
                     crate::auth_analysis::model::AuthCheckSummary,
                 )>,
-            )> = batch
-                .files
-                .par_iter()
-                .map(|path| {
-                    if let Some(p) = progress {
-                        p.set_current_file(&path.to_string_lossy());
-                    }
-                    let bytes = match std::fs::read(path) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            tracing::warn!(
-                                "pass 2 (non-recursive): cannot read {}: {e}",
-                                path.display()
+            )> = par_map_largest_first(&batch.files, |path| {
+                if let Some(p) = progress {
+                    p.set_current_file(&path.to_string_lossy());
+                }
+                let bytes = match std::fs::read(path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(
+                            "pass 2 (non-recursive): cannot read {}: {e}",
+                            path.display()
+                        );
+                        if let Some(l) = logs {
+                            l.warn(
+                                format!("Cannot read file for pass 2: {e}"),
+                                Some(path.display().to_string()),
+                                None,
                             );
-                            if let Some(l) = logs {
-                                l.warn(
-                                    format!("Cannot read file for pass 2: {e}"),
-                                    Some(path.display().to_string()),
-                                    None,
-                                );
-                            }
-                            pb.inc(1);
-                            if let Some(p) = progress {
-                                p.inc_analyzed(1);
-                            }
-                            return (path.to_path_buf(), vec![], vec![], vec![], vec![], vec![]);
                         }
-                    };
-                    match recover_or_propagate(
-                        cfg.scanner.enable_panic_recovery,
-                        path,
-                        logs,
-                        || analyse_file_fused(&bytes, path, cfg, Some(global_summaries), scan_root),
-                    ) {
-                        Ok(r) => {
-                            pb.inc(1);
-                            if let Some(p) = progress {
-                                p.inc_analyzed(1);
-                            }
-                            (
-                                path.to_path_buf(),
-                                r.diags,
-                                r.summaries,
-                                r.ssa_summaries,
-                                r.ssa_bodies,
-                                r.auth_summaries,
-                            )
+                        pb.inc(1);
+                        if let Some(p) = progress {
+                            p.inc_analyzed(1);
                         }
-                        Err(e) => {
-                            tracing::warn!("pass 2 (non-recursive): {}: {e}", path.display());
-                            if let Some(l) = logs {
-                                l.warn(
-                                    format!("Pass 2 analysis failed: {e}"),
-                                    Some(path.display().to_string()),
-                                    None,
-                                );
-                            }
-                            pb.inc(1);
-                            if let Some(p) = progress {
-                                p.inc_analyzed(1);
-                            }
-                            (path.to_path_buf(), vec![], vec![], vec![], vec![], vec![])
-                        }
+                        return (path.to_path_buf(), vec![], vec![], vec![], vec![], vec![]);
                     }
-                })
-                .collect();
+                };
+                match recover_or_propagate(cfg.scanner.enable_panic_recovery, path, logs, || {
+                    analyse_file_fused(&bytes, path, cfg, Some(global_summaries), scan_root)
+                }) {
+                    Ok(r) => {
+                        pb.inc(1);
+                        if let Some(p) = progress {
+                            p.inc_analyzed(1);
+                        }
+                        (
+                            path.to_path_buf(),
+                            r.diags,
+                            r.summaries,
+                            r.ssa_summaries,
+                            r.ssa_bodies,
+                            r.auth_summaries,
+                        )
+                    }
+                    Err(e) => {
+                        tracing::warn!("pass 2 (non-recursive): {}: {e}", path.display());
+                        if let Some(l) = logs {
+                            l.warn(
+                                format!("Pass 2 analysis failed: {e}"),
+                                Some(path.display().to_string()),
+                                None,
+                            );
+                        }
+                        pb.inc(1);
+                        if let Some(p) = progress {
+                            p.inc_analyzed(1);
+                        }
+                        (path.to_path_buf(), vec![], vec![], vec![], vec![], vec![])
+                    }
+                }
+            });
 
             // Sequential persistence: union refined artifacts back into
             // `global_summaries` so caller-most batches see them.
@@ -2182,58 +2217,7 @@ fn run_topo_batches(
         } else {
             // Legacy non-recursive batch (NYX_TOPO_REFINE=0): single
             // pass that discards refined SSA / body / auth artifacts.
-            let batch_diags: Vec<Diag> = batch
-                .files
-                .par_iter()
-                .flat_map_iter(|path| {
-                    if let Some(p) = progress {
-                        p.set_current_file(&path.to_string_lossy());
-                    }
-                    let d = match recover_or_propagate(
-                        cfg.scanner.enable_panic_recovery,
-                        path,
-                        logs,
-                        || run_rules_on_file(path, cfg, Some(global_summaries), scan_root),
-                    ) {
-                        Ok(d) => d,
-                        Err(e) => {
-                            tracing::warn!("pass 2: {}: {e}", path.display());
-                            if let Some(l) = logs {
-                                l.warn(
-                                    format!("Pass 2 analysis failed: {e}"),
-                                    Some(path.display().to_string()),
-                                    None,
-                                );
-                            }
-                            vec![]
-                        }
-                    };
-                    pb.inc(1);
-                    if let Some(p) = progress {
-                        p.inc_analyzed(1);
-                    }
-                    d
-                })
-                .collect();
-
-            tracing::debug!(
-                batch = batch_idx,
-                files = batch.files.len(),
-                recursive = false,
-                "non-recursive batch complete (legacy, refinement disabled)"
-            );
-            if let Some(p) = progress {
-                p.inc_batches_completed(1);
-            }
-            result.extend(batch_diags);
-        }
-    }
-
-    // Orphan files (no functions in call graph), process last, single pass.
-    if !orphans.is_empty() {
-        let orphan_diags: Vec<Diag> = orphans
-            .par_iter()
-            .flat_map_iter(|path| {
+            let batch_diags: Vec<Diag> = par_map_largest_first(&batch.files, |path| {
                 if let Some(p) = progress {
                     p.set_current_file(&path.to_string_lossy());
                 }
@@ -2262,7 +2246,55 @@ fn run_topo_batches(
                 }
                 d
             })
+            .into_iter()
+            .flatten()
             .collect();
+
+            tracing::debug!(
+                batch = batch_idx,
+                files = batch.files.len(),
+                recursive = false,
+                "non-recursive batch complete (legacy, refinement disabled)"
+            );
+            if let Some(p) = progress {
+                p.inc_batches_completed(1);
+            }
+            result.extend(batch_diags);
+        }
+    }
+
+    // Orphan files (no functions in call graph), process last, single pass.
+    if !orphans.is_empty() {
+        let orphan_diags: Vec<Diag> = par_map_largest_first(orphans, |path| {
+            if let Some(p) = progress {
+                p.set_current_file(&path.to_string_lossy());
+            }
+            let d =
+                match recover_or_propagate(cfg.scanner.enable_panic_recovery, path, logs, || {
+                    run_rules_on_file(path, cfg, Some(global_summaries), scan_root)
+                }) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        tracing::warn!("pass 2: {}: {e}", path.display());
+                        if let Some(l) = logs {
+                            l.warn(
+                                format!("Pass 2 analysis failed: {e}"),
+                                Some(path.display().to_string()),
+                                None,
+                            );
+                        }
+                        vec![]
+                    }
+                };
+            pb.inc(1);
+            if let Some(p) = progress {
+                p.inc_analyzed(1);
+            }
+            d
+        })
+        .into_iter()
+        .flatten()
+        .collect();
         if let Some(p) = progress {
             p.inc_batches_completed(1);
         }
@@ -4723,7 +4755,7 @@ fn indexed_scan_drops_cached_summaries_when_rules_change() {
 }
 
 #[test]
-fn flows_from_go_test_files_are_downgraded_at_the_promoted_sink() {
+fn flows_from_go_test_files_are_dropped_at_the_promoted_sink() {
     let td = tempfile::tempdir().unwrap();
     let root = td.path();
     std::fs::write(
@@ -4741,16 +4773,21 @@ fn flows_from_go_test_files_are_downgraded_at_the_promoted_sink() {
 
     let mut cfg = Config::default();
     cfg.performance.worker_threads = Some(1);
+    let in_helper = |diags: &[Diag]| {
+        diags
+            .iter()
+            .filter(|d| d.id.starts_with("taint-") && d.path.ends_with("helper.go"))
+            .count()
+    };
+    // A mock request built in a test is not attacker input: the flow it
+    // drives into the production sink is not reported.
     let diags = crate::scan_no_index(root, &cfg).unwrap();
-    let in_helper: Vec<&Diag> = diags
-        .iter()
-        .filter(|d| d.id.starts_with("taint-") && d.path.ends_with("helper.go"))
-        .collect();
-    assert!(!in_helper.is_empty(), "{diags:?}");
-    assert!(
-        in_helper.iter().all(|d| d.severity == Severity::Medium),
-        "test-origin flows keep the test file's downgrade: {in_helper:?}"
-    );
+    assert_eq!(in_helper(&diags), 0, "{diags:?}");
+    // `include_nonprod` keeps non-production flows.
+    let mut keep = cfg.clone();
+    keep.scanner.include_nonprod = true;
+    let diags = crate::scan_no_index(root, &keep).unwrap();
+    assert!(in_helper(&diags) > 0, "{diags:?}");
 
     // The same caller in a production file reports at full severity.
     std::fs::remove_file(root.join("helper_test.go")).unwrap();

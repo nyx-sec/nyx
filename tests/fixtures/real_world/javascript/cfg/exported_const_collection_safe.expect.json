@@ -1,0 +1,24 @@
+{
+  "description": "A module-private literal collection that is only looped over is constant.",
+  "tags": [
+    "sqli",
+    "const-collection",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        100000
+      ],
+      "evidence_contains": [],
+      "notes": "safe shape must not fire"
+    }
+  ]
+}

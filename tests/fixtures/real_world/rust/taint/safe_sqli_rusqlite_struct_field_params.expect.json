@@ -1,0 +1,15 @@
+{
+  "description": "self.conn.execute with a bound parameter array",
+  "tags": ["taint", "sqli", "rusqlite", "negative"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [1, 14],
+      "evidence_contains": [],
+      "notes": "Parameterised through a typed field"
+    }
+  ]
+}

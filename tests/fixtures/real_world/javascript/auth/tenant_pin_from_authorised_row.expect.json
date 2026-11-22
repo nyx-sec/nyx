@@ -1,0 +1,19 @@
+{
+  "description": "A lookup that binds the tenant of a row an earlier authorize call covers (teamId: document.teamId) is confined to that tenant, so the derived id list needs no further check.  The same lookup without the tenant pin keeps reporting.",
+  "tags": ["auth", "precision", "koa"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "line_range": [16, 18],
+      "must_not_match": true,
+      "notes": "tenant of an authorised row pins the query"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "line_range": [19, 21],
+      "must_match": true,
+      "notes": "no tenant pin, ids derived from a call"
+    }
+  ]
+}

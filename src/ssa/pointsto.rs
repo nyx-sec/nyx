@@ -177,6 +177,18 @@ fn classify_java(method: &str) -> Option<ContainerOp> {
     }
 }
 
+/// Mutating `StringBuilder` / `StringBuffer` methods: the argument is written
+/// into the receiver.  Kept out of `classify_java` because the names are
+/// only container writes on a receiver known to be a builder; the taint
+/// transfer applies this after checking the receiver type, and widens the
+/// store to every argument group (chained calls, `insert(offset, value)`).
+pub fn classify_java_builder_op(method: &str) -> Option<ContainerOp> {
+    match method {
+        "append" | "insert" => store(0),
+        _ => None,
+    }
+}
+
 fn classify_go(method: &str, callee: &str) -> Option<ContainerOp> {
     // Go `append` is a builtin: `result = append(slice, val1, val2, ...)`
     // The callee is just "append" (no receiver dot-path).
@@ -510,5 +522,16 @@ mod tests {
                 other => panic!("{lang:?}: expected indexed Store, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn java_builder_append_is_not_a_generic_container_store() {
+        // `append` / `insert` are container writes only on a receiver known
+        // to be a StringBuilder, so the type-blind classifier ignores them.
+        assert!(classify_container_op("sb.append", Lang::Java).is_none());
+        assert!(classify_container_op("sb.insert", Lang::Java).is_none());
+        assert!(classify_java_builder_op("append").is_some());
+        assert!(classify_java_builder_op("insert").is_some());
+        assert!(classify_java_builder_op("toString").is_none());
     }
 }

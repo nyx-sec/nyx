@@ -1,0 +1,133 @@
+{
+  "description": "Argv-form system/exec with an explicit shell, interpreter wrapper or tainted program still runs caller text as code",
+  "tags": [
+    "taint",
+    "cmdi",
+    "ruby"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rb.cmdi.system_interp",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        4,
+        4
+      ],
+      "evidence_contains": [],
+      "notes": "sh -c runs the string"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        4,
+        4
+      ],
+      "evidence_contains": [],
+      "notes": "sh -c runs the string"
+    },
+    {
+      "rule_id": "rb.cmdi.system_interp",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        8,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "bash -c runs the string"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        8,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "bash -c runs the string"
+    },
+    {
+      "rule_id": "rb.cmdi.system_interp",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        12,
+        12
+      ],
+      "evidence_contains": [],
+      "notes": "cmd /c runs the string"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        12,
+        12
+      ],
+      "evidence_contains": [],
+      "notes": "cmd /c runs the string"
+    },
+    {
+      "rule_id": "rb.cmdi.system_interp",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        16,
+        16
+      ],
+      "evidence_contains": [],
+      "notes": "env wrapper before bash -c"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        16,
+        16
+      ],
+      "evidence_contains": [],
+      "notes": "env wrapper before bash -c"
+    },
+    {
+      "rule_id": "rb.cmdi.system_interp",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        20,
+        20
+      ],
+      "evidence_contains": [],
+      "notes": "tainted program"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        20,
+        20
+      ],
+      "evidence_contains": [],
+      "notes": "tainted program"
+    }
+  ]
+}

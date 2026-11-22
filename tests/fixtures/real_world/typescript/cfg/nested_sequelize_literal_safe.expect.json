@@ -1,0 +1,26 @@
+{
+  "description": "Sequelize.literal with an interpolation-free template, nested inside findAll options, is a constant; the named :replacements carry the user value.",
+  "tags": [
+    "sqli",
+    "sequelize",
+    "literal",
+    "nested-sink",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        100000
+      ],
+      "evidence_contains": [],
+      "notes": "safe shape must not fire"
+    }
+  ]
+}

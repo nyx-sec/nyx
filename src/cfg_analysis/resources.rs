@@ -1,7 +1,7 @@
 use super::dominators;
 use super::rules;
 use super::{AnalysisContext, CfgAnalysis, CfgFinding, Confidence};
-use crate::cfg::{EdgeKind, StmtKind};
+use crate::cfg::{CalleeNesting, EdgeKind, StmtKind};
 use crate::patterns::Severity;
 use crate::symbol::Lang;
 use petgraph::algo::dominators::Dominators;
@@ -119,6 +119,17 @@ fn find_acquire_nodes(
             if info.kind != StmtKind::Call {
                 return false;
             }
+            // A member read hoisted out of a callback argument is no call of
+            // this node, and a value stored into an aggregate handed to
+            // another call is owned by that aggregate (same rule as the
+            // container and field stores).  A call directly in another call's
+            // arguments stays an acquire: `json.load(open(p))` leaks it.
+            if matches!(
+                info.call.callee_nesting,
+                CalleeNesting::Hoisted | CalleeNesting::InAggregateArg
+            ) {
+                return false;
+            }
             if let Some(callee) = &info.call.callee {
                 let callee_lower = callee.to_ascii_lowercase();
                 // Check exclusions first, if the callee matches an exclude
@@ -160,6 +171,15 @@ fn find_release_nodes(ctx: &AnalysisContext, release_patterns: &[&str]) -> Vec<N
             if let Some(callee) = &info.call.callee
                 && info.kind == StmtKind::Call
                 && matches_release(callee)
+            {
+                return true;
+            }
+            // A release that is the condition of an `if` (`if (fclose(f))`)
+            // runs before either branch.
+            if info
+                .cond_call
+                .as_deref()
+                .is_some_and(|c| matches_release(&c.callee))
             {
                 return true;
             }

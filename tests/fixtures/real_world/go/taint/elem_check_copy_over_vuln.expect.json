@@ -1,0 +1,25 @@
+{
+  "description": "A comma-ok check on parts[0] does not cover a read after copy() overwrites the slice with request data",
+  "tags": [
+    "taint",
+    "sqli",
+    "go",
+    "positive"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        20,
+        20
+      ],
+      "evidence_contains": [],
+      "notes": "copy() rewrites the checked element"
+    }
+  ]
+}

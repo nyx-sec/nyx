@@ -1,0 +1,41 @@
+{
+  "description": "res.json and an object ctx.body are XSS sinks when the same function sets an HTML content type.",
+  "tags": [
+    "taint",
+    "xss",
+    "koa",
+    "express"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        10,
+        10
+      ],
+      "notes": "JSON-shaped response rendered as text/html"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        15,
+        15
+      ],
+      "notes": "JSON-shaped response rendered as text/html"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        20,
+        20
+      ],
+      "notes": "JSON-shaped response rendered as text/html"
+    }
+  ]
+}

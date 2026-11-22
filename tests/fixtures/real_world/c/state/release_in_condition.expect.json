@@ -1,0 +1,68 @@
+{
+  "description": "A release call used as an if condition (fclose in the condition) releases the handle on both branches. A release behind a short-circuit operator or no release at all still leaks.",
+  "tags": [
+    "state",
+    "resource-leak",
+    "condition-release"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        7,
+        33
+      ],
+      "evidence_contains": [],
+      "notes": "fclose in the if condition releases f"
+    },
+    {
+      "rule_id": "state-resource-leak-possible",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        7,
+        33
+      ],
+      "evidence_contains": [],
+      "notes": "fclose in the if condition releases f on every path"
+    },
+    {
+      "rule_id": "state-double-close",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        18,
+        33
+      ],
+      "evidence_contains": [],
+      "notes": "f is set to NULL before the cleanup label, so the guarded close is not a second close"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        36,
+        36
+      ],
+      "evidence_contains": [],
+      "notes": "never closed"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        44,
+        44
+      ],
+      "evidence_contains": [],
+      "notes": "fclose runs only when ok is set; the other path leaks"
+    }
+  ]
+}

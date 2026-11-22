@@ -2345,6 +2345,97 @@ fn php_echo_simple_var() {
     );
 }
 
+fn php_findings(src: &[u8]) -> usize {
+    let lang = tree_sitter::Language::from(tree_sitter_php::LANGUAGE_PHP);
+    let file_cfg = parse_lang(src, "php", lang);
+    let summaries = &file_cfg.summaries;
+    analyse_file(&file_cfg, summaries, None, Lang::Php, "test.php", &[], None).len()
+}
+
+#[test]
+fn php_echo_direct_superglobal_operand() {
+    for src in [
+        "<?php\necho $_GET['a'];\n",
+        "<?php\necho @$_REQUEST['x'];\n",
+        "<?php\necho 'x' . $_GET['b'];\n",
+        "<?php\necho \"x {$_GET['b']}\";\n",
+        "<?php\nprint $_GET['c'];\n",
+        "<?php\necho $_GET['f'], 'x';\n",
+        "<?php\n?><b><?= $_GET['q'] ?></b>\n",
+    ] {
+        assert_eq!(php_findings(src.as_bytes()), 1, "expected a finding: {src}");
+    }
+}
+
+#[test]
+fn php_echo_direct_operand_sanitised_or_numeric() {
+    for src in [
+        "<?php\necho htmlspecialchars($_GET['a']);\n",
+        "<?php\necho 'x' . htmlspecialchars($_GET['a']);\n",
+        "<?php\necho (int) $_GET['n'];\n",
+        "<?php\nprint htmlspecialchars($_GET['a']);\n",
+        "<?php\n?><b><?= htmlspecialchars($_GET['q']) ?></b>\n",
+    ] {
+        assert_eq!(php_findings(src.as_bytes()), 0, "expected silence: {src}");
+    }
+}
+
+#[test]
+fn php_numeric_assignment_clears_taint() {
+    let sink = "echo \"<i>$v</i>\";\n";
+    for rhs in [
+        "(int) $_GET['n']",
+        "(float) $_GET['n']",
+        "($_GET['n'] - 1) * 20",
+        "$_GET['n'] % 7",
+    ] {
+        let src = format!("<?php\n$v = {rhs};\n{sink}");
+        assert_eq!(php_findings(src.as_bytes()), 0, "expected silence: {rhs}");
+    }
+    for rhs in ["(string) $_GET['n']", "$_GET['n'] . '1'", "$_GET['n']"] {
+        let src = format!("<?php\n$v = {rhs};\n{sink}");
+        assert_eq!(php_findings(src.as_bytes()), 1, "expected a finding: {rhs}");
+    }
+}
+
+#[test]
+fn php_file_io_builtins_gated_to_path_arguments() {
+    for src in [
+        "<?php\n$r = !unlink('/d/' . $_GET['f']);\n",
+        "<?php\n@unlink('/d/' . $_GET['f']);\n",
+        "<?php\nrename($_POST['a'], '/x');\n",
+        "<?php\nrename('/x', $_POST['b']);\n",
+        "<?php\nreadfile('/d/' . $_GET['f']);\n",
+        "<?php\n$l = file('/d/' . $_GET['f']);\n",
+        "<?php\n$l = scandir('/d/' . $_GET['f']);\n",
+        "<?php\nmkdir('/d/' . $_GET['f']);\n",
+    ] {
+        assert_eq!(php_findings(src.as_bytes()), 1, "expected a finding: {src}");
+    }
+    for src in [
+        "<?php\nunlink('/d/' . basename($_GET['f']));\n",
+        "<?php\nchmod('/d/x', (int) $_POST['m']);\n",
+        "<?php\n$request->file($_GET['f']);\n",
+        "<?php\n$f = new File($_GET['f']);\n",
+    ] {
+        assert_eq!(php_findings(src.as_bytes()), 0, "expected silence: {src}");
+    }
+}
+
+#[test]
+fn php_dbfacile_sql_text_only() {
+    assert_eq!(
+        php_findings(b"<?php\n$q = 'SELECT ' . $_GET['c'];\ndbFetchRows($q, []);\n"),
+        1
+    );
+    assert_eq!(
+        php_findings(
+            b"<?php\n$p = [$_GET['c']];\ndbFetchRows('SELECT * FROM t WHERE c = ?', $p);\n"
+        ),
+        0
+    );
+}
+
 #[test]
 fn php_echo_safe_literal() {
     // `echo "hello";` with no tainted data should produce no finding.
@@ -4287,10 +4378,11 @@ fn catch_param_source_node_has_callee() {
     // The source CFG node for a catch-param finding must have a non-None callee
     // so the report renders a meaningful descriptor instead of "(unknown)".
     let src = b"
+        const { exec } = require('child_process');
         try {
             riskyOperation();
         } catch (e) {
-            fetch(e.message);
+            exec(e.message);
         }
     ";
 
@@ -4310,7 +4402,7 @@ fn catch_param_source_node_has_callee() {
 
     assert!(
         !findings.is_empty(),
-        "catch param to fetch should produce a finding"
+        "catch param to exec should produce a finding"
     );
     for f in &findings {
         let source_info = &the_cfg[f.source];
@@ -10988,7 +11080,7 @@ fn sql_result_flow_caps(
 }
 
 /// The rows a parameterised query returns do not carry the bound value's
-/// taint, so reaching `res.json` is clean (JS, pg-style gate).
+/// taint, so reaching `res.send` is clean (JS, pg-style gate).
 #[test]
 fn js_sql_bind_param_result_is_clean() {
     let src = br#"const { Pool } = require('pg');
@@ -10996,7 +11088,7 @@ const pool = new Pool();
 async function handler(req, res) {
   const id = req.query.id;
   const r = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
-  res.json(r.rows);
+  res.send(r.rows);
 }
 "#;
     let ts = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
@@ -11016,7 +11108,7 @@ const pool = new Pool();
 async function handler(req, res) {
   const id = req.query.id;
   const r = await pool.query('SELECT * FROM users WHERE id = ' + id);
-  res.json(r.rows);
+  res.send(r.rows);
 }
 "#;
     let ts = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);

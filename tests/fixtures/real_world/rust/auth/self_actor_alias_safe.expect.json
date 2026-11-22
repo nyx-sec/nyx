@@ -1,0 +1,21 @@
+{
+  "description": "`local_user_view.person.id` alias and a *View::read that takes the signed-in viewer scope the lookup to the caller",
+  "tags": [
+    "auth",
+    "negative",
+    "self-actor"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "evidence_contains": [],
+      "notes": "`local_user_view.person.id` alias and a *View::read that takes the signed-in viewer scope the lookup to the caller"
+    }
+  ]
+}

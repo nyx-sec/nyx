@@ -175,6 +175,14 @@ pub struct AuthCheck {
     /// `community.creator_id` doesn't blanket-suppress every other
     /// subject in the unit.
     pub is_route_level: bool,
+    /// True for a gate that is an unconditional top-level statement of the
+    /// function body and propagates failure out of the function, such as
+    /// Rust `is_admin(&user)?;`.  Every later operation in the unit runs
+    /// behind it.  Unlike `is_route_level`, it only covers operations
+    /// that follow it in the body and is honoured only for
+    /// `AuthCheckKind::AdminGuard`: an admin may act on any resource, so
+    /// the check authorizes every subject.
+    pub dominates_body: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +199,12 @@ pub struct SensitiveOperation {
     /// `Note.objects.filter(owner=request.user).update(..)`); the rest are the
     /// call's own arguments.
     pub receiver_subjects: usize,
+    /// For filter-then-update calls (`Model.findOneAndUpdate(filter, update)`,
+    /// `updateOne`, `replaceOne`, ..): the index in `subjects` where the
+    /// written documents start.  Everything from here on is a value being
+    /// stored, never a selector, so an actor id there does not scope the
+    /// query.  `None` for every other call.
+    pub payload_subjects_start: Option<usize>,
     pub span: (usize, usize),
     pub line: usize,
     pub text: String,
@@ -238,6 +252,19 @@ pub struct AnalysisUnit {
     /// fetch the row first to extract the resource id, then call
     /// `check_<resource>_<role>(&user, &row, ...)` to authorize it.
     pub row_population_data: HashMap<String, Vec<(usize, Vec<ValueRef>)>>,
+    /// Row provenance of plain locals.  Maps a local to the roots of the
+    /// expressions it was read from: `const id = res[0].id` gives `id -> [res]`,
+    /// `for _, t := range tasks` gives `t -> [tasks]`, and
+    /// `rows.map(row => ..)` gives `row -> [rows]`.  A local counts as read off
+    /// a held row only when every root does (see
+    /// `checks::is_row_derived_subject`).  A name that is also bound to
+    /// anything else is left out.
+    pub row_derived_from: HashMap<String, Vec<String>>,
+    /// Callee text of every call a row binding was fetched with, by the line of
+    /// the call.  Lets the checker tell a data fetch (`db.query(uid).findMany(..)`)
+    /// from a pure conversion (`parseInt(id)`) when the call is not itself a
+    /// modelled operation.
+    pub row_fetch_callees: HashMap<usize, Vec<String>>,
     /// Variables bound to an authenticated-user value. Populated from
     /// `let V = require_auth(..).await?` (or any call matching the
     /// configured login-guard / authorization-check names) and from
@@ -336,6 +363,14 @@ pub struct AnalysisUnit {
     pub package_names: HashSet<String>,
     /// JS/TS: whether the unit is browser code, server code, or unknown.
     pub runtime: UnitRuntime,
+    /// Python: a module-private function (`_helper`, PEP 8) that other
+    /// functions of the file call and that no route handler reaches through
+    /// those calls.  Its id-like parameters come from a non-request caller
+    /// (a task, a management command), so the parameter-name heuristic does
+    /// not make it an entry point.  A private helper with no in-file caller
+    /// may be imported elsewhere, and one a route reaches is still reported,
+    /// so neither is marked.
+    pub internal_helper: bool,
     /// Go: parameters and locals bound to the request or the framework
     /// request context (`r *http.Request`, `c *gin.Context`,
     /// `ctx *context.APIContext`, and locals copied from them).  Accessor
@@ -343,6 +378,14 @@ pub struct AnalysisUnit {
     /// `<root>.Repo.Repository.ID` style chains read the scope entity the
     /// middleware already resolved.  Empty for other languages.
     pub request_roots: HashSet<String>,
+    /// Go: locals bound to a scope entity read off the request context
+    /// (`gitRepo := ctx.Repo.GitRepo`).  A subset of `request_roots`; the
+    /// alias keeps the scope tag its right-hand side carried.
+    pub request_scope_roots: HashSet<String>,
+    /// Locals bound to a relation already confined by an authorization scope
+    /// (`scope = Project.visible`), so `scope.find(params[:id])` is a scoped
+    /// read.  Rails only, driven by `AuthAnalysisRules::authorization_scope_segments`.
+    pub authorization_scoped_vars: HashSet<String>,
 }
 
 /// Per-function summary of which positional parameters are

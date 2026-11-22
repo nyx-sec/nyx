@@ -1,0 +1,23 @@
+{
+  "description": "Only the byte count is request-chosen; the file is fixed, so the position and length arguments are not path payloads.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "netty",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        16,
+        17
+      ],
+      "notes": "fixed file"
+    }
+  ]
+}

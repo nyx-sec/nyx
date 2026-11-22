@@ -1,0 +1,22 @@
+{
+  "description": "`Settings.get(key)` on a plain class is a registry lookup, not a row read",
+  "tags": [
+    "auth",
+    "auth",
+    "negative",
+    "peewee"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "py.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "evidence_contains": [],
+      "notes": "`Settings.get(key)` on a plain class is a registry lookup, not a row read"
+    }
+  ]
+}

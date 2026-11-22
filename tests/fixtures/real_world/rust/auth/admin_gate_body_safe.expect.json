@@ -1,0 +1,21 @@
+{
+  "description": "Body-level `is_admin(&user)?;` returns early for non-admins, so the later community read and delete act on behalf of an admin",
+  "tags": [
+    "auth",
+    "negative",
+    "admin-gate"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "evidence_contains": [],
+      "notes": "Body-level `is_admin(&user)?;` returns early for non-admins, so the later community read and delete act on behalf of an admin"
+    }
+  ]
+}

@@ -7,6 +7,29 @@ use phf::{Map, phf_map};
 
 pub static RULES: &[LabelRule] = &[
     // ─────────── Sources ───────────
+    // The page's own origin components (`window.location.origin`, `.host`,
+    // ...) name the site being served, not request text the visitor
+    // chose, so a redirect built from them stays same-origin.  They remain
+    // sources for every other cap (DOM XSS, SSRF).  `pathname`, `search`,
+    // `hash` and `href` stay full sources: `//evil.com` and `?next=` reach
+    // the redirect through them.  This rule precedes the `window.location`
+    // source below so the longer spelling wins.
+    LabelRule {
+        matchers: &[
+            "window.location.origin",
+            "window.location.host",
+            "window.location.hostname",
+            "window.location.protocol",
+            "window.location.port",
+            "document.location.origin",
+            "document.location.host",
+            "document.location.hostname",
+            "document.location.protocol",
+            "document.location.port",
+        ],
+        label: DataLabel::Source(Cap::all().difference(Cap::OPEN_REDIRECT)),
+        case_sensitive: false,
+    },
     LabelRule {
         matchers: &[
             "document.location",
@@ -248,8 +271,11 @@ pub static RULES: &[LabelRule] = &[
     // written value.  Fluent chains such as `res.status(404).send(body)`
     // reach these rules through the CFG callee canonicaliser, which rewrites
     // them to `res.send`.
+    // JSON responses (`res.json`, a Koa `ctx.body` object or array literal) are
+    // not modelled as direct XSS sinks: they are sent with
+    // `Content-Type: application/json`, which browsers do not render as HTML.
     LabelRule {
-        matchers: &["res.send", "res.json"],
+        matchers: &["res.send"],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
@@ -1058,6 +1084,36 @@ pub static GATED_SINKS: &[SinkGate] = &[
     // *not* destination-bearing.
     SinkGate {
         callee_matcher: "fetch",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["url"],
+        },
+    },
+    // Nuxt / Nitro `$fetch` and `ofetch` take the same `(url, init)` shape as
+    // `fetch`; `$fetch` is not `.`-bounded so the plain `fetch` gate misses it.
+    SinkGate {
+        callee_matcher: "$fetch",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::SSRF),
+        case_sensitive: false,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &["url"],
+        },
+    },
+    SinkGate {
+        callee_matcher: "ofetch",
         arg_index: 0,
         dangerous_values: &[],
         dangerous_prefixes: &[],
@@ -1894,12 +1950,12 @@ pub static GATED_SINKS: &[SinkGate] = &[
     // The flat response rules in RULES would otherwise fall back to every
     // operand of the call, receiver included.  `res` picks up taint from a
     // field write (`res.locals.q = req.query.q`) and client code often names
-    // a fetch `Response` `res`, so a constant `res.json({ ok: true })` or a
-    // zero-arg `res.json()` was reported as XSS.  Body writers take the body
+    // a fetch `Response` `res`, so a constant `res.send("ok")` or a
+    // zero-arg `res.send()` was reported as XSS.  Body writers take the body
     // at arg 0; `res.redirect([status,] url)` and the header setters
     // (`res.set(name, value)`, `setHeader(name, value)`) take theirs at 0..1.
+    // `res.json` is intentionally absent: see the note on the `res.send` rule.
     SinkGate::payload_positions("res.send", DataLabel::Sink(Cap::HTML_ESCAPE), false, &[0]),
-    SinkGate::payload_positions("res.json", DataLabel::Sink(Cap::HTML_ESCAPE), false, &[0]),
     SinkGate::payload_positions(
         "res.redirect",
         DataLabel::Sink(Cap::OPEN_REDIRECT),
@@ -2197,6 +2253,30 @@ pub static PARAM_CONFIG: ParamConfig = ParamConfig {
 pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
     let mut rules = Vec::new();
 
+    // Astro endpoints read request data from the `APIContext` (`ctx` /
+    // `context`) or the `Astro` global.  `url.origin` and `url.host` are left
+    // out: the site's own origin is not attacker input.
+    if ctx.has(DetectedFramework::Astro) {
+        rules.push(RuntimeLabelRule {
+            matchers: [
+                "url.searchParams",
+                "url.search",
+                "url.pathname",
+                "request",
+                "params",
+            ]
+            .iter()
+            .flat_map(|leaf| {
+                ["ctx", "context", "Astro"]
+                    .iter()
+                    .map(move |root| format!("{root}.{leaf}"))
+            })
+            .collect(),
+            label: DataLabel::Source(Cap::all()),
+            case_sensitive: false,
+        });
+    }
+
     if ctx.has(DetectedFramework::Koa) {
         rules.push(RuntimeLabelRule {
             matchers: vec![
@@ -2231,7 +2311,12 @@ pub fn framework_rules(ctx: &FrameworkContext) -> Vec<RuntimeLabelRule> {
         });
         // A redirect sends the browser elsewhere: open redirect, not SSRF.
         rules.push(RuntimeLabelRule {
-            matchers: vec!["ctx.redirect".into(), "ctx.response.redirect".into()],
+            matchers: vec![
+                "ctx.redirect".into(),
+                "ctx.response.redirect".into(),
+                // Koa's own response prototype redirects through `this`.
+                "this.redirect".into(),
+            ],
             label: DataLabel::Sink(Cap::OPEN_REDIRECT),
             case_sensitive: false,
         });
@@ -2531,7 +2616,6 @@ mod tests {
         for lang in ["javascript", "typescript"] {
             for (callee, payload) in [
                 ("res.send", vec![0]),
-                ("res.json", vec![0]),
                 ("res.redirect", vec![0, 1]),
                 ("res.set", vec![0, 1]),
                 ("res.setHeader", vec![0, 1]),

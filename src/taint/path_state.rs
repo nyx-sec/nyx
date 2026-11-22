@@ -4,6 +4,9 @@
 //! validation to specific targets, so branch outcomes can validate or contradict
 //! tainted values during the SSA taint solve.
 
+pub use crate::abstract_interp::sentinel::{SentinelPolarity, sentinel_comparison_polarity};
+use crate::abstract_interp::sentinel::{is_identifier, split_single_comparison};
+
 // ─── PredicateKind ───────────────────────────────────────────────────────────
 
 /// Classification of what an if-condition tests.
@@ -80,6 +83,22 @@ pub enum PredicateKind {
     /// CVE-2020-5221 (uftpd), whose fix moved the check from the unresolved
     /// `dir` onto the `realpath()`-resolved `rpath`.
     PathPrefixConfined,
+    /// A boolean predicate whose name states that a URL is safe to redirect
+    /// to (`safe_for_redirect(x)`, `is_safe_redirect_url(x)`).  The TRUE
+    /// branch is the validated path.  Cap-aware: clears
+    /// [`crate::labels::Cap::OPEN_REDIRECT`] only, so a `*_url` guard never
+    /// vouches for SQL, shell or file sinks.  Only recognised as a plain
+    /// call that is a conjunct of the condition, since a disjunction does
+    /// not hold the predicate on its true edge.
+    RedirectValidator,
+    /// A boolean predicate whose name states that a host or address is
+    /// internal or blocked (`IsHostnameInternal(host)`, `is_private_ip(ip)`).
+    /// Inverted polarity: the TRUE branch is the reject path and the FALSE
+    /// branch is the validated one.  Cap-aware: clears
+    /// [`crate::labels::Cap::SSRF`] only.  Only recognised as a plain call
+    /// that is a disjunct of the condition, since a conjunction does not
+    /// hold the predicate false on its false edge.
+    HostDenylistRejected,
     /// Bounded-length rejection: `x.len() > N` / `x.length < N` with N >= 2.
     ///
     /// Commonly paired with `ShellMetaValidated` in OR-chain rejection
@@ -909,249 +928,6 @@ fn is_negated_indexof_membership(text: &str) -> bool {
         || compact.contains("<=-1")
 }
 
-/// How a trailing comparison against a sentinel literal changes the polarity
-/// of the predicate atom it wraps.  See [`sentinel_comparison_polarity`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SentinelPolarity {
-    /// No single top-level comparison against a sentinel literal.
-    NoComparison,
-    /// The comparison keeps the atom's polarity (`f(x) === true`,
-    /// `A.indexOf(x) !== -1`, `M[x] !== undefined`).
-    Same,
-    /// The comparison inverts it (`f(x) === false`, `f(x) is not True`,
-    /// `A.indexOf(x) === -1`, `M[x] === undefined`).
-    Flip,
-    /// A sentinel whose meaning is ambiguous for this atom
-    /// (`M[x] === false` cannot tell a missing key from a `false` value,
-    /// `A.indexOf(x) === 0`).  Callers should validate neither branch.
-    Opaque,
-}
-
-/// Classify a branch condition of the form `<atom> <op> <sentinel>` (or the
-/// Yoda form `<sentinel> <op> <atom>`), where the atom is the predicate the
-/// rest of the classifier recognises: a call (`isValid(x)`,
-/// `ALLOWED.includes(x)`, `in_array($x, $a)`), an `indexOf` result, a map
-/// lookup (`ALLOWED[x]`), or a bare identifier.
-///
-/// [`classify_condition`] classifies such text by the inner atom, so without
-/// this the TRUE edge of `ALLOWED.includes(cmd) === false` would be treated
-/// as the validated one.  A whole-condition `!( ... )` / `not ...` is
-/// peeled first because the CFG already reports it as `condition_negated`;
-/// a `!` bound to the atom alone (`!isValid(x) === true`) is folded in here.
-///
-/// Sentinels are `true`, `false`, `undefined`, `-1` and `0`, matched case
-/// insensitively (Python `True` / `False`).  `null` / `None` / `nil` are left
-/// to the null-check classifier.  Conditions with a top-level `&&` / `||`,
-/// or with more than one comparison, return
-/// [`SentinelPolarity::NoComparison`].
-pub fn sentinel_comparison_polarity(text: &str) -> SentinelPolarity {
-    use crate::abstract_interp::path_domain::{strip_leading_not, strip_outer_parens};
-
-    let mut t = strip_outer_parens(text.trim());
-    if let Some(rest) = strip_leading_not(t) {
-        let rest = rest.trim_start();
-        let python_not = !t.trim_start().starts_with('!');
-        let inner = strip_outer_parens(rest);
-        if python_not || inner.len() < rest.len() {
-            t = inner;
-        }
-    }
-
-    let Some((lhs, op, rhs)) = split_single_comparison(t) else {
-        return SentinelPolarity::NoComparison;
-    };
-    let (atom, sentinel, op) = match (sentinel_literal(rhs), sentinel_literal(lhs)) {
-        (Some(s), None) => (lhs, s, op),
-        (None, Some(s)) => (rhs, s, mirror_comparison(op)),
-        _ => return SentinelPolarity::NoComparison,
-    };
-
-    let (atom, local_not) = match atom.strip_prefix('!') {
-        Some(rest) if !rest.starts_with('=') => (rest.trim(), true),
-        _ => (atom, false),
-    };
-
-    let eq = matches!(op, "==" | "===" | "is");
-    let ne = matches!(op, "!=" | "!==" | "is not");
-    let lower_atom = atom.to_ascii_lowercase();
-
-    let base = if lower_atom.contains(".indexof(") {
-        match (op, sentinel) {
-            ("==" | "===", "-1") | ("<", "0") | ("<=", "-1") => SentinelPolarity::Flip,
-            ("!=" | "!==", "-1") | (">=", "0") | (">", "-1") => SentinelPolarity::Same,
-            _ => SentinelPolarity::Opaque,
-        }
-    } else if is_index_lookup_atom(atom) {
-        match sentinel {
-            "undefined" if eq => SentinelPolarity::Flip,
-            "undefined" if ne => SentinelPolarity::Same,
-            "true" if eq => SentinelPolarity::Same,
-            "true" if ne => SentinelPolarity::Flip,
-            _ => SentinelPolarity::Opaque,
-        }
-    } else if atom.contains('(') || is_identifier(atom) {
-        // Boolean predicate result: a call or a variable holding one.
-        // Numeric sentinels on a call (`strpos($x, "/") === 0`) belong to
-        // other idioms and are left alone.
-        match sentinel {
-            "true" if eq => SentinelPolarity::Same,
-            "true" if ne => SentinelPolarity::Flip,
-            "false" if eq => SentinelPolarity::Flip,
-            "false" if ne => SentinelPolarity::Same,
-            "undefined" if atom.contains('(') => SentinelPolarity::Opaque,
-            _ => SentinelPolarity::NoComparison,
-        }
-    } else {
-        SentinelPolarity::NoComparison
-    };
-
-    match (base, local_not) {
-        (SentinelPolarity::Flip, true) => SentinelPolarity::Same,
-        (SentinelPolarity::Same, true) => SentinelPolarity::Flip,
-        (other, _) => other,
-    }
-}
-
-/// Normalise a sentinel operand: `true` / `false` / `undefined` / `-1` /
-/// `0`, case-insensitive.  Returns `None` for anything else.
-fn sentinel_literal(operand: &str) -> Option<&'static str> {
-    let compact: String = operand.chars().filter(|c| !c.is_whitespace()).collect();
-    match compact.to_ascii_lowercase().as_str() {
-        "true" => Some("true"),
-        "false" => Some("false"),
-        "undefined" => Some("undefined"),
-        "-1" => Some("-1"),
-        "0" => Some("0"),
-        _ => None,
-    }
-}
-
-/// Swap the operand order of a comparison operator (`a < b` == `b > a`).
-fn mirror_comparison(op: &'static str) -> &'static str {
-    match op {
-        "<" => ">",
-        ">" => "<",
-        "<=" => ">=",
-        ">=" => "<=",
-        other => other,
-    }
-}
-
-/// `IDENT[IDENT]`, the map-lookup atom also accepted by
-/// [`is_index_membership_check`].
-fn is_index_lookup_atom(atom: &str) -> bool {
-    let Some(open) = atom.find('[') else {
-        return false;
-    };
-    let Some(inner) = atom[open + 1..].strip_suffix(']') else {
-        return false;
-    };
-    is_identifier(atom[..open].trim()) && is_identifier(inner.trim())
-}
-
-/// Split `text` into `(lhs, op, rhs)` when it holds exactly one comparison
-/// operator outside parens, brackets and string literals, and no top-level
-/// `&&` / `||` / `and` / `or`.  `->` and `=>` are not comparisons.
-fn split_single_comparison(text: &str) -> Option<(&str, &'static str, &str)> {
-    let bytes = text.as_bytes();
-    let mut depth: i32 = 0;
-    let mut in_quote: Option<u8> = None;
-    let mut found: Option<(usize, usize, &'static str)> = None;
-    let mut i = 0usize;
-    let word_at = |i: usize, w: &[u8]| -> bool {
-        i > 0
-            && bytes[i - 1] == b' '
-            && bytes.len() > i + w.len()
-            && bytes[i..i + w.len()].eq_ignore_ascii_case(w)
-            && bytes[i + w.len()] == b' '
-    };
-    while i < bytes.len() {
-        let b = bytes[i];
-        if let Some(q) = in_quote {
-            if b == b'\\' {
-                i += 2;
-                continue;
-            }
-            if b == q {
-                in_quote = None;
-            }
-            i += 1;
-            continue;
-        }
-        if depth == 0 {
-            if word_at(i, b"and") || word_at(i, b"or") {
-                return None;
-            }
-            let two = bytes.get(i..i + 2);
-            if two == Some(b"&&") || two == Some(b"||") {
-                return None;
-            }
-        }
-        let op: Option<(&'static str, usize)> = match b {
-            b'"' | b'\'' | b'`' => {
-                in_quote = Some(b);
-                None
-            }
-            b'(' | b'[' | b'{' => {
-                depth += 1;
-                None
-            }
-            b')' | b']' | b'}' => {
-                depth -= 1;
-                None
-            }
-            _ if depth != 0 => None,
-            b'=' | b'!' if bytes.get(i + 1) == Some(&b'=') => {
-                let strict = bytes.get(i + 2) == Some(&b'=');
-                match (b, strict) {
-                    (b'=', true) => Some(("===", 3)),
-                    (b'=', false) => Some(("==", 2)),
-                    (_, true) => Some(("!==", 3)),
-                    (_, false) => Some(("!=", 2)),
-                }
-            }
-            b'<' | b'>' => {
-                let prev = if i > 0 { bytes[i - 1] } else { b' ' };
-                if b == b'>' && (prev == b'-' || prev == b'=') {
-                    None
-                } else if bytes.get(i + 1) == Some(&b'=') {
-                    Some((if b == b'<' { "<=" } else { ">=" }, 2))
-                } else if bytes.get(i + 1) == Some(&b) {
-                    // `<<` / `>>` shifts are not comparisons; skip both bytes.
-                    i += 1;
-                    None
-                } else {
-                    Some((if b == b'<' { "<" } else { ">" }, 1))
-                }
-            }
-            b'i' | b'I' if depth == 0 && word_at(i, b"is") => {
-                if word_at(i + 3, b"not") {
-                    Some(("is not", 6))
-                } else {
-                    Some(("is", 2))
-                }
-            }
-            _ => None,
-        };
-        if let Some((op, len)) = op {
-            if found.is_some() {
-                return None;
-            }
-            found = Some((i, len, op));
-            i += len;
-            continue;
-        }
-        i += 1;
-    }
-    let (pos, len, op) = found?;
-    let lhs = text[..pos].trim();
-    let rhs = text[pos + len..].trim();
-    if lhs.is_empty() || rhs.is_empty() {
-        return None;
-    }
-    Some((lhs, op, rhs))
-}
-
 /// Value-first membership predicate free functions: `f(value, collection)`
 /// whose TRUE branch proves `value ∈ collection`.  Names are matched case- and
 /// underscore-insensitively (see [`membership_fn_leaf_normalised`]) so the PHP
@@ -1719,6 +1495,11 @@ pub fn classify_condition(text: &str) -> PredicateKind {
             return PredicateKind::ValidationCall;
         }
 
+        // Cap-scoped predicates named for what they establish.
+        if let Some((kind, _)) = scoped_predicate_call(text) {
+            return kind;
+        }
+
         // Regex / pattern allowlist `<X>.test(value)` / `<X>.match(value)` calls
         // where the receiver name carries a regex or pattern marker.  The
         // standard JS / TS / Python / Java / Ruby / Go regex APIs all expose a
@@ -1850,6 +1631,224 @@ pub fn predicate_bit_negative_form(kind: PredicateKind, text: &str) -> Option<bo
     }
 }
 
+/// Recognise a canonical open-redirect URL-safety validator callee by name.
+///
+/// These are the ecosystem-standard boolean guards that pin a redirect target
+/// to the current host / a relative URL before it is used: Django's
+/// `url_has_allowed_host_and_scheme` (and its legacy `is_safe_url` alias),
+/// Flask / Flask-AppBuilder's `is_safe_redirect_url`, and app-local helpers
+/// named `*safe*redirect*` / `*safe*url*` / `*valid*redirect*`.  Their bodies
+/// are frequently library-internal (Django's live in `django.utils.http`), so
+/// name recognition is the only available signal.  Conservative: the name must
+/// carry an explicit redirect/URL-safety token, so a generic `is_valid_email`
+/// does not match.
+pub(crate) fn is_open_redirect_validator_name(name: &str) -> bool {
+    let leaf = name.rsplit(['.', ':']).next().unwrap_or(name);
+    let l = leaf.to_ascii_lowercase();
+    l == "url_has_allowed_host_and_scheme"
+        || l == "is_safe_url"
+        || l == "url_is_safe"
+        || (l.contains("safe") && l.contains("redirect"))
+        || (l.contains("safe") && l.contains("url"))
+        || (l.contains("valid") && l.contains("redirect"))
+}
+
+/// Leading verbs of functions that return a value rather than a boolean, so
+/// a `safe`/`url` token in the rest of the name does not make them guards.
+const VALUE_PRODUCING_PREFIXES: [&str; 14] = [
+    "get_",
+    "make_",
+    "build_",
+    "create_",
+    "generate_",
+    "sanitize_",
+    "sanitise_",
+    "clean_",
+    "escape_",
+    "fix_",
+    "normalize_",
+    "normalise_",
+    "resolve_",
+    "parse_",
+];
+
+/// A boolean predicate whose name states that a redirect target is safe
+/// (`safe_for_redirect`, `is_safe_redirect_url`,
+/// `url_has_allowed_host_and_scheme`).  Narrower than
+/// [`is_open_redirect_validator_name`], which also admits helpers that return
+/// the confined URL.
+pub(crate) fn is_redirect_safety_predicate_name(leaf: &str) -> bool {
+    let snake = to_snake_lower(leaf);
+    if VALUE_PRODUCING_PREFIXES
+        .iter()
+        .any(|p| snake.starts_with(p))
+        || snake.contains("unsafe")
+        || snake.contains("not_safe")
+        || !is_open_redirect_validator_name(&snake)
+    {
+        return false;
+    }
+    // A bare `safe_url(x)` / `url_safe_quote(x)` is as likely to return an
+    // escaped or confined value (truthy for any input) as to answer a
+    // question.  Accept the known boolean names, or a name that carries a
+    // predicate verb or states the redirect target is safe.
+    matches!(
+        snake.as_str(),
+        "url_has_allowed_host_and_scheme" | "is_safe_url" | "url_is_safe"
+    ) || BOOLEAN_PREFIXES.iter().any(|p| snake.starts_with(p))
+        || snake.contains("safe_for_redirect")
+        || snake.ends_with("_is_safe")
+}
+
+/// Leading verbs that mark a function as answering a yes/no question.
+const BOOLEAN_PREFIXES: [&str; 8] = [
+    "is_",
+    "has_",
+    "check_",
+    "validate_",
+    "verify_",
+    "can_",
+    "should_",
+    "allow",
+];
+
+/// Subject nouns of a host / address denylist predicate.
+const DENYLIST_SUBJECTS: [&str; 12] = [
+    "host", "hostname", "ip", "addr", "address", "url", "uri", "domain", "remote", "target",
+    "endpoint", "server",
+];
+
+/// Property words of a host / address denylist predicate.
+const DENYLIST_PROPERTIES: [&str; 11] = [
+    "internal",
+    "private",
+    "loopback",
+    "local",
+    "reserved",
+    "blocked",
+    "blacklisted",
+    "denied",
+    "disallowed",
+    "forbidden",
+    "unsafe",
+];
+
+/// A boolean predicate whose name states that a host or address is internal
+/// or blocked: `is_` followed only by subject and property words, at least
+/// one of each (`IsHostnameInternal`, `is_private_ip`, `isInternalURL`).
+/// `is_local_file`, `isInternalUser` and `is_blocked_user` do not match: a
+/// word outside both sets means the predicate is about something else.
+fn is_host_denylist_predicate_name(leaf: &str) -> bool {
+    let snake = to_snake_lower(leaf);
+    let Some(rest) = snake.strip_prefix("is_") else {
+        return false;
+    };
+    let mut has_subject = false;
+    let mut has_property = false;
+    for word in rest.split('_') {
+        if DENYLIST_SUBJECTS.contains(&word) {
+            has_subject = true;
+        } else if DENYLIST_PROPERTIES.contains(&word) {
+            has_property = true;
+        } else if word != "link" {
+            return false;
+        }
+    }
+    has_subject && has_property
+}
+
+/// If `clause` is exactly a call `name(args)` (no leading `!` / `not`, nothing
+/// after the closing paren) whose leaf name passes `name_ok`, return the
+/// clause when its first argument is a bare identifier.
+fn plain_predicate_call(clause: &str, name_ok: fn(&str) -> bool) -> Option<String> {
+    let clause = crate::abstract_interp::path_domain::strip_outer_parens(clause.trim());
+    if !clause.ends_with(')') {
+        return None;
+    }
+    let open = clause.find('(')?;
+    let callee = clause[..open].trim();
+    if callee.is_empty()
+        || !callee
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | ':' | '$'))
+    {
+        return None;
+    }
+    let leaf = callee.rsplit(['.', ':']).next().unwrap_or(callee);
+    if !name_ok(leaf) {
+        return None;
+    }
+    // The parenthesis opened after the callee must be the one the clause ends
+    // with, so `f(a) || g(b)` is not read as one call.
+    let mut depth = 0i32;
+    for (i, b) in clause.bytes().enumerate().skip(open) {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 && i + 1 != clause.len() {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    let first = first_call_arg(&clause[open + 1..])?;
+    let first = first.strip_prefix('&').unwrap_or(first).trim();
+    // Keyword form `url=next` names the argument after `=`.
+    let first = match first.split_once('=') {
+        Some((kw, value)) if is_identifier(kw.trim()) && !value.starts_with('=') => value.trim(),
+        _ => first,
+    };
+    let first = first.strip_prefix('$').unwrap_or(first);
+    (is_identifier(first) && !first.contains('.')).then(|| first.to_string())
+}
+
+/// Recognise a scope-limited predicate call in `text`, returning its kind and
+/// the identifier it tests.
+///
+/// The call must stand alone as a clause on the edge that carries its
+/// meaning: a redirect-safety predicate as a conjunct (true edge), a host
+/// denylist predicate as a disjunct (false edge).  The one wrapper allowed
+/// around a lone call is the leading negation the CFG reports as
+/// `condition_negated`.
+fn scoped_predicate_call(text: &str) -> Option<(PredicateKind, String)> {
+    use crate::abstract_interp::path_domain::{
+        split_top_level_and, split_top_level_or, strip_leading_not, strip_outer_parens,
+    };
+    let mut t = strip_outer_parens(text.trim());
+    if !has_boolean_connective(t) {
+        while let Some(rest) = strip_leading_not(t) {
+            t = strip_outer_parens(rest.trim_start());
+        }
+    } else if let Some(rest) = strip_leading_not(t)
+        && rest.trim_start().starts_with('(')
+        && strip_outer_parens(rest.trim_start()).len() < rest.trim_start().len()
+    {
+        // `!(a || f(x))`: the whole-condition negation is the caller's.
+        t = strip_outer_parens(rest.trim_start());
+    }
+    let disjuncts = split_top_level_or(t);
+    if disjuncts.len() == 1 {
+        for clause in split_top_level_and(t) {
+            if let Some(arg) = plain_predicate_call(clause, is_redirect_safety_predicate_name) {
+                return Some((PredicateKind::RedirectValidator, arg));
+            }
+        }
+    }
+    if !crate::abstract_interp::path_domain::has_top_level_and(t) {
+        for clause in disjuncts {
+            // One argument only: with several, which one is the host is a guess.
+            if count_call_args(strip_outer_parens(clause.trim())) == Some(1)
+                && let Some(arg) = plain_predicate_call(clause, is_host_denylist_predicate_name)
+            {
+                return Some((PredicateKind::HostDenylistRejected, arg));
+            }
+        }
+    }
+    None
+}
+
 /// Classify a condition AND extract the specific validated variable target.
 ///
 /// For `ValidationCall`/`SanitizerCall`, tries to extract the first argument
@@ -1915,6 +1914,10 @@ pub fn classify_condition_with_target(text: &str) -> (PredicateKind, Option<Stri
             // Argument of the parse call: `new URL(x).host` → `x`,
             // `urlparse(x).netloc` → `x`.
             let target = extract_host_allowlist_target(text);
+            (kind, target)
+        }
+        PredicateKind::RedirectValidator | PredicateKind::HostDenylistRejected => {
+            let target = scoped_predicate_call(text).map(|(_, arg)| arg);
             (kind, target)
         }
         PredicateKind::PathPrefixConfined => {
@@ -2001,6 +2004,78 @@ fn is_comparison_literal(s: &str) -> bool {
     is_numeric_literal(s)
 }
 
+/// A comparison of a parsed URL's authority against another value:
+/// `u.host === X`, `u.hostname != X`, `u.origin == X`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UrlHostCompare {
+    /// The identifier holding the parsed URL (`u`).
+    pub subject: String,
+    /// True for `==` / `===`, false for `!=` / `!==`.
+    pub is_eq: bool,
+    /// Text of the other operand.
+    pub rhs: String,
+}
+
+/// True when the `(` at the start of `text` closes at its last byte.
+fn outer_parens_wrap(text: &str) -> bool {
+    let mut depth = 0i32;
+    for (i, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i == text.len() - 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Recognise `<ident>.host|hostname|origin <op> <expr>` as a whole condition.
+///
+/// Text only: the caller must confirm `subject` really holds a parsed URL
+/// (`const u = new URL(..)`), because `.host` on any other object is just a
+/// field comparison.  Compound conditions, a leading `!` or `(`, and a
+/// left-hand side that is not a plain `ident.accessor` return `None`.
+pub fn url_host_compare(text: &str) -> Option<UrlHostCompare> {
+    let mut text = text.trim();
+    // `if (a.host === b)` may reach us with the parentheses still on.
+    while text.starts_with('(') && text.ends_with(')') && outer_parens_wrap(text) {
+        text = text[1..text.len() - 1].trim();
+    }
+    if text.contains("&&") || text.contains("||") || text.contains('?') {
+        return None;
+    }
+    let (pos, op) = ["!==", "===", "!=", "=="]
+        .iter()
+        .filter_map(|op| text.find(op).map(|i| (i, *op)))
+        .min_by_key(|(i, op)| (*i, std::cmp::Reverse(op.len())))?;
+    let lhs = text[..pos].trim();
+    let rhs = text[pos + op.len()..].trim();
+    if rhs.is_empty() {
+        return None;
+    }
+    let (subject, accessor) = lhs.split_once('.')?;
+    if !matches!(accessor, "host" | "hostname" | "origin") {
+        return None;
+    }
+    let mut chars = subject.chars();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_' || first == '$')
+        || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    {
+        return None;
+    }
+    Some(UrlHostCompare {
+        subject: subject.to_string(),
+        is_eq: op.starts_with('=') || op == "==",
+        rhs: rhs.to_string(),
+    })
+}
+
 /// A single equality test of a bare variable against a constant literal:
 /// `dir === 'asc'`, `order != "desc"`, `$n === 5`, `'asc' == dir`.
 ///
@@ -2040,13 +2115,30 @@ pub fn equality_literal_guard(text: &str) -> Option<(String, bool)> {
         Some(rest) => (rest, true),
         None => (ident, false),
     };
-    if !is_identifier(ident) || ident.contains('.') {
+    if !is_identifier(ident) && !is_const_index_read(ident) || ident.contains('.') {
         return None;
     }
     if php_var && !strict && literal == EqLiteral::Number {
         return None;
     }
     Some((ident.to_string(), op_is_eq))
+}
+
+/// `ident[<decimal literal>]`, the spelling Go lowering uses for a
+/// constant-index element read (see [`crate::cfg::NodeInfo::elem_reads`]).
+/// Only a condition that lists the same spelling among its variables can
+/// narrow on it, which the Go CFG does and no other language does.
+fn is_const_index_read(s: &str) -> bool {
+    let Some((base, rest)) = s.split_once('[') else {
+        return false;
+    };
+    let Some(digits) = rest.strip_suffix(']') else {
+        return false;
+    };
+    is_identifier(base)
+        && !base.contains('.')
+        && !digits.is_empty()
+        && digits.bytes().all(|c| c.is_ascii_digit())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2532,14 +2624,6 @@ fn extract_type_check_target(text: &str) -> Option<String> {
     }
 
     None
-}
-
-/// Check if a string is a simple identifier (letters, digits, underscores, dots).
-fn is_identifier(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
-        && !s.starts_with(|c: char| c.is_ascii_digit())
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -3657,6 +3741,34 @@ mod tests {
         assert!(is_bounded_length_check("x.len() <= 256"));
     }
 
+    // ── UrlHostCompare ────────────────────────────────────────────────────
+
+    #[test]
+    fn url_host_compare_parses_eq_and_neq() {
+        let c = url_host_compare("url.host === this.ctx.host").unwrap();
+        assert_eq!(c.subject, "url");
+        assert!(c.is_eq);
+        assert_eq!(c.rhs, "this.ctx.host");
+        let c = url_host_compare("apiUrl.host !== new URL(apiEndPoint).host").unwrap();
+        assert_eq!(c.subject, "apiUrl");
+        assert!(!c.is_eq);
+        assert_eq!(c.rhs, "new URL(apiEndPoint).host");
+        let c = url_host_compare("(target.origin == base.origin)").unwrap();
+        assert_eq!(c.subject, "target");
+        assert!(c.is_eq);
+    }
+
+    #[test]
+    fn url_host_compare_rejects_other_shapes() {
+        assert!(url_host_compare("a.port === 80").is_none());
+        assert!(url_host_compare("a.b.host === x").is_none());
+        assert!(url_host_compare("a.host === x && ok").is_none());
+        assert!(url_host_compare("a.host === x || ok").is_none());
+        assert!(url_host_compare("!a.host").is_none());
+        assert!(url_host_compare("a.host ===").is_none());
+        assert!(url_host_compare("(a).host === x").is_none());
+    }
+
     // ── HostAllowlistValidated ────────────────────────────────────────────
 
     #[test]
@@ -4045,6 +4157,12 @@ mod ghsa_h8cj_hpmg_636v_tests {
             ("x === 'a' || y === 'b'", None),
             ("x >= 5", None),
             ("x is 'a'", None),
+            // Constant-index element reads keep their `base[idx]` spelling.
+            ("parts[1] != \"asc\"", some("parts[1]", false)),
+            ("\"asc\" == parts[10]", some("parts[10]", true)),
+            ("parts[i] == \"asc\"", None),
+            ("parts[] == \"asc\"", None),
+            ("a.b[0] == \"asc\"", None),
         ];
         for (text, want) in cases {
             assert_eq!(&equality_literal_guard(text), want, "{text}");
@@ -4090,6 +4208,76 @@ mod ghsa_h8cj_hpmg_636v_tests {
         ];
         for (text, want) in cases {
             assert_eq!(sentinel_comparison_polarity(text), want, "{text}");
+        }
+    }
+    // ── RedirectValidator / HostDenylistRejected ─────────────────────────
+
+    #[test]
+    fn redirect_safety_predicate_is_a_scoped_kind() {
+        for (text, arg) in [
+            ("safe_for_redirect(redirect_url)", "redirect_url"),
+            (
+                "redirect_url and safe_for_redirect(redirect_url)",
+                "redirect_url",
+            ),
+            ("next && safeForRedirect(next)", "next"),
+            ("not safe_for_redirect(u)", "u"),
+        ] {
+            let (kind, target) = classify_condition_with_target(text);
+            assert_eq!(kind, PredicateKind::RedirectValidator, "{text}");
+            assert_eq!(target.as_deref(), Some(arg), "{text}");
+        }
+        // Names that do not state redirect safety, helpers that return a
+        // value, and a predicate that is only one arm of a disjunction.
+        for text in [
+            "is_valid_email(x)",
+            "get_safe_redirect_url(x)",
+            "make_safe_url(x)",
+            "x or safe_for_redirect(x)",
+            "safe_for_redirect(x) || other",
+            "safe_for_redirect(a.b)",
+            "is_unsafe_redirect(x)",
+            "safe_url(x)",
+            "url_safe_quote(x)",
+        ] {
+            assert_ne!(
+                classify_condition(text),
+                PredicateKind::RedirectValidator,
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_denylist_predicate_is_a_scoped_kind() {
+        for (text, arg) in [
+            ("IsHostnameInternal(host)", "host"),
+            ("(IsHostnameInternal(host))", "host"),
+            ("!IsHostnameInternal(host)", "host"),
+            ("is_private_ip(ip)", "ip"),
+            ("isInternalURL(u)", "u"),
+            ("blocked || IsHostnameInternal(host)", "host"),
+            ("utils.IsHostnameInternal(host)", "host"),
+        ] {
+            let (kind, target) = classify_condition_with_target(text);
+            assert_eq!(kind, PredicateKind::HostDenylistRejected, "{text}");
+            assert_eq!(target.as_deref(), Some(arg), "{text}");
+        }
+        for text in [
+            "is_local_file(path)",
+            "isInternalUser(u)",
+            "is_blocked_user(u)",
+            "IsHostnameInternal(a, b)",
+            "ok && IsHostnameInternal(host)",
+            "IsHostnameInternal(host) && ok",
+            "isPrivate(x)",
+            "IsHostnameInternal(a.b)",
+        ] {
+            assert_ne!(
+                classify_condition(text),
+                PredicateKind::HostDenylistRejected,
+                "{text}"
+            );
         }
     }
 }

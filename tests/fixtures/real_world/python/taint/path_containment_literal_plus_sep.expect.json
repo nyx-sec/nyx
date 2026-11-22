@@ -1,0 +1,9 @@
+{
+  "description": "A root written as a literal plus a separator is a directory prefix; a bare literal still admits a sibling directory.",
+  "tags": ["taint", "path-traversal", "sibling-prefix", "path-guard"],
+  "modes": ["full"],
+  "expected": [
+    {"rule_id": "taint-unsanitised-flow", "must_not_match": true, "line_range": [15, 16], "notes": "separator appended at the test"},
+    {"rule_id": "taint-unsanitised-flow", "must_match": true, "line_range": [24, 24], "notes": "sibling directory shares the prefix"}
+  ]
+}

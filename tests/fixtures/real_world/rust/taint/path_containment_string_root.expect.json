@@ -1,0 +1,60 @@
+{
+  "description": "A string prefix test is byte-wise so a bare root admits a sibling directory; Path::starts_with compares components and is exact; == false moves the locked edge.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "sibling-prefix",
+    "path-guard",
+    "sentinel-comparison"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        14,
+        14
+      ],
+      "notes": "Path::starts_with compares components"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        24,
+        24
+      ],
+      "notes": "/srv/files-backup starts with the root"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        34,
+        34
+      ],
+      "notes": "root ends with a separator"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        44,
+        44
+      ],
+      "notes": "reached only when the test is true"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        52,
+        52
+      ],
+      "notes": "the path is outside the root here"
+    }
+  ]
+}

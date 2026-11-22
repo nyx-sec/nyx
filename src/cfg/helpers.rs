@@ -134,6 +134,15 @@ pub(crate) fn node_str<'c>(n: Node<'_>, code: &'c [u8]) -> Option<&'c str> {
     slice_str(code, n.start_byte(), n.end_byte())
 }
 
+/// Receiver-call segments [`root_receiver_text`] keeps in a chain's root text.
+fn is_preserved_chain_segment(lang: &str, segment: &str) -> bool {
+    match lang {
+        "java" => segment == "getClass",
+        "ruby" => matches!(segment, "connection" | "lease_connection"),
+        _ => false,
+    }
+}
+
 /// Walk through chained calls / member accesses to find the root receiver.
 ///
 /// For `Runtime.getRuntime().exec(cmd)`, the receiver of `exec` is the call
@@ -149,10 +158,29 @@ pub(crate) fn root_receiver_text(n: Node, lang: &str, code: &[u8]) -> Option<Str
                 .child_by_field_name("object")
                 .or_else(|| n.child_by_field_name("receiver"))
                 .or_else(|| n.child_by_field_name("function"));
-            match inner {
+            let root = match inner {
                 Some(child) => root_receiver_text(child, lang, code),
-                None => text_of(n, code),
+                None => return text_of(n, code),
+            };
+            // Keep the one accessor segment that names what the next method
+            // runs on, so `obj.getClass().<accessor>()` does not collapse to
+            // `obj.<accessor>` (a user method to
+            // `is_safe_string_producing_callee`) and
+            // `ActiveRecord::Base.connection.execute(q)` does not collapse to
+            // `ActiveRecord::Base.execute`, which the `connection.execute`
+            // SQL sink could never match.
+            if matches!(lang, "java" | "ruby")
+                && lookup(lang, n.kind()) == Kind::CallMethod
+                && let Some(root) = root.as_deref()
+                && let Some(method) = n
+                    .child_by_field_name("method")
+                    .or_else(|| n.child_by_field_name("name"))
+                    .and_then(|f| text_of(f, code))
+                && is_preserved_chain_segment(lang, &method)
+            {
+                return Some(format!("{root}.{method}"));
             }
+            root
         }
         // PHP `variable_name` text carries a leading `$` (`$smarty`, `$twig`).
         // Strip it so chain text built downstream (`{recv}.{method}`) presents
@@ -219,12 +247,74 @@ pub(crate) fn root_member_receiver(n: Node, code: &[u8]) -> Option<String> {
 /// [`js_canonical_callee`] first; every other case is the node's source
 /// text.
 pub(crate) fn call_fn_callee_text(func: Node, lang: &str, code: &[u8]) -> Option<String> {
-    if matches!(lang, "javascript" | "typescript" | "tsx")
-        && let Some(canonical) = js_canonical_callee(func, code)
-    {
-        return Some(canonical);
+    if matches!(lang, "javascript" | "typescript" | "tsx") {
+        let text = js_canonical_callee(func, code).or_else(|| text_of(func, code))?;
+        return Some(js_json_call_as_send(func, text, code));
     }
     text_of(func, code)
+}
+
+/// `res.json(x)` is not an XSS sink because it is sent as
+/// `application/json`.  When the enclosing function also sets an HTML
+/// content type, the body is rendered as markup, so the call is named
+/// `res.send` and the `res.send` sink rule applies to it.  Only callees that
+/// end in `.json` pay for the scope check.
+fn js_json_call_as_send(func: Node, text: String, code: &[u8]) -> String {
+    match text.strip_suffix(".json") {
+        Some(root) if !root.is_empty() && scope_sets_html_content_type(func, code) => {
+            format!("{root}.send")
+        }
+        _ => text,
+    }
+}
+
+/// True when the function enclosing `node` (or the whole file at top level)
+/// sets an HTML content type: a `text/html` or `xhtml` literal, or a
+/// `type('html')` / `type = 'html'` style call or assignment.  A content type
+/// set in a different function (middleware) is not seen, so the JSON
+/// response there stays exempt.
+pub(crate) fn scope_sets_html_content_type(node: Node, code: &[u8]) -> bool {
+    let mut cur = node;
+    while let Some(parent) = cur.parent() {
+        cur = parent;
+        if matches!(
+            cur.kind(),
+            "function_declaration"
+                | "function_expression"
+                | "function"
+                | "arrow_function"
+                | "method_definition"
+                | "generator_function_declaration"
+                | "generator_function"
+        ) {
+            break;
+        }
+    }
+    let Some(src) = code.get(cur.start_byte()..cur.end_byte()) else {
+        return false;
+    };
+    let lower = src.to_ascii_lowercase();
+    if find_bytes(&lower, b"text/html").is_some() || find_bytes(&lower, b"xhtml").is_some() {
+        return true;
+    }
+    // A quoted `html` argument or value shortly after a `type` word.
+    for quote in *b"'\"`" {
+        let needle = [quote, b'h', b't', b'm', b'l', quote];
+        let mut from = 0;
+        while let Some(i) = find_bytes(&lower[from..], &needle) {
+            let at = from + i;
+            let window = &lower[at.saturating_sub(24)..at];
+            if find_bytes(window, b"type").is_some() {
+                return true;
+            }
+            from = at + 1;
+        }
+    }
+    false
+}
+
+fn find_bytes(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 /// Canonical callee text for a JS/TS member call whose raw source text hides
@@ -487,7 +577,7 @@ pub(crate) fn call_ident_at_or_under<'a>(
 }
 
 /// Callee identifier and byte span of the call / method / macro node `c`.
-fn call_node_ident_with_span<'a>(
+pub(super) fn call_node_ident_with_span<'a>(
     c: Node<'a>,
     lang: &str,
     code: &'a [u8],
@@ -810,20 +900,52 @@ pub(crate) fn find_inner_gated_sink_call<'a>(
 
 /// Build the dot-joined text of a member_expression / attribute / selector_expression.
 /// E.g. for `process.env.CMD` this returns `"process.env.CMD"`.
-/// Field paths are capped at 3 segments (2 dots) to bound state size.
+/// Field paths are capped at 3 segments (2 dots) to bound state size.  Use
+/// [`member_expr_text_full`] when the text only feeds label classification.
 pub(crate) fn member_expr_text(n: Node, code: &[u8]) -> Option<String> {
-    let path = member_expr_text_inner(n, code)?;
-    // Depth limit: keep at most 3 segments (2 dots)
+    let mut path = member_expr_text_inner(n, code)?;
+    path.truncate(capped_path_len(&path));
+    Some(path)
+}
+
+/// Byte length of `path` once capped at 3 segments (2 dots).
+fn capped_path_len(path: &str) -> usize {
     let mut dots = 0;
     for (i, c) in path.char_indices() {
         if c == '.' {
             dots += 1;
-        }
-        if dots >= 3 {
-            return Some(path[..i].to_string());
+            if dots >= 3 {
+                return i;
+            }
         }
     }
-    Some(path)
+    path.len()
+}
+
+/// Whether a Source match on a member path longer than the 3-segment cap may
+/// stand.  Short paths always may.  A longer path is a request chain only when
+/// it hangs off a receiver that conventionally carries the request (`ctx`,
+/// `event`, `this`, ...): `ctx.node.req.url` is, `cfg.x.y.req.url` or a local
+/// object literal `o.a.b.req.url` is merely a path that ends in `req.url`.
+pub(crate) fn long_source_path_ok(path: &str) -> bool {
+    if path.bytes().filter(|&b| b == b'.').count() < 3 {
+        return true;
+    }
+    let root = path.split('.').next().unwrap_or("");
+    [
+        "ctx", "context", "event", "evt", "this", "req", "request", "c",
+    ]
+    .iter()
+    .any(|r| root.eq_ignore_ascii_case(r))
+}
+
+/// Like [`member_expr_text`] but without the 3-segment cap.  Label rules are
+/// suffix-anchored on `.`, so classifying the untruncated path adds matches
+/// for sources spelled with a longer receiver chain (`ctx.node.req.url`,
+/// `ctx.url.searchParams`).  Callers use it for Source matching only;
+/// variable-name state and sink matching keep the capped form.
+pub(crate) fn member_expr_text_full(n: Node, code: &[u8]) -> Option<String> {
+    member_expr_text_inner(n, code)
 }
 
 pub(crate) fn member_expr_text_inner(n: Node, code: &[u8]) -> Option<String> {
@@ -898,7 +1020,7 @@ pub(crate) fn first_member_label(
 ) -> Option<DataLabel> {
     match n.kind() {
         "member_expression" | "attribute" | "selector_expression" => {
-            if let Some(full) = member_expr_text(n, code) {
+            if let Some(full) = member_expr_text_full(n, code) {
                 // Try the full text first, then progressively strip the last segment
                 // to match rules like "process.env" from "process.env.CMD".
                 //
@@ -912,15 +1034,24 @@ pub(crate) fn first_member_label(
                 // accept any label on a full-text match (the behaviour callers
                 // already depend on for Source/Sink labels alike), but only
                 // accept Source labels after segment stripping.
+                //
+                // `full` is the untruncated path so a source with a long
+                // receiver chain (`ctx.node.req.url`) still matches its
+                // `req.url` suffix.  Sinks and sanitizers keep matching only
+                // on the 3-segment capped text they always saw: a longer path
+                // such as `global.strapi.db.query` would otherwise start to
+                // classify as `db.query`.
+                let capped_len = capped_path_len(&full);
                 let mut candidate = full.as_str();
-                let mut first = true;
                 loop {
                     if let Some(lbl) = classify(lang, candidate, extra_labels) {
-                        if first || matches!(lbl, DataLabel::Source(_)) {
+                        if candidate.len() == capped_len
+                            || (matches!(lbl, DataLabel::Source(_))
+                                && long_source_path_ok(candidate))
+                        {
                             return Some(lbl);
                         }
                     }
-                    first = false;
                     match candidate.rsplit_once('.') {
                         Some((prefix, _)) => candidate = prefix,
                         None => break,
@@ -967,13 +1098,42 @@ pub(crate) fn first_member_label(
         }
         _ => {}
     }
+    // The target of an assignment is written, not read.  A Source label on
+    // it (`req.path = '/x'`, `req.headers[k] = v`) must not become the
+    // node's label; a Sink label (`el.innerHTML = x`) is still meaningful.
+    let assign_target = if matches!(lookup(lang, n.kind()), Kind::Assignment) {
+        n.child_by_field_name("left").map(|l| l.id())
+    } else {
+        None
+    };
     let mut cursor = n.walk();
+    // A node carries one source label.  A source that omits some caps (the
+    // page's own origin parts, which are not redirect input) must not hide a
+    // full source later in the same expression, so keep scanning and union
+    // the caps of every source seen.
+    let mut partial: Option<crate::labels::Cap> = None;
     for child in n.children(&mut cursor) {
-        if let Some(lbl) = first_member_label(child, lang, code, extra_labels) {
-            return Some(lbl);
+        let lbl = first_member_label(child, lang, code, extra_labels);
+        if assign_target == Some(child.id()) && !matches!(lbl, Some(DataLabel::Sink(_))) {
+            continue;
+        }
+        match lbl {
+            Some(DataLabel::Source(c)) if c != crate::labels::Cap::all() => {
+                partial = Some(partial.map_or(c, |p| p | c));
+            }
+            Some(DataLabel::Source(c)) => {
+                return Some(DataLabel::Source(partial.map_or(c, |p| p | c)));
+            }
+            Some(other) => {
+                return match partial {
+                    Some(p) => Some(DataLabel::Source(p)),
+                    None => Some(other),
+                };
+            }
+            None => {}
         }
     }
-    None
+    partial.map(DataLabel::Source)
 }
 
 /// Locate the inner sink CALL node whose `Sink` label [`first_member_label`]
@@ -1051,10 +1211,85 @@ pub(crate) fn first_callback_sink_call<'a>(
     walk(n, lang, code, extra_labels, false)
 }
 
+/// Every call in `n` whose callee is a member expression that classifies as a
+/// `Sink`, when that is the only way the statement mentions such a sink.
+///
+/// Returns `None` as soon as a sink-classifying member expression is not the
+/// callee of a call (a bare reference, an assignment target), because no call
+/// provenance describes it.  The callee test uses the same full-text
+/// classification [`first_member_label`] applies to a member expression, so a
+/// `Sink` label hoisted from a member expression always has its call listed.
+/// Function-literal bodies are walked too: a nested constant sink must not hide
+/// a tainted one in a callback, and the caller keeps the first non-constant
+/// call.
+pub(crate) fn nested_member_sink_calls<'a>(
+    n: Node<'a>,
+    lang: &str,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+) -> Option<Vec<Node<'a>>> {
+    let mut calls = Vec::new();
+    let mut stack = vec![n];
+    while let Some(cur) = stack.pop() {
+        if matches!(
+            cur.kind(),
+            "member_expression" | "attribute" | "selector_expression"
+        ) && let Some(full) = member_expr_text(cur, code)
+            && matches!(classify(lang, &full, extra), Some(DataLabel::Sink(_)))
+        {
+            let call = cur.parent().filter(|p| {
+                matches!(lookup(lang, p.kind()), Kind::CallFn | Kind::CallMethod)
+                    && p.child_by_field_name("function").map(|f| f.id()) == Some(cur.id())
+            })?;
+            calls.push(call);
+        }
+        // A call through a bare identifier may be an alias of a sink
+        // (`const lit = Sequelize.literal; lit(q)`).  It is only provably
+        // harmless when every argument is a literal.
+        if matches!(lookup(lang, cur.kind()), Kind::CallFn)
+            && cur
+                .child_by_field_name("function")
+                .is_some_and(|f| f.kind() == "identifier")
+            && let Some(args) = cur.child_by_field_name("arguments")
+        {
+            let mut ac = args.walk();
+            let all_literal = args.named_children(&mut ac).all(|a| match a.kind() {
+                "string" | "number" | "true" | "false" | "null" => true,
+                "template_string" => {
+                    let mut tc = a.walk();
+                    !a.named_children(&mut tc)
+                        .any(|c| c.kind() == "template_substitution")
+                }
+                _ => false,
+            });
+            if !all_literal {
+                return None;
+            }
+        }
+        let mut cursor = cur.walk();
+        for child in cur.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
+    // Source order, so the recorded call is deterministic.
+    calls.sort_by_key(|c| c.start_byte());
+    calls.dedup_by_key(|c| c.id());
+    Some(calls)
+}
+
 /// Return the text of the first member expression found in `n`.
-pub(crate) fn first_member_text(n: Node, code: &[u8]) -> Option<String> {
+///
+/// `full` keeps the untruncated path; pass it only for a node whose label is a
+/// Source (see [`member_expr_text_full`]).
+pub(crate) fn first_member_text(n: Node, code: &[u8], full: bool) -> Option<String> {
     match n.kind() {
-        "member_expression" | "attribute" | "selector_expression" => member_expr_text(n, code),
+        "member_expression" | "attribute" | "selector_expression" => {
+            if full {
+                member_expr_text_full(n, code)
+            } else {
+                member_expr_text(n, code)
+            }
+        }
         "subscript_expression" | "subscript" | "element_reference" => n
             .child_by_field_name("object")
             .or_else(|| n.child_by_field_name("value"))
@@ -1063,7 +1298,7 @@ pub(crate) fn first_member_text(n: Node, code: &[u8]) -> Option<String> {
         _ => {
             let mut cursor = n.walk();
             for child in n.children(&mut cursor) {
-                if let Some(t) = first_member_text(child, code) {
+                if let Some(t) = first_member_text(child, code, full) {
                     return Some(t);
                 }
             }
@@ -1491,6 +1726,18 @@ pub(crate) fn control_header_expr<'a>(ast: Node<'a>, lang: &str) -> Option<Heade
     if matches!(ast.kind(), "elif_clause" | "else_if_clause") {
         return cond(ast.child_by_field_name("condition"));
     }
+    // A C / C++ short-circuit operand that assigns, `(x = getenv("V")) == NULL`
+    // in `if (a || (x = getenv("V")) == NULL)`, is lowered as a branch node of
+    // its own and evaluates like a condition header.
+    if matches!(lang, "c" | "cpp")
+        && matches!(
+            ast.kind(),
+            "binary_expression" | "parenthesized_expression" | "unary_expression"
+        )
+        && super::literals::condition_assignment(ast).is_some()
+    {
+        return Some(HeaderExpr::Condition(ast));
+    }
     match lookup(lang, ast.kind()) {
         Kind::If | Kind::While => cond(find_condition_subtree(ast, lang)),
         Kind::For => {
@@ -1555,6 +1802,7 @@ pub(crate) fn collect_idents_with_paths(
                 idents.push(txt.trim_start_matches('$').to_string());
             }
         }
+        "block_argument" => {}
         _ => {
             let mut c = n.walk();
             for ch in n.children(&mut c) {
@@ -2024,6 +2272,9 @@ pub(crate) fn collect_idents(n: Node, code: &[u8], out: &mut Vec<String>) {
                 out.push(txt.trim_start_matches('$').to_string());
             }
         }
+        // Ruby `&blk` passes a block, not a value: it is neither a positional
+        // argument nor a data operand of the call.
+        "block_argument" => {}
         _ => {
             let mut c = n.walk();
             for ch in n.children(&mut c) {
@@ -2216,6 +2467,20 @@ fn return_escape_walk(n: Node, lang: &str, code: &[u8], out: &mut ReturnEscapes,
                     return_escape_walk(last, lang, code, out, depth + 1);
                 }
             }
+        }
+        // C++ `return this;` / `return *this;`: the receiver itself escapes.
+        // Recorded as the pseudo-variable `this` so a summary can tell a
+        // fluent method (`Builder &host(const char *h) { h_ = h; return *this; }`)
+        // from one that returns an unrelated value.
+        "this" if lang == "cpp" => out.idents.push("this".to_string()),
+        "pointer_expression" | "unary_expression"
+            if lang == "cpp"
+                && n.child_by_field_name("operator")
+                    .is_some_and(|op| op.kind() == "*")
+                && n.child_by_field_name("argument")
+                    .is_some_and(|a| a.kind() == "this") =>
+        {
+            out.idents.push("this".to_string());
         }
         // Address-of / casts / type assertions: the operand escapes.
         "unary_expression" | "pointer_expression" | "reference_expression" => {
@@ -2514,4 +2779,226 @@ mod callback_sink_tests {
             first_callback_sink_call(tree.root_node(), "javascript", &code[..], None).is_none()
         );
     }
+}
+
+/// A PHP output language construct: `echo a, b;`, `print a;` and the short
+/// tag form `<?= a ?>`. None of these has an `arguments` field, so their
+/// operands are direct children rather than call arguments.
+pub(crate) struct PhpOutputConstruct<'a> {
+    /// Callee name the construct classifies under (`echo` or `print`).
+    pub keyword: &'static str,
+    /// Byte span of the keyword token (the `<?=` tag for the short form).
+    pub keyword_span: (usize, usize),
+    /// The expression operand (a `sequence_expression` for `echo a, b`).
+    pub operand: Node<'a>,
+}
+
+/// Recognise a PHP output construct at statement level. `ast` is the
+/// `echo_statement` or the `expression_statement` wrapping a `print` or a
+/// `<?=` expression.
+pub(crate) fn php_output_construct<'a>(
+    ast: Node<'a>,
+    code: &[u8],
+) -> Option<PhpOutputConstruct<'a>> {
+    match ast.kind() {
+        "echo_statement" => {
+            let mut cursor = ast.walk();
+            let kw = ast.children(&mut cursor).next()?;
+            let operand = ast
+                .named_children(&mut ast.walk())
+                .find(|c| c.kind() != "comment")?;
+            (kw.child_count() == 0 && kw.id() != operand.id()).then_some(PhpOutputConstruct {
+                keyword: "echo",
+                keyword_span: (kw.start_byte(), kw.end_byte()),
+                operand,
+            })
+        }
+        "expression_statement" => {
+            let inner = ast.named_child(0)?;
+            if inner.kind() == "print_intrinsic" {
+                let kw = inner.child(0)?;
+                let operand = inner.named_child(0).filter(|o| o.id() != kw.id())?;
+                return Some(PhpOutputConstruct {
+                    keyword: "print",
+                    keyword_span: (kw.start_byte(), kw.end_byte()),
+                    operand,
+                });
+            }
+            // `<?=` is the trailing `php_tag` of the `text_interpolation`
+            // extra that precedes the expression.
+            let prev = ast.prev_sibling()?;
+            let tag = match prev.kind() {
+                "php_tag" => prev,
+                "text_interpolation" => prev.child((prev.child_count().checked_sub(1)?) as u32)?,
+                _ => return None,
+            };
+            (tag.kind() == "php_tag" && code.get(tag.start_byte()..tag.end_byte()) == Some(b"<?="))
+                .then_some(PhpOutputConstruct {
+                    keyword: "echo",
+                    keyword_span: (tag.start_byte(), tag.end_byte()),
+                    operand: inner,
+                })
+        }
+        _ => None,
+    }
+}
+
+/// Source labels read directly by an output operand, as `(label, member text,
+/// span)`. Walks only value-preserving shapes (sequence, concatenation,
+/// parentheses, `@`, string interpolation) and never enters a call or a cast,
+/// so a source wrapped in a sanitiser or an integer cast is not reported here.
+pub(crate) fn php_direct_operand_sources<'a>(
+    operand: Node<'a>,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+    out: &mut Vec<(DataLabel, Option<String>, (usize, usize))>,
+) {
+    match operand.kind() {
+        "sequence_expression"
+        | "parenthesized_expression"
+        | "error_suppression_expression"
+        | "encapsed_string" => {
+            let mut cursor = operand.walk();
+            for c in operand.named_children(&mut cursor) {
+                php_direct_operand_sources(c, code, extra, out);
+            }
+        }
+        "conditional_expression" => {
+            // The condition is only a value in the short form `a ?: b`.
+            let body = operand.child_by_field_name("body");
+            if body.is_none() {
+                if let Some(c) = operand.child_by_field_name("condition") {
+                    php_direct_operand_sources(c, code, extra, out);
+                }
+            }
+            for f in ["body", "alternative"] {
+                if let Some(c) = operand.child_by_field_name(f) {
+                    php_direct_operand_sources(c, code, extra, out);
+                }
+            }
+        }
+        "binary_expression" => {
+            let is_value_join = operand
+                .child_by_field_name("operator")
+                .is_some_and(|op| matches!(op.kind(), "." | "??"));
+            if is_value_join {
+                let mut cursor = operand.walk();
+                for c in operand.named_children(&mut cursor) {
+                    php_direct_operand_sources(c, code, extra, out);
+                }
+            }
+        }
+        "subscript_expression" | "member_access_expression" | "variable_name" => {
+            if let Some(lbl @ DataLabel::Source(_)) =
+                first_member_label(operand, "php", code, extra)
+            {
+                out.push((
+                    lbl,
+                    first_member_text(operand, code, true),
+                    (operand.start_byte(), operand.end_byte()),
+                ));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Variable names an output operand prints, leaving out `isset(..)` / `empty(..)`
+/// tests that only choose a branch (`echo isset($a) ? $b : ''`).
+pub(crate) fn php_output_value_uses(operand: Node, code: &[u8], out: &mut Vec<String>) {
+    match operand.kind() {
+        "conditional_expression"
+        | "binary_expression"
+        | "parenthesized_expression"
+        | "sequence_expression"
+        | "error_suppression_expression" => {
+            let mut cursor = operand.walk();
+            for c in operand.named_children(&mut cursor) {
+                php_output_value_uses(c, code, out);
+            }
+        }
+        "function_call_expression"
+            if operand
+                .child_by_field_name("function")
+                .and_then(|f| text_of(f, code))
+                .is_some_and(|f| matches!(f.as_str(), "isset" | "empty")) => {}
+        _ => {
+            let mut paths = Vec::new();
+            collect_idents_with_paths(operand, code, out, &mut paths);
+        }
+    }
+}
+
+/// Identity of a C / C++ function body: source buffer address and length,
+/// byte range, and a hash of the body's first and last bytes, so a later
+/// file whose buffer reuses the same address cannot hit a stale entry.
+type CFunctionKey = (usize, usize, usize, usize, u64);
+
+thread_local! {
+    /// Declared (non-function) names of the C / C++ function last asked
+    /// about, keyed by [`CFunctionKey`].
+    static C_DECLARED_NAMES: std::cell::RefCell<Option<(CFunctionKey, std::collections::HashSet<String>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether a C / C++ call `name(..)` goes through a variable or parameter
+/// named `name` declared in the enclosing function (a function pointer),
+/// rather than naming a function.
+pub(super) fn c_callee_is_local_pointer(call: Node<'_>, name: &str, code: &[u8]) -> bool {
+    if call.kind() != "call_expression" {
+        return false;
+    }
+    let Some(f) = call.child_by_field_name("function") else {
+        return false;
+    };
+    if f.kind() != "identifier" {
+        return false;
+    }
+    let mut func = call;
+    while func.kind() != "function_definition" {
+        match func.parent() {
+            Some(p) => func = p,
+            None => return false,
+        }
+    }
+    let body = code
+        .get(func.start_byte()..func.end_byte())
+        .unwrap_or_default();
+    let edge_hash = {
+        use std::hash::{Hash, Hasher};
+        let mut h = rustc_hash::FxHasher::default();
+        body[..body.len().min(64)].hash(&mut h);
+        body[body.len().saturating_sub(64)..].hash(&mut h);
+        h.finish()
+    };
+    let key: CFunctionKey = (
+        code.as_ptr() as usize,
+        code.len(),
+        func.start_byte(),
+        func.end_byte(),
+        edge_hash,
+    );
+    C_DECLARED_NAMES.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.as_ref().is_none_or(|(k, _)| *k != key) {
+            let mut names = std::collections::HashSet::new();
+            let mut stack = vec![func];
+            while let Some(n) = stack.pop() {
+                if n.kind() == "identifier"
+                    && let Some(p) = n.parent()
+                    && p.kind().ends_with("declarator")
+                    && p.kind() != "function_declarator"
+                    && let Ok(t) = n.utf8_text(code)
+                {
+                    names.insert(t.to_string());
+                }
+                let mut c = n.walk();
+                for ch in n.children(&mut c) {
+                    stack.push(ch);
+                }
+            }
+            *slot = Some((key, names));
+        }
+        slot.as_ref().is_some_and(|(_, names)| names.contains(name))
+    })
 }

@@ -1,0 +1,27 @@
+{
+  "description": "Nitro handler with a host check on the parsed URL before $fetch: clean.",
+  "tags": [
+    "taint",
+    "ssrf",
+    "nuxt",
+    "host-compare"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow",
+    "taint-open-redirect"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "notes": "apiUrl keeps the trusted host"
+    }
+  ]
+}

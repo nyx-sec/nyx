@@ -1,0 +1,23 @@
+{
+  "description": "`toAbsolutePath()` alone keeps `..` segments, so a startsWith guard on it does not confine the file.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "pathfact",
+    "path-view"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        19,
+        19
+      ],
+      "notes": "no normalize in the view chain"
+    }
+  ]
+}

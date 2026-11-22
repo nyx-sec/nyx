@@ -1,0 +1,46 @@
+{
+  "description": "A field is a request source only when its declared type is a request type and the formal's type is the struct declaring it: a field of another type, a same-named field on another struct, and an inner formal that shadows the outer one stay clean.",
+  "tags": [
+    "taint",
+    "go",
+    "cmdi",
+    "request-type",
+    "struct-field",
+    "negative"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        34,
+        34
+      ],
+      "must_not_match": true,
+      "notes": "job.Req is a *LoadRequest"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        39,
+        39
+      ],
+      "must_not_match": true,
+      "notes": "Other.Req is a Tag, not a request"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        46,
+        46
+      ],
+      "must_not_match": true,
+      "notes": "the closure formal ctx is an *Other"
+    }
+  ]
+}

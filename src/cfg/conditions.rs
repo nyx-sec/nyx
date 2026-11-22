@@ -279,6 +279,12 @@ pub(super) fn push_condition_node<'a>(
     vars.sort();
     vars.dedup();
     vars.truncate(MAX_COND_VARS);
+    let elem_reads = if lang == "go" {
+        super::go_const_index_reads(inner, code)
+    } else {
+        Vec::new()
+    };
+    vars.extend(elem_reads.iter().map(|e| e.to_string()));
     let text = text_of(cond_ast, code)
         .map(|t| truncate_at_char_boundary(&t, MAX_CONDITION_TEXT_LEN).to_string());
     let span = (cond_ast.start_byte(), cond_ast.end_byte());
@@ -321,11 +327,22 @@ pub(super) fn push_condition_node<'a>(
         info.ast.enclosing_func = enclosing_func.map(|s| s.to_string());
         info.condition_text = text;
         info.condition_vars = vars;
+        info.elem_reads = elem_reads;
         info.condition_negated = negated;
         info.null_check = extract_null_check(cond_ast, lang, code);
         // Union the condition idents into `taint.uses` so branch-predicate
         // lookup keeps working without clobbering the call's own arg uses.
+        // The target of a C / C++ condition assignment is overwritten here,
+        // so it is not a read of the node.
+        let overwritten = if matches!(lang, "c" | "cpp") {
+            info.taint.defines.clone()
+        } else {
+            None
+        };
         for v in &uses_for_taint {
+            if overwritten.as_deref() == Some(v.as_str()) {
+                continue;
+            }
             if !info.taint.uses.contains(v) {
                 info.taint.uses.push(v.clone());
             }
@@ -341,6 +358,7 @@ pub(super) fn push_condition_node<'a>(
         },
         condition_text: text,
         condition_vars: vars,
+        elem_reads,
         condition_negated: negated,
         null_check: extract_null_check(cond_ast, lang, code),
         taint: crate::cfg::TaintMeta {

@@ -1,0 +1,49 @@
+{
+  "description": "\"/\" followed by a path whose first character cannot be '/' or '\\' stays on the origin: Trim and TrimLeft with both separators and the URL-parser-dropped characters in the cutset, and a backslash rewrite followed by Trim of '/', including through fmt.Sprintf.",
+  "tags": [
+    "taint",
+    "go",
+    "open-redirect",
+    "string-domain",
+    "negative"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-open-redirect",
+    "cfg-unguarded-sink"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "line_range": [
+        14,
+        14
+      ],
+      "must_not_match": true,
+      "notes": "cutset \"/\\\\\" removes both separators from the front"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "line_range": [
+        21,
+        21
+      ],
+      "must_not_match": true,
+      "notes": "TrimLeft through an intermediate name"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "line_range": [
+        32,
+        32
+      ],
+      "must_not_match": true,
+      "notes": "no backslash survives the rewrite and Trim removes the slashes"
+    }
+  ]
+}

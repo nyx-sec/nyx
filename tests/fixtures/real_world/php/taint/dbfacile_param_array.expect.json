@@ -1,0 +1,48 @@
+{
+  "description": "dbFacile helpers (LibreNMS dbFetchRows, dbFetchRow, dbFetchCell) with user input concatenated into the SQL text in argument 0.",
+  "tags": [
+    "taint",
+    "sqli",
+    "dbfacile",
+    "librenms",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        6,
+        6
+      ],
+      "evidence_contains": [],
+      "notes": "User input reaches the SQL text of a dbFacile helper (call on line 6)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        10,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "User input reaches the SQL text of a dbFacile helper (call on line 10)"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        15,
+        15
+      ],
+      "evidence_contains": [],
+      "notes": "User input reaches the SQL text of a dbFacile helper (call on line 15)"
+    }
+  ]
+}

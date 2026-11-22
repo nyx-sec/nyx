@@ -1,0 +1,25 @@
+{
+  "description": "An actor id inside the update document is a value being written, not a scope: the filter holds only the request id",
+  "tags": [
+    "auth",
+    "auth",
+    "positive",
+    "mongoose-update-doc"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        5,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "An actor id inside the update document is a value being written, not a scope: the filter holds only the request id"
+    }
+  ]
+}

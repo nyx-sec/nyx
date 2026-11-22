@@ -21,6 +21,20 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
     },
+    // Reads from an open `File`: the bytes land in the buffer passed as the
+    // first argument (see `OUTPUT_PARAM_SOURCES`).  Only a receiver typed as a
+    // file handle qualifies, so a `Cursor` or `&[u8]` reader over constants
+    // stays clean.
+    LabelRule {
+        matchers: &[
+            "FileHandle.read_to_end",
+            "FileHandle.read_to_string",
+            "FileHandle.read_exact",
+            "FileHandle.read",
+        ],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: false,
+    },
     // Inbound HTTP request metadata: headers, cookies, query strings,
     // and body extractors.  These only carry caller-supplied bytes when
     // the framework binds them (the framework-conditional rules attach
@@ -275,9 +289,11 @@ pub static RULES: &[LabelRule] = &[
     // `toml::from_str` and `ron::from_str` into a concrete type are left out on
     // purpose: like `serde_json::from_str` they have no polymorphic
     // instantiation surface, and reporting them would flag every config loader.
-    // A `dyn` turbofish (`toml::from_str::<Box<dyn Plugin>>`) is attacker-chosen
-    // type selection, which the label layer recognises itself
-    // (`labels::is_polymorphic_decode`) and labels like the rule below.
+    // A `dyn` target, as a turbofish (`toml::from_str::<Box<dyn Plugin>>`) or a
+    // let annotation (`let p: Box<dyn Plugin> = toml::from_str(s)?`), is
+    // attacker-chosen type selection. The label layer recognises the turbofish
+    // (`labels::is_polymorphic_decode`) and the CFG builder the annotation
+    // (`labels::rust_target_is_dyn`), and both label it like the rule below.
     LabelRule {
         matchers: &[
             "serde_yaml::from_str",
@@ -354,6 +370,17 @@ pub static RULES: &[LabelRule] = &[
 /// Rust gated sinks.  Argument-position-aware classification for callees
 /// where activation depends on a literal arg value rather than the bare
 /// callee name.
+/// Argument positions that receive the bytes of a Source-labelled read
+/// (`file.read_to_end(&mut buf)` fills `buf`).  Consulted only when the call
+/// already carries a Source label, so a same-named method on another receiver
+/// is never treated as a read.
+pub static OUTPUT_PARAM_SOURCES: &[(&str, &[usize])] = &[
+    ("read_to_end", &[0]),
+    ("read_to_string", &[0]),
+    ("read_exact", &[0]),
+    ("read", &[0]),
+];
+
 pub static GATED_SINKS: &[SinkGate] = &[
     // actix-web `HttpResponse::Found().header("Location", url)` (and other
     // builder variants like `Ok().header(...)`, `MovedPermanently().header(...)`).

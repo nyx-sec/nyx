@@ -1,0 +1,23 @@
+{
+  "description": "A redirect-safety predicate is scoped to OPEN_REDIRECT and does not vouch for SQL sinks.",
+  "tags": [
+    "taint",
+    "open-redirect",
+    "safe-redirect-helper",
+    "cap-scope"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "notes": "redirect predicate does not vouch for SQL"
+    }
+  ]
+}

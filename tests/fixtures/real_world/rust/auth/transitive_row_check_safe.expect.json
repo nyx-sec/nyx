@@ -1,0 +1,21 @@
+{
+  "description": "The community is fetched through the tag row's own foreign key and then checked, which authorises the tag id too",
+  "tags": [
+    "auth",
+    "negative",
+    "derived-row"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "evidence_contains": [],
+      "notes": "The community is fetched through the tag row's own foreign key and then checked, which authorises the tag id too"
+    }
+  ]
+}

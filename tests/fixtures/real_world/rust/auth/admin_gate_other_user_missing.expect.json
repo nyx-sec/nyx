@@ -1,0 +1,24 @@
+{
+  "description": "An admin gate on a value other than the acting user does not guard the delete",
+  "tags": [
+    "auth",
+    "positive",
+    "admin-gate"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        11,
+        11
+      ],
+      "evidence_contains": [],
+      "notes": "An admin gate on a value other than the acting user does not guard the delete"
+    }
+  ]
+}

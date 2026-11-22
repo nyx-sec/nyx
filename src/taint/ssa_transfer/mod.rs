@@ -52,7 +52,7 @@ pub use summary_extract::{extract_ssa_func_summary, extract_ssa_func_summary_ful
 
 use crate::abstract_interp::AbstractState;
 use crate::callgraph::{callee_container_hint, callee_leaf_name};
-use crate::cfg::{BodyId, Cfg, FuncSummaries, NodeInfo};
+use crate::cfg::{BodyId, CalleeNesting, Cfg, FuncSummaries, NodeInfo};
 use crate::constraint;
 use crate::interop::InteropEdge;
 use crate::labels::{Cap, DataLabel, RuntimeLabelRule, SourceKind};
@@ -1004,14 +1004,28 @@ pub fn join_seed_maps(
 /// sibling's surviving bindings conceptually belong to the top-level
 /// scope they all write into.  Every other writer in the pipeline
 /// preserves the owner's id.
+///
+/// `exporter_declared` is the sorted list of names the exporting body
+/// binds itself (formals and locals, see `BodyMeta::declared_names`).
+/// Such a binding is private to the exporter and can never be the
+/// top-level variable of the same name, so it is not exported.  An
+/// empty slice disables the check.
 pub fn filter_seed_to_toplevel(
     seed: &HashMap<BindingKey, VarTaint>,
     toplevel: &HashSet<BindingKey>,
+    exporter_declared: &[String],
 ) -> HashMap<BindingKey, VarTaint> {
     let toplevel_names: HashSet<&str> = toplevel.iter().map(|k| k.name.as_str()).collect();
     let mut out: HashMap<BindingKey, VarTaint> = HashMap::new();
     for (key, taint) in seed.iter() {
         if !toplevel_names.contains(key.name.as_str()) {
+            continue;
+        }
+        let root = key.name.split('.').next().unwrap_or(key.name.as_str());
+        if exporter_declared
+            .binary_search_by(|d| d.as_str().cmp(root))
+            .is_ok()
+        {
             continue;
         }
         let rekeyed = BindingKey::new(key.name.clone(), BodyId(0));
@@ -1311,18 +1325,114 @@ struct PathBranchClass {
     rejection_axes: SmallVec<[crate::abstract_interp::path_domain::PathRejection; 3]>,
     assertion: crate::abstract_interp::path_domain::PathAssertion,
     rejection_pre_negated: bool,
+    /// The prefix test is Python's `is_relative_to`, which compares path
+    /// components, so any root is a containment proof.
+    component_wise_test: bool,
+    /// The receiver of the prefix test is visibly converted to a string
+    /// (`p.to_str().unwrap().starts_with(..)`, `p.toString().startsWith(..)`),
+    /// so the test is a byte-prefix test even in Java and Rust.
+    receiver_stringified: bool,
+    /// Path-view chain on the receiver of the `startsWith` guard, when the
+    /// confinement binds to the chain's root variable.
+    view: Option<crate::abstract_interp::path_domain::StartsWithView>,
+    /// The argument the view is compared against is attacker controlled.
+    /// Text-derived here (a source call in the argument); the caller adds
+    /// the state-dependent case where the root variable derives from a source.
+    view_root_untrusted: bool,
+}
+
+/// Conversions that turn a path object into a plain string.
+const PATH_TO_STRING_CONVERSIONS: [&str; 10] = [
+    ".to_str(",
+    ".to_string(",
+    ".to_string_lossy(",
+    ".as_str(",
+    ".toString(",
+    ".getPath(",
+    ".getAbsolutePath(",
+    ".getCanonicalPath(",
+    ".getName(",
+    ".display(",
+];
+
+/// Decide whether a literal or resolved root really proves containment, and
+/// drop the lock when it does not.
+///
+/// A byte-prefix test against a root without a trailing separator also admits
+/// a sibling directory (`/srv/data-x` starts with `/srv/data`), so such a
+/// root is not a containment proof.  Unresolvable roots stay accepted: the
+/// bytes are unknown.  A component-wise test (`Path.startsWith`,
+/// `Path::starts_with`, `is_relative_to`) is exact for any root.
+fn root_checked_path_class<'c>(
+    class: &'c PathBranchClass,
+    root_unterminated: bool,
+    lang: Lang,
+    receiver_is_string: impl FnOnce() -> bool,
+) -> std::borrow::Cow<'c, PathBranchClass> {
+    use crate::abstract_interp::path_domain::{
+        OPAQUE_PREFIX_LOCK, PathAssertion, root_ends_with_separator,
+    };
+    let (PathAssertion::PrefixLock(root) | PathAssertion::PrefixLockUnless(root)) =
+        &class.assertion
+    else {
+        return std::borrow::Cow::Borrowed(class);
+    };
+    let proves_containment_if_unterminated = class.component_wise_test
+        || (matches!(lang, Lang::Java | Lang::Rust)
+            && !class.receiver_stringified
+            && !receiver_is_string());
+    let keeps_lock = if root == OPAQUE_PREFIX_LOCK {
+        !root_unterminated || proves_containment_if_unterminated
+    } else {
+        root_ends_with_separator(root) || proves_containment_if_unterminated
+    };
+    if keeps_lock {
+        return std::borrow::Cow::Borrowed(class);
+    }
+    let mut dropped = class.clone();
+    dropped.assertion = PathAssertion::None;
+    std::borrow::Cow::Owned(dropped)
 }
 
 /// Classify a branch condition's text against the PathFact rejection /
 /// assertion idioms.  Pure function of `cond_text`.
 fn classify_path_branch(cond_text: &str) -> PathBranchClass {
     use crate::abstract_interp::path_domain::{
-        classify_path_assertion, classify_path_rejection_axes, cond_has_pre_negated_islocal_clause,
+        classify_path_assertion, classify_path_rejection_axes, classify_starts_with_receiver_view,
+        cond_has_pre_negated_islocal_clause,
     };
+    let assertion = classify_path_assertion(cond_text);
+    let has_root_lock = !matches!(
+        assertion,
+        crate::abstract_interp::path_domain::PathAssertion::None
+    );
+    let receiver_stringified = has_root_lock && {
+        let call_at = [".starts_with(", ".startsWith("]
+            .iter()
+            .filter_map(|m| cond_text.find(m))
+            .min();
+        call_at.is_some_and(|at| {
+            PATH_TO_STRING_CONVERSIONS
+                .iter()
+                .any(|c| cond_text[..at].contains(c))
+        })
+    };
+    let view = classify_starts_with_receiver_view(cond_text);
+    let view_root_untrusted = view.as_ref().is_some_and(|v| {
+        v.root_arg_callees.iter().any(|c| {
+            crate::labels::classify_all("java", c, None)
+                .iter()
+                .any(|l| matches!(l, DataLabel::Source(_)))
+        })
+    });
     PathBranchClass {
+        view,
+        view_root_untrusted,
         rejection_axes: classify_path_rejection_axes(cond_text),
-        assertion: classify_path_assertion(cond_text),
         rejection_pre_negated: cond_has_pre_negated_islocal_clause(cond_text),
+        component_wise_test: has_root_lock && cond_text.contains(".is_relative_to("),
+        receiver_stringified,
+        assertion,
     }
 }
 
@@ -1366,6 +1476,9 @@ struct BranchCondClass {
     /// [`crate::taint::path_state::equality_literal_guard`]).  Only set for
     /// [`PredicateKind::Comparison`].
     eq_guard: Option<(String, bool)>,
+    /// `u.host === X` on a variable that may hold a parsed URL (see
+    /// [`crate::taint::path_state::url_host_compare`]).
+    host_compare: Option<crate::taint::path_state::UrlHostCompare>,
     path: PathBranchClass,
 }
 
@@ -1388,6 +1501,8 @@ fn classify_branch_cond(cond_text: &str) -> BranchCondClass {
             | PredicateKind::LeadingSlashCheck
             | PredicateKind::ProtocolRelativeCheck
             | PredicateKind::ShellMetaValidated
+            | PredicateKind::RedirectValidator
+            | PredicateKind::HostDenylistRejected
     );
     let sentinel = if predicate_kind || kind == PredicateKind::Comparison {
         sentinel_comparison_polarity(cond_text)
@@ -1430,6 +1545,7 @@ fn classify_branch_cond(cond_text: &str) -> BranchCondClass {
         bit_negated,
         sentinel,
         eq_guard,
+        host_compare: crate::taint::path_state::url_host_compare(cond_text),
         path: classify_path_branch(cond_text),
     }
 }
@@ -1627,6 +1743,20 @@ fn compute_succ_states(
                     );
                 }
 
+                if let Some(hc) = &class.host_compare {
+                    apply_url_host_compare_narrowing(
+                        &mut true_state,
+                        &mut false_state,
+                        exit_state,
+                        hc,
+                        cond_info,
+                        ssa,
+                        cfg,
+                        block.id,
+                        transfer,
+                    );
+                }
+
                 // PathFact branch narrowing, language-agnostic.  The
                 // text-level rejection patterns recognised by
                 // `classify_path_rejection_atom` cover the common idioms
@@ -1646,10 +1776,44 @@ fn compute_succ_states(
                 // Rust positive-assertion `prefix_lock` recognition still
                 // fires regardless of language; for non-Rust languages the
                 // assertion classifier returns `None` for unfamiliar shapes.
+                let mut path_class = root_checked_path_class(
+                    &class.path,
+                    cond_info.root_unterminated,
+                    transfer.lang,
+                    || {
+                        // A receiver the type analysis knows is a `String`
+                        // is tested byte-wise, not component-wise.
+                        // Only a lone condition variable is known to be the
+                        // receiver.
+                        effective_vars
+                            .first()
+                            .filter(|_| effective_vars.len() == 1)
+                            .is_some_and(|var| {
+                                reaching_def_at_block_end(var, ssa, block.id).is_some_and(|v| {
+                                    transfer.type_facts.is_some_and(|tf| {
+                                        tf.is_type(v, &crate::ssa::type_facts::TypeKind::String)
+                                    })
+                                })
+                            })
+                    },
+                );
+                if path_class.view.is_some()
+                    && !path_class.view_root_untrusted
+                    && path_view_root_from_source(
+                        &class.path,
+                        &effective_vars,
+                        ssa,
+                        block.id,
+                        cfg,
+                        exit_state,
+                    )
+                {
+                    path_class.to_mut().view_root_untrusted = true;
+                }
                 apply_path_fact_branch_narrowing_with_aliases(
                     &mut true_state,
                     &mut false_state,
-                    &class.path,
+                    &path_class,
                     &effective_vars,
                     ssa,
                     block.id,
@@ -1971,6 +2135,24 @@ fn apply_branch_predicates(
         }
     }
 
+    // RedirectValidator: TRUE branch is the validated path.  Clears
+    // `Cap::OPEN_REDIRECT` only, like the URL arms above.
+    if kind == PredicateKind::RedirectValidator && polarity {
+        for var in condition_vars {
+            clear_cap_alias_aware(state, var, Cap::OPEN_REDIRECT, ssa, base_aliases);
+        }
+    }
+
+    // HostDenylistRejected: inverted polarity.  The TRUE branch is the reject
+    // path (the host is internal), so the FALSE branch is the one that
+    // continues.  Clears `Cap::SSRF` only; a denylist says nothing about SQL,
+    // shell or file sinks.
+    if kind == PredicateKind::HostDenylistRejected && !polarity {
+        for var in condition_vars {
+            clear_cap_alias_aware(state, var, Cap::SSRF, ssa, base_aliases);
+        }
+    }
+
     // ShellMetaValidated: inverted polarity, the FALSE branch (no metachar
     // found) is the validated path; the TRUE branch is the rejection path.
     //
@@ -2099,6 +2281,15 @@ fn apply_membership_result_narrowing(
     {
         return;
     }
+    // A map that took request-controlled keys holds whatever the request
+    // asked for, so being in it proves nothing.  The map value stays clean
+    // when keys are stored (the store reads no operand), so look at the
+    // stores themselves.
+    if lookup.filled_elsewhere
+        || map_has_tainted_key_store(lookup, def.cfg_node, exit_state, ssa, cfg)
+    {
+        return;
+    }
     let present = if cond_info.condition_negated {
         false_state
     } else {
@@ -2110,6 +2301,45 @@ fn apply_membership_result_narrowing(
             present.validated_may.insert(sym);
         }
     }
+}
+
+/// Whether some statement in the lookup's function stores a tainted key into
+/// the looked-up map.  Key identifiers with no definition in the function
+/// (constants, package-level names) are not request data.  Stores made by
+/// other functions are covered by [`crate::cfg::MembershipLookup::filled_elsewhere`].
+fn map_has_tainted_key_store(
+    lookup: &crate::cfg::MembershipLookup,
+    lookup_node: NodeIndex,
+    exit_state: &SsaTaintState,
+    ssa: &SsaBody,
+    cfg: &Cfg,
+) -> bool {
+    let func = cfg
+        .node_weight(lookup_node)
+        .and_then(|n| n.ast.enclosing_func.as_deref());
+    cfg.node_indices().any(|idx| {
+        let n = &cfg[idx];
+        if n.map_stores.is_empty()
+            || n.ast.enclosing_func.as_deref() != func
+            || ssa.cfg_node_map.get(&idx).is_none()
+        {
+            return false;
+        }
+        // Any definition of the key name counts: the store statement can
+        // itself be lowered as a redefinition of its key (`m[k] = v` binds
+        // both names in Go), so the reaching definition is not the right
+        // probe.
+        n.map_stores
+            .iter()
+            .filter(|ms| ms.base == lookup.base)
+            .flat_map(|ms| ms.key_idents.iter())
+            .any(|key| {
+                ssa.value_defs.iter().enumerate().any(|(i, d)| {
+                    d.var_name.as_deref() == Some(key.as_str())
+                        && exit_state.get(SsaValue(i as u32)).is_some()
+                })
+            })
+    })
 }
 
 /// Mark `target` validated on the edge where `target == <literal>` holds.
@@ -2515,6 +2745,260 @@ fn apply_input_validator_branch_narrowing(
             success_state.validated_must.insert(sym);
         }
     }
+}
+
+/// Same-host guard on a parsed URL: `const u = new URL(x, base); if (u.host
+/// === Y) { sink(x) }`.
+///
+/// On the edge where the hosts are equal, the parsed URL resolves to the host
+/// `Y`, so neither `u` nor the string `x` it was parsed from can steer a
+/// request or a redirect to another host.  Clears `Cap::OPEN_REDIRECT` and
+/// `Cap::SSRF` from both there; every other capability keeps its taint.
+///
+/// The guard only counts when
+/// * the subject's reaching definition is a call to the `URL` constructor
+///   (a bare `.host` field comparison proves nothing), and
+/// * the compared operand `Y` cannot be attacker data: no tainted variable
+///   in it and no source-labelled member path (`req.query.host`).
+///
+/// The narrowing is skipped when either condition is unproven.
+fn apply_url_host_compare_narrowing(
+    true_state: &mut SsaTaintState,
+    false_state: &mut SsaTaintState,
+    exit_state: &SsaTaintState,
+    hc: &crate::taint::path_state::UrlHostCompare,
+    cond_info: &NodeInfo,
+    ssa: &SsaBody,
+    cfg: &Cfg,
+    block: BlockId,
+    transfer: &SsaTaintTransfer,
+) {
+    const CAPS: Cap = Cap::OPEN_REDIRECT.union(Cap::SSRF);
+    let Some(subject_val) = reaching_def_at_block_end(&hc.subject, ssa, block) else {
+        return;
+    };
+    let Some(def_inst) = find_inst_for_value(subject_val, ssa) else {
+        return;
+    };
+    let SsaOp::Call { callee, args, .. } = &def_inst.op else {
+        return;
+    };
+    if !matches!(
+        callee.as_str(),
+        "URL" | "new URL" | "window.URL" | "globalThis.URL" | "self.URL" | "URL.parse"
+    ) {
+        return;
+    }
+
+    // The other operand must not be attacker-controlled.
+    let lang = transfer.lang.as_str();
+    for word in hc
+        .rhs
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '.')))
+        .filter(|w| !w.is_empty())
+    {
+        let mut candidate = word;
+        loop {
+            if matches!(
+                crate::labels::classify(lang, candidate, transfer.extra_labels),
+                Some(DataLabel::Source(_))
+            ) {
+                return;
+            }
+            match candidate.rsplit_once('.') {
+                Some((prefix, _)) => candidate = prefix,
+                None => break,
+            }
+        }
+        let root = word.split('.').next().unwrap_or(word);
+        if let Some(v) = reaching_def_at_block_end(root, ssa, block)
+            && exit_state.get(v).is_some_and(|t| !t.caps.is_empty())
+        {
+            return;
+        }
+    }
+
+    // Edge on which the comparison held.
+    let eq_on_true = hc.is_eq != cond_info.condition_negated;
+    let state = if eq_on_true { true_state } else { false_state };
+
+    let mut targets: SmallVec<[SsaValue; 4]> = smallvec::smallvec![subject_val];
+    // The string the URL was parsed from is pinned only when it is passed as
+    // a bare name: `new URL('./' + basename(x), base)` says nothing about x.
+    if let Some(parsed) = bare_name_arg(&cfg[def_inst.cfg_node], callee, args, 0) {
+        targets.push(parsed);
+    }
+    if !host_pinned_uses_are_forwarding(&targets, def_inst.value, ssa, cfg, CAPS) {
+        return;
+    }
+    for val in targets {
+        if let Some(name) = ssa
+            .value_defs
+            .get(val.0 as usize)
+            .and_then(|vd| vd.var_name.as_deref())
+        {
+            clear_cap_alias_aware(state, name, CAPS, ssa, transfer.base_aliases);
+        }
+        if let Some(taint) = state.get(val).cloned() {
+            let caps = taint.caps & !CAPS;
+            if caps.is_empty() {
+                state.remove(val);
+            } else {
+                state.set(val, VarTaint { caps, ..taint });
+            }
+        }
+    }
+}
+
+/// Whether `seed`, or any value computed from it, is an argument or receiver
+/// of a call labelled as a sink for `caps`.
+fn value_reaches_sink(seed: SsaValue, ssa: &SsaBody, cfg: &Cfg, caps: Cap) -> bool {
+    let mut derived: HashSet<SsaValue> = HashSet::new();
+    derived.insert(seed);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for b in &ssa.blocks {
+            for inst in b.phis.iter().chain(b.body.iter()) {
+                if derived.contains(&inst.value)
+                    || !inst.uses_iter().iter().any(|v| derived.contains(v))
+                {
+                    continue;
+                }
+                if matches!(inst.op, SsaOp::Call { .. })
+                    && cfg[inst.cfg_node]
+                        .taint
+                        .labels
+                        .iter()
+                        .any(|l| matches!(l, DataLabel::Sink(c) if c.intersects(caps)))
+                {
+                    return true;
+                }
+                derived.insert(inst.value);
+                changed = true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether every later use of the host-checked values only forwards them
+/// unchanged to a request or redirect.
+///
+/// The host check pins the string that was parsed, not strings built from it:
+/// `raw + '@evil.com'` after `new URL(raw)` passed the check can name another
+/// host.  Because the narrowing clears taint on the checked values, any value
+/// derived from them afterwards would inherit the cleared state.  So the
+/// narrowing holds only when each use of a checked value (or of another SSA
+/// value of the same variable) is one of
+/// * the `URL` constructor call that parsed it,
+/// * a phi (it only selects an operand),
+/// * a property read of the parsed URL itself (`u.href`), or
+/// * a call argument spelled as the checked variable's own name (never the
+///   receiver) of a call that is a redirect/SSRF sink, or whose result
+///   nothing consumes.
+///   Concatenation, templates, method calls on the value and helper calls whose
+///   result is used keep the taint.
+fn host_pinned_uses_are_forwarding(
+    targets: &[SsaValue],
+    url_value: SsaValue,
+    ssa: &SsaBody,
+    cfg: &Cfg,
+    caps: Cap,
+) -> bool {
+    let mut names: SmallVec<[&str; 4]> = SmallVec::new();
+    for t in targets {
+        if let Some(n) = ssa
+            .value_defs
+            .get(t.0 as usize)
+            .and_then(|d| d.var_name.as_deref())
+            && !names.contains(&n)
+        {
+            names.push(n);
+        }
+    }
+    let is_checked = |v: SsaValue| {
+        targets.contains(&v)
+            || ssa
+                .value_defs
+                .get(v.0 as usize)
+                .and_then(|d| d.var_name.as_deref())
+                .is_some_and(|n| names.contains(&n))
+    };
+    let result_consumed = |res: SsaValue| {
+        ssa.blocks.iter().any(|b| {
+            b.phis
+                .iter()
+                .chain(b.body.iter())
+                .any(|i| i.uses_iter().contains(&res))
+        })
+    };
+    for b in &ssa.blocks {
+        for inst in b.phis.iter().chain(b.body.iter()) {
+            if inst.value == url_value || !inst.uses_iter().iter().any(|v| is_checked(*v)) {
+                continue;
+            }
+            match &inst.op {
+                // A phi only selects one of its operands.
+                SsaOp::Phi(_) => {}
+                // A property of the parsed URL (`u.href`) stays on its host.
+                SsaOp::FieldProj { receiver, .. } if *receiver == url_value => {}
+                SsaOp::Call {
+                    callee,
+                    args,
+                    receiver,
+                    ..
+                } => {
+                    if *receiver == Some(url_value) {
+                        // A method on the parsed URL (`u.searchParams.get(k)`)
+                        // yields data read from it; that data must not end up
+                        // as a redirect or request target.
+                        if value_reaches_sink(inst.value, ssa, cfg, caps) {
+                            return false;
+                        }
+                        continue;
+                    }
+                    if receiver.is_some_and(&is_checked) {
+                        return false;
+                    }
+                    let info = &cfg[inst.cfg_node];
+                    // Each checked value must be passed as a bare name that is
+                    // the checked variable itself.  A copy-propagated
+                    // `const x = raw + '@evil.com'` shows up as the value of
+                    // `raw` but is spelled `x` at the call.
+                    for (i, group) in args.iter().enumerate() {
+                        if !group.iter().any(|v| is_checked(*v)) {
+                            continue;
+                        }
+                        let is_bare = i < 64
+                            && info.call.arg_bare_names & (1u64 << i) != 0
+                            && node_describes_call(info, callee);
+                        let spelled_checked = info.call.arg_uses.get(i).is_some_and(|u| {
+                            u.first().is_some_and(|first| {
+                                names.contains(&first.split('.').next().unwrap_or(first))
+                            })
+                        });
+                        if !is_bare || !spelled_checked {
+                            return false;
+                        }
+                    }
+                    let is_sink = info
+                        .taint
+                        .labels
+                        .iter()
+                        .any(|l| matches!(l, DataLabel::Sink(c) if c.intersects(caps)));
+                    if !is_sink
+                        && (info.kind == crate::cfg::StmtKind::Return
+                            || result_consumed(inst.value))
+                    {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+    }
+    true
 }
 
 /// Look up the path-confinement positions of a callee by bare name in the
@@ -3321,6 +3805,89 @@ fn reaching_def_at_block_end(var_name: &str, ssa: &SsaBody, block: BlockId) -> O
     None
 }
 
+/// True when the root a path-view guard compares against derives from a
+/// source: one of the condition's other variables reaches a source, a tainted
+/// parameter or a field of one through copies, phis, constructors and path
+/// methods.  A call that is none of those (`servlet.getModule(name).getPath()`)
+/// is a lookup whose result the caller does not choose, so it ends the walk.
+fn path_view_root_from_source(
+    class: &PathBranchClass,
+    effective_vars: &[String],
+    ssa: &SsaBody,
+    block: BlockId,
+    cfg: &Cfg,
+    state: &SsaTaintState,
+) -> bool {
+    let Some(view) = class.view.as_ref() else {
+        return false;
+    };
+    let mut seen: Vec<SsaValue> = Vec::new();
+    effective_vars
+        .iter()
+        .filter(|name| **name != view.root)
+        .filter_map(|name| reaching_def_at_block_end(name, ssa, block))
+        .any(|v| value_derives_from_source(v, ssa, cfg, state, &mut seen))
+}
+
+fn value_derives_from_source(
+    v: SsaValue,
+    ssa: &SsaBody,
+    cfg: &Cfg,
+    state: &SsaTaintState,
+    seen: &mut Vec<SsaValue>,
+) -> bool {
+    if seen.contains(&v) || seen.len() > 64 {
+        return false;
+    }
+    seen.push(v);
+    if state.get(v).is_none_or(|t| t.caps.is_empty()) {
+        return false;
+    }
+    let Some(inst) = find_inst_for_value(v, ssa) else {
+        return false;
+    };
+    match &inst.op {
+        SsaOp::Source | SsaOp::Param { .. } => true,
+        SsaOp::Phi(_) | SsaOp::Assign(_) | SsaOp::FieldProj { .. } => inst
+            .uses_iter()
+            .into_iter()
+            .any(|u| value_derives_from_source(u, ssa, cfg, state, seen)),
+        SsaOp::Call { callee, .. } => {
+            let info = &cfg[inst.cfg_node];
+            if has_source_label_on_node(info) {
+                return true;
+            }
+            let passes_path = info.call.is_constructor
+                || matches!(
+                    crate::labels::bare_method_name(callee),
+                    "get"
+                        | "of"
+                        | "toPath"
+                        | "toFile"
+                        | "normalize"
+                        | "toAbsolutePath"
+                        | "toRealPath"
+                        | "getAbsoluteFile"
+                        | "getAbsolutePath"
+                        | "getCanonicalFile"
+                        | "getCanonicalPath"
+                        | "resolve"
+                        | "getParent"
+                        | "toString"
+                        | "valueOf"
+                        | "trim"
+                        | "concat"
+                );
+            passes_path
+                && inst
+                    .uses_iter()
+                    .into_iter()
+                    .any(|u| value_derives_from_source(u, ssa, cfg, state, seen))
+        }
+        _ => false,
+    }
+}
+
 /// Apply Rust path-rejection / path-assertion branch narrowing to the
 /// true/false branch states produced by `compute_succ_states`.
 ///
@@ -3486,6 +4053,28 @@ fn apply_path_fact_branch_narrowing_with_aliases(
         }
     };
 
+    // The confinement of a path-view receiver binds to the chain's root
+    // variable alone; the other variables of the condition (the root being
+    // compared against) are not narrowed.
+    //
+    // Confinement under a root proves nothing when the root itself is
+    // attacker controlled: `f.toPath().normalize().startsWith(r)` passes for
+    // any `f` when the attacker also picks `r`.  The caller sets
+    // `view_root_untrusted` when the root derives from a source.
+    let view_root_def = class
+        .view
+        .as_ref()
+        .and_then(|view| reaching_def_at_block_end(&view.root, ssa, block));
+    let view_clears_dotdot = !class.view_root_untrusted
+        && class
+            .view
+            .as_ref()
+            .is_some_and(|v| v.normalizes && v.path_valued);
+    let assertion_targets: smallvec::SmallVec<[SsaValue; 2]> = match class.view.as_ref() {
+        Some(view) if effective_vars.contains(&view.root) => view_root_def.into_iter().collect(),
+        _ => targets.clone(),
+    };
+
     // Apply assertion (positive): the branch where it holds narrows
     // prefix_lock.
     let narrow_assertion = |fact: &mut PathFact| {
@@ -3495,6 +4084,13 @@ fn apply_path_fact_branch_narrowing_with_aliases(
             // components, and a path that starts with a root that is not
             // itself `..` has none.
             if updated.normalized == crate::abstract_interp::Tri::Yes && !root.starts_with("..") {
+                updated.dotdot = crate::abstract_interp::Tri::No;
+            }
+            // `f.toPath().normalize().startsWith(root)`: the guard tested the
+            // normalized view of this variable, whose `..` components are
+            // all leading, so passing it proves the location stays under the
+            // root.  Only a `Path` view qualifies (component-wise compare).
+            if view_clears_dotdot && !root.starts_with("..") {
                 updated.dotdot = crate::abstract_interp::Tri::No;
             }
             *fact = updated;
@@ -3543,7 +4139,7 @@ fn apply_path_fact_branch_narrowing_with_aliases(
     } else {
         &mut *false_state
     };
-    for v in &targets {
+    for v in &assertion_targets {
         if let Some(ref mut abs) = assertion_state.abstract_state {
             let mut av = abs.get(*v);
             narrow_assertion(&mut av.path);
@@ -5455,6 +6051,31 @@ fn kill_redefined_symbol_facts(
     }
 }
 
+/// Forget every validated constant-index element (`parts[0]`) when a
+/// statement stores into an indexed location.  The store may reach the
+/// element through another name for the same backing array (`q := parts;
+/// q[0] = x`), which the element's own base name does not show, so no
+/// element stays validated across any indexed store.
+fn kill_elem_facts_on_index_store(
+    info: &NodeInfo,
+    transfer: &SsaTaintTransfer,
+    state: &mut SsaTaintState,
+) {
+    if info.map_stores.is_empty()
+        || (state.validated_must.is_empty() && state.validated_may.is_empty())
+    {
+        return;
+    }
+    for i in 0..transfer.interner.len() {
+        let id = crate::state::symbol::SymbolId(i as u32);
+        let name = transfer.interner.resolve(id);
+        if name.ends_with(']') && name.contains('[') {
+            state.validated_must.remove(id);
+            state.validated_may.remove(id);
+        }
+    }
+}
+
 /// Transfer a single SSA instruction.
 pub(super) fn transfer_inst(
     inst: &SsaInst,
@@ -5466,6 +6087,7 @@ pub(super) fn transfer_inst(
     let info = &cfg[inst.cfg_node];
 
     kill_redefined_symbol_facts(inst, info, ssa, transfer, state);
+    kill_elem_facts_on_index_store(info, transfer, state);
 
     // Cross-file abstract return fact from callee resolution.
     // Set inside the Call arm, applied after transfer_abstract to override Top.
@@ -5480,7 +6102,8 @@ pub(super) fn transfer_inst(
                     source_caps |= *bits;
                 }
             }
-            if !source_caps.is_empty() {
+            // `$n = (int) $_GET['n']`: the value is a number, not the source.
+            if !source_caps.is_empty() && !info.yields_number {
                 let callee = info.call.callee.as_deref().unwrap_or("");
                 let source_kind = crate::labels::infer_source_kind(source_caps, callee);
                 let origin = TaintOrigin {
@@ -5508,7 +6131,7 @@ pub(super) fn transfer_inst(
             state.set(
                 inst.value,
                 VarTaint {
-                    caps: Cap::all(),
+                    caps: Cap::CAUGHT_EXCEPTION,
                     origins: SmallVec::from_elem(origin, 1),
                     uses_summary: false,
                 },
@@ -5589,6 +6212,9 @@ pub(super) fn transfer_inst(
                                 }
                             }
                         }
+                        // A query parameter cannot change the scheme, host or
+                        // path of the URL, so it cannot steer a redirect.
+                        arg_caps &= !Cap::OPEN_REDIRECT;
                         if !arg_caps.is_empty() {
                             // Walk the FieldProj receiver chain (and any
                             // Rust-style nested call receivers) so every
@@ -6015,7 +6641,12 @@ pub(super) fn transfer_inst(
             // though the default arg-to-return propagation below would copy
             // the now-tainted destination pointer into it.
             let mut binder_error_return = false;
-            if !return_bits.is_empty() {
+            // A Rust read that fills its argument is a method on an open
+            // reader (`file.read_to_end(&mut buf)`); the path call
+            // `fs::read(path)` is a source that returns its bytes and writes
+            // nothing into `path`.
+            let out_param_call = transfer.lang != Lang::Rust || receiver.is_some();
+            if !return_bits.is_empty() && out_param_call {
                 if let Some(positions) =
                     crate::labels::output_param_source_positions(transfer.lang.as_str(), callee)
                 {
@@ -6048,6 +6679,7 @@ pub(super) fn transfer_inst(
                                             uses_summary: false,
                                         },
                                     );
+                                    forget_abstract_value(state, arg_v);
                                 }
                             }
                         }
@@ -6169,14 +6801,22 @@ pub(super) fn transfer_inst(
             // causes qualified-first resolution to prefer
             // `{Type}::{name}` over any same-leaf collision in the
             // global summary table.
-            let callee_summary = resolve_callee_typed(
-                transfer,
-                callee,
-                caller_func,
-                info.call.call_ordinal,
-                arity_hint,
-                *receiver,
-            );
+            // A hoisted member read (`useEffect(cb, [location.search])`) names
+            // no call of this node, so its text must not bind to a same-leaf
+            // project function (`MailPit.search`); the wrapping call is
+            // resolved through `outer_callee` below.
+            let callee_summary = if info.call.callee_nesting == CalleeNesting::Hoisted {
+                None
+            } else {
+                resolve_callee_typed(
+                    transfer,
+                    callee,
+                    caller_func,
+                    info.call.call_ordinal,
+                    arity_hint,
+                    *receiver,
+                )
+            };
 
             // Capture container fields and return type regardless of whether
             // inline analysis handled the call
@@ -6529,6 +7169,36 @@ pub(super) fn transfer_inst(
                                 if !return_origins.iter().any(|o| o.node == inst.cfg_node) {
                                     return_origins.push(origin);
                                 }
+                                // A typed read that fills a buffer argument
+                                // (`file.read_to_end(&mut buf)`): the buffer
+                                // carries the bytes, as for a direct Source.
+                                // The call may end in `.unwrap()` / `?`, so the
+                                // read's own name is found past those.
+                                if transfer.lang == Lang::Rust
+                                    && let Some(positions) =
+                                        method_candidates_from_chain(callee, transfer.lang)
+                                            .iter()
+                                            .find_map(|m| {
+                                                crate::labels::output_param_source_positions(
+                                                    transfer.lang.as_str(),
+                                                    m,
+                                                )
+                                            })
+                                {
+                                    for &pos in positions {
+                                        for &arg_v in args.get(pos).into_iter().flatten() {
+                                            state.set(
+                                                arg_v,
+                                                VarTaint {
+                                                    caps: *bits,
+                                                    origins: return_origins.clone(),
+                                                    uses_summary: false,
+                                                },
+                                            );
+                                            forget_abstract_value(state, arg_v);
+                                        }
+                                    }
+                                }
                             }
                             DataLabel::Sanitizer(bits) => {
                                 sanitizer_bits |= *bits;
@@ -6561,6 +7231,27 @@ pub(super) fn transfer_inst(
                     }
                 }
                 return_bits &= !sanitizer_bits;
+
+                // A builder chain that holds an escaper
+                // (`sb.append(n).append(escapeHtml4(x))`) is one node whose
+                // callee label is the sanitizer.  The escaper clears the
+                // node's return value, not the other operands appended to
+                // the builder, so the append is still stored, each operand
+                // narrowed by the calls that wrap it.
+                if transfer.lang == Lang::Java {
+                    for c in [Some(callee.as_str()), info.call.outer_callee.as_deref()]
+                        .into_iter()
+                        .flatten()
+                    {
+                        if java_builder_store_op(info, args, receiver, transfer, c, state).is_some()
+                        {
+                            try_container_propagation(
+                                inst, info, args, receiver, state, transfer, c, ssa,
+                            );
+                            break;
+                        }
+                    }
+                }
 
                 // UNAUTHORIZED_ID models a caller-supplied id that must
                 // clear an ownership/membership guard. Sanitizers for
@@ -6616,6 +7307,7 @@ pub(super) fn transfer_inst(
                         // (e.g. `cmd := arr.shift()`) whose taint comes
                         // from the cell rather than an inline source.
                         apply_container_elem_read_w4(inst, ssa, transfer, state);
+                        apply_container_read_receiver_validation(inst, ssa, transfer, state);
                         if let Some(sib) = &sibling
                             && !sib.caps.is_empty()
                         {
@@ -7365,6 +8057,17 @@ pub(super) fn transfer_inst(
 
             if !info.is_eq_with_const {
                 for &use_val in uses {
+                    // `container[key]`: the key selects an element, the value
+                    // comes from the container.
+                    if let Some(key) = info.index_read_key.as_deref()
+                        && ssa
+                            .value_defs
+                            .get(use_val.0 as usize)
+                            .and_then(|vd| vd.var_name.as_deref())
+                            == Some(key)
+                    {
+                        continue;
+                    }
                     if let Some(taint) = state.get(use_val) {
                         combined_caps |= taint.caps;
                         inherited_summary |= taint.uses_summary;
@@ -7435,6 +8138,12 @@ pub(super) fn transfer_inst(
                         push_origin_bounded(&mut combined_origins, origin);
                     }
                 }
+            }
+
+            // A numeric conversion or arithmetic result carries no payload,
+            // whatever its operands (or a source on this node) contributed.
+            if info.yields_number {
+                combined_caps = Cap::empty();
             }
 
             // Alias-aware taint propagation
@@ -8143,6 +8852,19 @@ fn string_const_value(s: &str) -> crate::abstract_interp::AbstractValue {
 /// Rust path primitives, `fs::canonicalize`, `.starts_with`, etc.); `None`
 /// disables them and matches the pre-PathFact behaviour exactly.
 fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: Option<Lang>) {
+    transfer_abstract_inner(inst, cfg, abs, lang);
+    // A variable that can change behind the SSA form's back (`&p`, a closure
+    // write) keeps no excluded-character claim.
+    if cfg[inst.cfg_node].aliased_def {
+        let mut value = abs.get(inst.value);
+        if value.string.has_exclusions() {
+            value.string = value.string.without_exclusions();
+            abs.set(inst.value, value);
+        }
+    }
+}
+
+fn transfer_abstract_inner(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: Option<Lang>) {
     use crate::abstract_interp::{AbstractValue, BitFact, IntervalFact, PathFact, StringFact};
     use crate::cfg::BinOp;
 
@@ -8226,11 +8948,18 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
         // over the default Top StringFact.
         SsaOp::Assign(_) if info.string_prefix.is_some() => {
             let prefix = info.string_prefix.as_deref().unwrap();
+            // `"/" + name`: the literal followed by whatever the name holds.
+            let string = match &inst.op {
+                SsaOp::Assign(uses) if info.string_concat_tail && uses.len() == 1 => {
+                    StringFact::exact(prefix).concat(&abs.get(uses[0]).string)
+                }
+                _ => StringFact::from_prefix(prefix),
+            };
             abs.set(
                 inst.value,
                 AbstractValue {
                     interval: IntervalFact::top(),
-                    string: StringFact::from_prefix(prefix),
+                    string,
                     bits: BitFact::top(),
                     path: PathFact::top(),
                 },
@@ -8423,6 +9152,26 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
                     path: PathFact::top(),
                 },
             );
+        }
+
+        // Go string functions whose result keeps part of what the input
+        // proves: `strings.Trim*` leaves a first character outside the
+        // cutset, `strings.ReplaceAll` removes a character, `fmt.Sprintf`
+        // concatenates its format with its arguments.
+        SsaOp::Call { callee, args, .. }
+            if lang == Some(Lang::Go) && go_string_fn(callee).is_some() =>
+        {
+            if let Some(string) = go_string_call_fact(callee, info, args, abs) {
+                abs.set(
+                    inst.value,
+                    AbstractValue {
+                        interval: IntervalFact::top(),
+                        string,
+                        bits: BitFact::top(),
+                        path: PathFact::top(),
+                    },
+                );
+            }
         }
 
         // Path-primitive calls, per-language classifiers map known stdlib
@@ -8626,11 +9375,28 @@ fn transfer_abstract(inst: &SsaInst, cfg: &Cfg, abs: &mut AbstractState, lang: O
         let is_url_builder = args.len() >= 2 && facts.url_builder.is_some();
         if !is_url_builder {
             let mut value = abs.get(inst.value);
-            if value.string.is_top() {
+            // `"/" + f(x)`: the literal followed by the call's own result,
+            // when this is the call the node's right-hand side ends in.
+            if info.string_concat_tail
+                && info.call.callee.as_deref() == callee_of(&inst.op)
+                && !value.string.is_bottom()
+            {
+                value.string = StringFact::exact(prefix).concat(&value.string);
+                abs.set(inst.value, value);
+            } else if value.string.is_top() {
                 value.string = StringFact::from_prefix(prefix);
                 abs.set(inst.value, value);
             }
         }
+    }
+}
+
+/// Drop what the abstract domains know about `v`: a call has written into the
+/// buffer it names (`file.read_to_end(&mut buf)`), so the facts of the
+/// allocation that came before (an empty `Vec::new()`) no longer describe it.
+fn forget_abstract_value(state: &mut SsaTaintState, v: SsaValue) {
+    if let Some(abs) = state.abstract_state.as_mut() {
+        Arc::make_mut(abs).set(v, crate::abstract_interp::AbstractValue::top());
     }
 }
 
@@ -8655,6 +9421,134 @@ fn bare_name_arg(
         Some(group) if group.len() == 1 => Some(group[0]),
         _ => None,
     }
+}
+
+fn callee_of(op: &SsaOp) -> Option<&str> {
+    match op {
+        SsaOp::Call { callee, .. } => Some(callee.as_str()),
+        _ => None,
+    }
+}
+
+/// Go standard-library string functions with a string-fact transfer.
+fn go_string_fn(callee: &str) -> Option<()> {
+    matches!(
+        callee,
+        "strings.Trim"
+            | "strings.TrimLeft"
+            | "strings.TrimRight"
+            | "strings.TrimSpace"
+            | "strings.ReplaceAll"
+            | "fmt.Sprintf"
+    )
+    .then_some(())
+}
+
+/// String fact of a call to one of [`go_string_fn`], from the literal
+/// arguments the node records and the facts of arguments that are bare names.
+/// `None` when the call has no usable shape (a cutset that is not a literal,
+/// a format with `%[n]d` or `%*d`).
+fn go_string_call_fact(
+    callee: &str,
+    info: &NodeInfo,
+    args: &[SmallVec<[SsaValue; 2]>],
+    abs: &AbstractState,
+) -> Option<crate::abstract_interp::StringFact> {
+    use crate::abstract_interp::StringFact;
+    use crate::abstract_interp::string_domain::{AsciiSet, go_literal_value};
+    if !node_describes_call(info, callee) {
+        return None;
+    }
+    // The value of string-literal argument `i`, escapes read.
+    let literal = |i: usize| -> Option<String> {
+        let text = info.call.arg_string_literals.get(i)?.as_deref()?;
+        let is_raw = i < 64 && info.call.arg_raw_string_mask & (1u64 << i) != 0;
+        go_literal_value(text, is_raw)
+    };
+    let arg_fact = |i: usize| {
+        bare_name_arg(info, callee, args, i)
+            .map(|v| abs.get(v).string)
+            .unwrap_or_else(StringFact::top)
+    };
+    match callee {
+        "strings.Trim" | "strings.TrimLeft" | "strings.TrimRight" => {
+            let cutset = AsciiSet::of_str(&literal(1)?);
+            Some(arg_fact(0).trimmed(
+                cutset,
+                callee != "strings.TrimRight",
+                callee != "strings.TrimLeft",
+            ))
+        }
+        "strings.TrimSpace" => {
+            Some(arg_fact(0).trimmed(AsciiSet::of_str(" \t\n\x0b\x0c\r"), true, true))
+        }
+        "strings.ReplaceAll" => {
+            // A single character `old` and a literal `new` that lacks it.
+            let old_text = literal(1)?;
+            let mut chars = old_text.chars();
+            let old = chars.next().filter(|c| c.is_ascii())?;
+            if chars.next().is_some() {
+                return None;
+            }
+            let new_chars = AsciiSet::of_str(&literal(2)?);
+            Some(arg_fact(0).with_char_replaced(old, new_chars))
+        }
+        "fmt.Sprintf" => go_sprintf_fact(&literal(0)?, arg_fact),
+        _ => None,
+    }
+}
+
+/// `fmt.Sprintf(format, args...)` as a concatenation of the format's literal
+/// runs and, for each plain `%s` / `%v` directive, the fact of its argument.
+/// Any other directive contributes an unknown string.  `None` for a format
+/// with an escape, an explicit argument index or a `*` width, which this does
+/// not follow.
+fn go_sprintf_fact(
+    format: &str,
+    arg_fact: impl Fn(usize) -> crate::abstract_interp::StringFact,
+) -> Option<crate::abstract_interp::StringFact> {
+    use crate::abstract_interp::StringFact;
+    if format.contains('\\') {
+        return None;
+    }
+    let mut acc = StringFact::exact("");
+    let mut literal_run = String::new();
+    let mut next_arg = 1usize;
+    let mut chars = format.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            literal_run.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'%') {
+            chars.next();
+            literal_run.push('%');
+            continue;
+        }
+        if !literal_run.is_empty() {
+            acc = acc.concat(&StringFact::exact(&literal_run));
+            literal_run.clear();
+        }
+        let mut plain = true;
+        let verb = loop {
+            match chars.next()? {
+                '[' | '*' => return None,
+                v if v.is_ascii_alphabetic() => break v,
+                _ => plain = false,
+            }
+        };
+        let segment = if plain && matches!(verb, 's' | 'v') {
+            arg_fact(next_arg)
+        } else {
+            StringFact::top()
+        };
+        next_arg += 1;
+        acc = acc.concat(&segment);
+    }
+    if !literal_run.is_empty() {
+        acc = acc.concat(&StringFact::exact(&literal_run));
+    }
+    Some(acc)
 }
 
 /// True when `info` is the CFG node of the call `callee`, not of an outer
@@ -9056,21 +9950,7 @@ fn collect_block_events(
         // `type_facts` are consulted; the static path is what enables
         // closure-captured receivers (parent body → child body via
         // [`crate::taint::inject_external_type_facts`]) to participate.
-        if let SsaOp::Call {
-            receiver: Some(rv), ..
-        } = &inst.op
-        {
-            if let Some(ref env) = state.path_env {
-                if let Some(kind) = env.get(*rv).types.as_singleton() {
-                    sink_caps &= !receiver_incompatible_sink_caps(&kind, sink_caps);
-                }
-            }
-            if let Some(tf) = transfer.type_facts {
-                if let Some(kind) = tf.get_type(*rv) {
-                    sink_caps &= !receiver_incompatible_sink_caps(kind, sink_caps);
-                }
-            }
-        }
+        strip_receiver_incompatible_sink_caps(&mut sink_caps, inst, info, transfer, &state);
 
         // Type-qualified sink resolution: when normal sink resolution found nothing,
         // try using the receiver's inferred type to construct a qualified callee name.
@@ -9108,6 +9988,15 @@ fn collect_block_events(
                         }
                     }
                     tq_filters = tq_args;
+                    // The qualified name (`FileHandle.println`) also matches
+                    // the bare suffix rules the receiver type just ruled out.
+                    strip_receiver_incompatible_sink_caps(
+                        &mut sink_caps,
+                        inst,
+                        info,
+                        transfer,
+                        &state,
+                    );
                 }
             }
         }
@@ -10966,6 +11855,78 @@ fn is_java_class_receiver(ssa: &SsaBody, v: SsaValue) -> bool {
         && leaf.chars().any(|c| c.is_ascii_lowercase())
 }
 
+/// Java `sb.append(x)` / `sb.insert(i, x)` on a receiver known to be a
+/// `StringBuilder` / `StringBuffer`: the argument is written into the
+/// builder.  The receiver type comes from the SSA type facts, the path
+/// environment, or the declared type of the receiver, so an unrelated user
+/// class with an `append` method keeps the default call propagation.
+///
+/// A chained statement `sb.append(a).append(b);` is one call node on the
+/// root builder; the inner calls' arguments sit in a trailing implicit
+/// argument group.  Every argument group is therefore written into the
+/// builder, not only the first.
+fn java_builder_store_op(
+    info: &NodeInfo,
+    args: &[SmallVec<[SsaValue; 2]>],
+    receiver: &Option<SsaValue>,
+    transfer: &SsaTaintTransfer,
+    callee: &str,
+    state: &SsaTaintState,
+) -> Option<crate::ssa::pointsto::ContainerOp> {
+    use crate::ssa::pointsto::ContainerOp;
+    use crate::ssa::type_facts::TypeKind;
+    if transfer.lang != Lang::Java {
+        return None;
+    }
+    crate::ssa::pointsto::classify_java_builder_op(crate::labels::bare_method_name(callee))?;
+    let rv = (*receiver)?;
+    let kind = transfer
+        .type_facts
+        .and_then(|tf| tf.get_type(rv))
+        .cloned()
+        .or_else(|| {
+            state
+                .path_env
+                .as_ref()
+                .and_then(|env| env.get(rv).types.as_singleton())
+        })
+        .filter(|k| !matches!(k, TypeKind::Unknown))
+        .or_else(|| info.call.receiver_decl_type.clone());
+    if !matches!(kind, Some(TypeKind::StringBuilder)) {
+        return None;
+    }
+    Some(ContainerOp::Store {
+        value_args: (0..args.len()).collect(),
+        index_arg: None,
+    })
+}
+
+/// Taint a value brings into a builder append, after the calls wrapping its
+/// occurrences in the node (`sb.append(escapeHtml4(x))` keeps nothing of
+/// `x`).  A value with no recorded occurrence keeps its full taint, and a
+/// value an earlier check validated (an allowlist guard) brings none.
+fn builder_operand_caps(
+    nested: Option<&operands::NestedOperands>,
+    v: SsaValue,
+    caps: Cap,
+    ssa: &SsaBody,
+    transfer: &SsaTaintTransfer,
+    state: &SsaTaintState,
+) -> Cap {
+    let validated = ssa
+        .value_defs
+        .get(v.0 as usize)
+        .and_then(|d| d.var_name.as_deref())
+        .and_then(|n| transfer.interner.get(n))
+        .is_some_and(|sym| state.validated_must.contains(sym));
+    if validated {
+        return Cap::empty();
+    }
+    nested
+        .and_then(|ops| ops.builder_value_caps(v, caps, ssa, state))
+        .unwrap_or(caps)
+}
+
 /// Handle container operations: propagate taint between receiver and arguments.
 ///
 /// **Store** operations (push, append, set, add, insert, etc.):
@@ -10989,9 +11950,16 @@ fn try_container_propagation(
     let lang = transfer.lang;
     use crate::ssa::pointsto::{ContainerOp, classify_container_op};
 
+    let mut is_builder_store = false;
     let op = match classify_container_op(callee, lang) {
         Some(op) => op,
-        None => return false,
+        None => match java_builder_store_op(info, args, receiver, transfer, callee, state) {
+            Some(op) => {
+                is_builder_store = true;
+                op
+            }
+            None => return false,
+        },
     };
 
     // A static call on a Java class (`Paths.get(p)`) is not a container
@@ -11061,7 +12029,12 @@ fn try_container_propagation(
                 transfer,
             );
 
-            // Collect taint from value argument(s)
+            // Collect taint from value argument(s).  A builder append is one
+            // node for the whole chain, so each value is narrowed by the
+            // calls that wrap it there.
+            let builder_nested = is_builder_store
+                .then(|| operands::NestedOperands::for_call_chain(info, transfer))
+                .flatten();
             let mut val_caps = Cap::empty();
             let mut val_origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
             for &arg_idx in &value_args {
@@ -11069,7 +12042,22 @@ fn try_container_propagation(
                 if let Some(arg_vals) = args.get(effective_idx) {
                     for &v in arg_vals {
                         if let Some(taint) = state.get(v) {
-                            val_caps |= taint.caps;
+                            let caps = if is_builder_store {
+                                builder_operand_caps(
+                                    builder_nested.as_ref(),
+                                    v,
+                                    taint.caps,
+                                    ssa,
+                                    transfer,
+                                    state,
+                                )
+                            } else {
+                                taint.caps
+                            };
+                            if caps.is_empty() {
+                                continue;
+                            }
+                            val_caps |= caps;
                             for orig in &taint.origins {
                                 push_origin_bounded(&mut val_origins, *orig);
                             }
@@ -11477,9 +12465,14 @@ fn resolve_sink_info(info: &NodeInfo, transfer: &SsaTaintTransfer) -> SinkInfo {
     } else {
         Some(info.call.arg_uses.len())
     };
-    let primary = info.call.callee.as_ref().and_then(|c| {
-        resolve_callee_hinted(transfer, c, caller_func, info.call.call_ordinal, arity_hint)
-    });
+    let primary = info
+        .call
+        .callee
+        .as_ref()
+        .filter(|_| info.call.callee_nesting != CalleeNesting::Hoisted)
+        .and_then(|c| {
+            resolve_callee_hinted(transfer, c, caller_func, info.call.call_ordinal, arity_hint)
+        });
     if let Some(r) = primary.filter(|r| !r.sink_caps.is_empty()) {
         return SinkInfo {
             caps: r.sink_caps,
@@ -13258,13 +14251,49 @@ fn type_safe_for_taint_sink(kind: &crate::ssa::type_facts::TypeKind, cap: Cap) -
     }
 }
 
+/// Drop sink caps the receiver's type rules out, from every type source: the
+/// flow-sensitive `path_env` type, the static `type_facts` type, and (Java) the
+/// type the receiver's declaration names.
+fn strip_receiver_incompatible_sink_caps(
+    sink_caps: &mut Cap,
+    inst: &SsaInst,
+    info: &NodeInfo,
+    transfer: &SsaTaintTransfer,
+    state: &SsaTaintState,
+) {
+    if let SsaOp::Call {
+        receiver: Some(rv), ..
+    } = &inst.op
+    {
+        if let Some(ref env) = state.path_env {
+            if let Some(kind) = env.get(*rv).types.as_singleton() {
+                *sink_caps &= !receiver_incompatible_sink_caps(&kind, *sink_caps);
+            }
+        }
+        if let Some(tf) = transfer.type_facts {
+            if let Some(kind) = tf.get_type(*rv) {
+                *sink_caps &= !receiver_incompatible_sink_caps(kind, *sink_caps);
+            }
+        }
+    }
+    // A Java receiver typed only by its declaration (an injected field, a
+    // formal) has no SSA type fact; its declared type still proves a
+    // response-write sink does not apply (`PrintStream err; err.println`).
+    if let Some(kind) = info.call.receiver_decl_type.as_ref() {
+        *sink_caps &= !receiver_incompatible_sink_caps(kind, *sink_caps);
+    }
+}
+
 /// Check if a receiver type is incompatible with a sink label's requirements.
 ///
 /// Returns the Cap bits that should be REMOVED because the receiver type
 /// proves the sink doesn't apply. For example, `HTML_ESCAPE` sinks require
 /// an HTTP-response-like receiver, if the receiver is known to be
 /// Int/Bool/String, `HTML_ESCAPE` doesn't apply.
-fn receiver_incompatible_sink_caps(kind: &crate::ssa::type_facts::TypeKind, sink_caps: Cap) -> Cap {
+pub(crate) fn receiver_incompatible_sink_caps(
+    kind: &crate::ssa::type_facts::TypeKind,
+    sink_caps: Cap,
+) -> Cap {
     use crate::ssa::type_facts::TypeKind;
     let mut remove = Cap::empty();
     // HTML_ESCAPE / OPEN_REDIRECT / HEADER_INJECTION all require an HTTP
@@ -14010,9 +15039,113 @@ pub(crate) fn node_is_hardcoded_network_fetch_source(info: &crate::cfg::NodeInfo
 /// also takes the sink `callee`: a callee that reads local paths, such as PHP
 /// `file_get_contents`, is not pinned by a `/path` prefix).
 fn is_string_safe_for_ssrf(sf: &crate::abstract_interp::StringFact, callee: Option<&str>) -> bool {
-    sf.prefix
-        .as_deref()
-        .is_some_and(|p| crate::abstract_interp::string_domain::prefix_locks_origin_for(callee, p))
+    crate::abstract_interp::string_domain::fact_locks_origin_for(callee, sf)
+}
+
+/// Whether the abstract string facts of `ssa` prove that every value that
+/// reaches the URL sink at `sink` from an untrusted source cannot leave the
+/// current origin or a fixed host ([`is_string_safe_for_ssrf`]).  The
+/// structural unguarded-sink pass asks it so that it keeps in step with the
+/// taint engine, which suppresses such a sink from the same facts.
+/// `introduces_untrusted_data` says which CFG nodes are sources.  `false`
+/// when no value reaching the sink comes from one.
+///
+/// The facts are rebuilt here on demand for just the values the sink depends
+/// on: each value's operands first, then its own transfer, a phi as the join
+/// of its operands.  A value reached again while it is being evaluated (a
+/// loop-carried phi) is left unknown.
+pub(crate) fn url_sink_origin_locked_by_facts(
+    ssa: &SsaBody,
+    cfg: &Cfg,
+    lang: Lang,
+    sink: NodeIndex,
+    introduces_untrusted_data: impl Fn(&NodeInfo) -> bool,
+) -> bool {
+    use crate::abstract_interp::AbstractValue;
+    type Defs<'a> = rustc_hash::FxHashMap<SsaValue, &'a SsaInst>;
+    let mut defs: Defs = rustc_hash::FxHashMap::default();
+    let mut sink_call: Option<&SsaInst> = None;
+    for block in &ssa.blocks {
+        for inst in block.phis.iter().chain(&block.body) {
+            defs.insert(inst.value, inst);
+            if inst.cfg_node == sink && matches!(inst.op, SsaOp::Call { .. }) {
+                sink_call = Some(inst);
+            }
+        }
+    }
+    let Some(sink_call) = sink_call else {
+        return false;
+    };
+
+    fn eval(
+        v: SsaValue,
+        defs: &Defs,
+        cfg: &Cfg,
+        lang: Lang,
+        abs: &mut AbstractState,
+        seen: &mut rustc_hash::FxHashSet<SsaValue>,
+        depth: usize,
+    ) {
+        if depth > 64 || !seen.insert(v) {
+            return;
+        }
+        let Some(inst) = defs.get(&v) else {
+            return;
+        };
+        for u in inst_use_values(inst) {
+            eval(u, defs, cfg, lang, abs, seen, depth + 1);
+        }
+        match &inst.op {
+            SsaOp::Phi(operands) => {
+                let mut joined = AbstractValue::bottom();
+                for (_, operand) in operands {
+                    joined = joined.join(&abs.get(*operand));
+                }
+                abs.set(inst.value, joined);
+            }
+            _ => transfer_abstract(inst, cfg, abs, Some(lang)),
+        }
+    }
+
+    // Whether `v` is computed from a value an untrusted source defines.  A
+    // formal parameter is not one: the taint engine seeds none of them.
+    fn from_source(
+        v: SsaValue,
+        defs: &Defs,
+        cfg: &Cfg,
+        is_source: &dyn Fn(&NodeInfo) -> bool,
+        seen: &mut rustc_hash::FxHashSet<SsaValue>,
+        depth: usize,
+    ) -> bool {
+        if depth > 64 || !seen.insert(v) {
+            return false;
+        }
+        let Some(inst) = defs.get(&v) else {
+            return false;
+        };
+        let formal = matches!(inst.op, SsaOp::Param { .. } | SsaOp::SelfParam);
+        (!formal && is_source(&cfg[inst.cfg_node]))
+            || inst_use_values(inst)
+                .into_iter()
+                .any(|u| from_source(u, defs, cfg, is_source, seen, depth + 1))
+    }
+
+    let callee = cfg[sink].call.callee.as_deref();
+    let mut abs = AbstractState::empty();
+    let mut eval_seen = rustc_hash::FxHashSet::default();
+    let mut any_source = false;
+    for v in inst_use_values(sink_call) {
+        let mut seen = rustc_hash::FxHashSet::default();
+        if !from_source(v, &defs, cfg, &introduces_untrusted_data, &mut seen, 0) {
+            continue;
+        }
+        any_source = true;
+        eval(v, &defs, cfg, lang, &mut abs, &mut eval_seen, 0);
+        if !is_string_safe_for_ssrf(&abs.get(v).string, callee) {
+            return false;
+        }
+    }
+    any_source
 }
 
 /// Resolve a bare or qualified callee string to a local [`FuncKey`] by
@@ -14258,7 +15391,16 @@ fn resolve_lfk_query_from(all: &[&FuncKey], q: &CalleeQuery<'_>) -> Option<FuncK
         return None;
     }
 
+    // Exact arity first.  When no candidate has the call's arity, tolerate
+    // under-application (`param_count >= call_arity`): the surplus parameters
+    // are default-valued or optional, a routine call shape in Python, JS/TS,
+    // PHP and Ruby.  Mirrors the global resolver's widening so a same-file
+    // callee with optional parameters resolves like a cross-file one.
+    let widened = q.caller_lang.allows_under_application()
+        && q.arity
+            .is_some_and(|a| !all.iter().any(|k| k.arity == Some(a)));
     let arity_matches = |k: &FuncKey| match q.arity {
+        Some(a) if widened => matches!(k.arity, Some(p) if p >= a),
         Some(a) => k.arity == Some(a),
         None => true,
     };
@@ -14367,6 +15509,38 @@ fn resolve_lfk_query_from(all: &[&FuncKey], q: &CalleeQuery<'_>) -> Option<FuncK
     }
 
     None
+}
+
+/// Free functions of one name (and call arity, when known) defined in a C
+/// file.  More than one means preprocessor alternatives, since C has no
+/// overloading and a plain redefinition does not compile.
+fn c_preproc_alternatives(
+    local_summaries: &FuncSummaries,
+    name: &str,
+    arity: Option<usize>,
+) -> Vec<FuncKey> {
+    let pick = |k: &FuncKey| {
+        k.container.is_empty()
+            && k.lang == Lang::C
+            && match arity {
+                Some(a) => k.arity == Some(a),
+                None => true,
+            }
+    };
+    if let Some(res) = with_indexed_local_candidates(name, Lang::C, |keys| {
+        keys.iter()
+            .copied()
+            .filter(|k| pick(k))
+            .cloned()
+            .collect::<Vec<_>>()
+    }) {
+        return res;
+    }
+    local_summaries
+        .keys()
+        .filter(|k| k.name == name && pick(k))
+        .cloned()
+        .collect()
 }
 
 pub(crate) fn resolve_local_func_key(
@@ -14966,6 +16140,49 @@ fn resolve_callee_steps(
         receiver_var,
         arity: arity_hint,
     };
+
+    // 0a) C `#if` / `#else` alternatives: two free functions of one name and
+    // arity in a file are the arms of a preprocessor group, and either arm can
+    // be the one compiled.  Union their summaries (any-impl) so a flow into
+    // the vulnerable arm is kept whichever arm comes first.
+    if let Some(ssa_sums) = transfer.ssa_summaries
+        && transfer.lang == Lang::C
+        && namespace_qualifier.is_none()
+        && receiver_var.is_none()
+        && receiver_type.is_none()
+    {
+        let alts = c_preproc_alternatives(transfer.local_summaries, normalized, arity_hint);
+        if alts.len() > 1 {
+            let mut accum: Option<ResolvedSummary> = None;
+            let mut covered = 0usize;
+            for key in &alts {
+                let found = ssa_sums.get(key).or_else(|| {
+                    ssa_sums
+                        .iter()
+                        .find(|(k, _)| {
+                            k.lang == key.lang
+                                && k.container == key.container
+                                && k.name == key.name
+                                && k.arity == key.arity
+                                && k.disambig == key.disambig
+                                && k.kind == key.kind
+                        })
+                        .map(|(_, v)| v)
+                });
+                if let Some(ssa_sum) = found {
+                    let r = convert_ssa_to_resolved(ssa_sum);
+                    accum = Some(match accum {
+                        None => r,
+                        Some(a) => merge_resolved_summaries_fanout(a, r),
+                    });
+                    covered += 1;
+                }
+            }
+            if covered == alts.len() {
+                return accum;
+            }
+        }
+    }
 
     // 0) Precise SSA summaries (intra-file, per-parameter transforms).
     //

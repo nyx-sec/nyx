@@ -1,0 +1,77 @@
+{
+  "description": "A prefix test is a containment proof only when the root ends with a separator: a bare root (path.resolve drops the trailing separator) admits a sibling directory that shares the prefix.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "sibling-prefix",
+    "path-guard"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        16,
+        16
+      ],
+      "notes": "sibling directory shares the prefix"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        24,
+        24
+      ],
+      "notes": "sibling directory shares the prefix"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        32,
+        32
+      ],
+      "notes": "admits every top level directory starting with s"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        40,
+        40
+      ],
+      "notes": "root ends with a separator"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        48,
+        48
+      ],
+      "notes": "constant ends with a separator"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        56,
+        56
+      ],
+      "notes": "separator appended at the test"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        64,
+        64
+      ],
+      "notes": "separator appended at the test"
+    }
+  ]
+}

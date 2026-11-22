@@ -3971,6 +3971,7 @@ fn caller_scope_edges_round_trip_and_reproduce_the_fold() {
         args: vec![],
         condition_text: None,
         is_route_level: true,
+        dominates_body: false,
     };
     // One authorized caller and one unauthorized caller of the same leaf: the
     // AND in `all_authorized` must refuse the lift.

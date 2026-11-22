@@ -1,0 +1,35 @@
+{
+  "description": "new URL(target, base).host compared with a constant trusted host: the redirect on the passing edge, in both == and != forms, is clean.",
+  "tags": [
+    "taint",
+    "open-redirect",
+    "host-compare"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow",
+    "taint-open-redirect"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "must_not_match": true,
+      "line_range": [
+        10,
+        10
+      ],
+      "notes": "equal-host edge"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "must_not_match": true,
+      "line_range": [
+        23,
+        23
+      ],
+      "notes": "not-equal edge returns first"
+    }
+  ]
+}

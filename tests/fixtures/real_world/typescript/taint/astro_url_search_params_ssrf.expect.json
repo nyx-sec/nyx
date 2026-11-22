@@ -1,0 +1,28 @@
+{
+  "description": "Astro endpoint: ctx.url.searchParams.get('href') reaches fetch.",
+  "tags": [
+    "taint",
+    "ssrf",
+    "astro"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow",
+    "taint-open-redirect"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        9,
+        9
+      ],
+      "evidence_contains": [],
+      "notes": "href query parameter picks the fetched URL"
+    }
+  ]
+}

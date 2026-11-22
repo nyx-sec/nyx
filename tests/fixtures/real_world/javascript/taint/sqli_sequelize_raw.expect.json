@@ -15,10 +15,10 @@
     {
       "rule_id": "taint-unsanitised-flow",
       "severity": null,
-      "must_match": true,
+      "must_not_match": true,
       "line_range": [7, 7],
       "evidence_contains": [],
-      "notes": "results of tainted sequelize.query flow to res.json — secondary response-sink flow"
+      "notes": "res.json sends application/json and is not modelled as an XSS sink, so the query result reaching it is not a second flow"
     }
   ]
 }

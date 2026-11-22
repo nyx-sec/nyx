@@ -518,6 +518,7 @@ fn positive_ruby() {
             "rb.code_exec.instance_eval",
             "rb.code_exec.class_eval",
             "rb.cmdi.backtick",
+            "rb.cmdi.system_interp",
             "rb.deser.yaml_load",
             "rb.deser.marshal_load",
             "rb.reflection.constantize",
@@ -611,4 +612,42 @@ fn negative_php() {
 #[test]
 fn negative_ruby() {
     assert_negative_no_security_match("ruby", "negative.rb");
+}
+
+/// `rb.cmdi.system_interp` keeps every shape that can run caller text as a
+/// shell command or as a program, and drops only the shell-free argv form.
+#[test]
+fn ruby_system_interp_argv_form() {
+    let fires = [
+        r##"system("ls #{c}")"##,
+        "system(c)",
+        r##"system("sh", "-c", c)"##,
+        r##"exec("bash", "-c", c)"##,
+        r##"system("/bin/sh", "-c", "ls #{c}")"##,
+        r##"system("cmd.exe", "/c", c)"##,
+        r##"system("ruby", "-e", c)"##,
+        r##"system("env", "bash", "-c", c)"##,
+        r##"system(c, "arg")"##,
+        r##"system("#{c}", "arg")"##,
+        r##"system({"A" => "1"}, "sh", "-c", c)"##,
+        r##"system({"A" => "1"}, c, "arg")"##,
+        r##"system("sh", "-c", c, chdir: "/")"##,
+    ];
+    for src in fires {
+        let hit = run_patterns("ruby", src.as_bytes());
+        assert!(hit.contains("rb.cmdi.system_interp"), "should fire: {src}");
+    }
+    let quiet = [
+        r##"system("git", "log", c)"##,
+        r##"exec("ls", "-l", c)"##,
+        r##"system({"A" => "1"}, "git", "log", c, chdir: "/tmp")"##,
+        r##"system('git', 'log', c)"##,
+    ];
+    for src in quiet {
+        let hit = run_patterns("ruby", src.as_bytes());
+        assert!(
+            !hit.contains("rb.cmdi.system_interp"),
+            "should not fire: {src}"
+        );
+    }
 }

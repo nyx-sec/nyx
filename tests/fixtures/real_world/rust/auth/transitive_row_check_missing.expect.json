@@ -1,0 +1,24 @@
+{
+  "description": "Both rows are fetched but no check runs on either, so the tag update by request id is unauthorised",
+  "tags": [
+    "auth",
+    "positive",
+    "derived-row"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        8,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "Both rows are fetched but no check runs on either, so the tag update by request id is unauthorised"
+    }
+  ]
+}

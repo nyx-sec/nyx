@@ -1,0 +1,24 @@
+{
+  "description": "A request parameter used as a redirect target is an open redirect",
+  "tags": [
+    "taint",
+    "open_redirect",
+    "rails"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        3,
+        3
+      ],
+      "evidence_contains": [],
+      "notes": "A request parameter used as a redirect target is an open redirect"
+    }
+  ]
+}

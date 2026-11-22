@@ -58,7 +58,16 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: false,
     },
     LabelRule {
-        matchers: &["Shellwords.escape", "Shellwords.shellescape"],
+        matchers: &[
+            "Shellwords.escape",
+            "Shellwords.shellescape",
+            "Shellwords.join",
+            "Shellwords.shelljoin",
+            // The `String#shellescape` / `Array#shelljoin` core extensions
+            // from `require 'shellwords'`: `src.shellescape`.
+            "shellescape",
+            "shelljoin",
+        ],
         label: DataLabel::Sanitizer(Cap::SHELL_ESCAPE),
         case_sensitive: false,
     },
@@ -77,6 +86,23 @@ pub static RULES: &[LabelRule] = &[
     // ActiveRecord SQL sanitizers
     LabelRule {
         matchers: &["sanitize_sql", "sanitize_sql_array"],
+        label: DataLabel::Sanitizer(Cap::SQL_QUERY),
+        case_sensitive: false,
+    },
+    // The adapter's own quoting.  The callee text keeps the `connection`
+    // segment of `ActiveRecord::Base.connection.quote(x)`, so these anchor on
+    // it and a bare `quote` on an unrelated receiver does not match.
+    LabelRule {
+        matchers: &[
+            "connection.quote",
+            "connection.quote_string",
+            "connection.quote_table_name",
+            "connection.quote_column_name",
+            "lease_connection.quote",
+            "lease_connection.quote_string",
+            "lease_connection.quote_table_name",
+            "lease_connection.quote_column_name",
+        ],
         label: DataLabel::Sanitizer(Cap::SQL_QUERY),
         case_sensitive: false,
     },
@@ -273,6 +299,7 @@ pub static RULES: &[LabelRule] = &[
         matchers: &[
             "find_by_sql",
             "connection.execute",
+            "lease_connection.execute",
             "select_all",
             "exec_query",
             "select_value",
@@ -311,6 +338,7 @@ pub static RULES: &[LabelRule] = &[
     LabelRule {
         matchers: &[
             "DatabaseConnection.exec",
+            "DatabaseConnection.execute",
             "DatabaseConnection.async_exec",
             "DatabaseConnection.exec_query",
             "DatabaseConnection.query",
@@ -339,6 +367,16 @@ pub static RULES: &[LabelRule] = &[
     LabelRule {
         matchers: &["redirect"],
         label: DataLabel::Sink(Cap::OPEN_REDIRECT),
+        case_sensitive: true,
+    },
+    // Named route helpers (`things_path(page: 1)`) are bare calls that build a
+    // host-relative path with escaped segments, so redirecting to one cannot
+    // leave the site.  Calls with a receiver or namespace never match.
+    // `_url` helpers are excluded: they accept `host:`.  A project function
+    // of the same name resolves through its summary first and wins.
+    LabelRule {
+        matchers: &["~_path"],
+        label: DataLabel::Sanitizer(Cap::OPEN_REDIRECT),
         case_sensitive: true,
     },
     LabelRule {
@@ -632,7 +670,11 @@ pub static KINDS: Map<&'static str, Kind> = phf_map! {
 
 pub static PARAM_CONFIG: ParamConfig = ParamConfig {
     params_field: "parameters",
-    param_node_kinds: &["identifier"],
+    // `optional_parameter` is `a = 1` and `keyword_parameter` is `a:` / `a: 1`.
+    // Splat (`*a`, `**o`) and block (`&b`) parameters are not counted: they
+    // bind a variable number of arguments or a block, so no single call-site
+    // argument maps to them.
+    param_node_kinds: &["identifier", "optional_parameter", "keyword_parameter"],
     self_param_kinds: &[],
     ident_fields: &["name"],
 };
@@ -807,4 +849,55 @@ mod file_write_tests {
             assert_eq!(gate.payload_args, &[0], "{callee}");
         }
     }
+}
+
+/// True when a Ruby `system` / `exec` call is a shell-free argv form: two or
+/// more command words whose program is a fixed string that is not itself a
+/// shell, interpreter or wrapper (`system("git", "log", path)`).  Ruby then
+/// execs the program directly, so metacharacters in the later words are inert.
+///
+/// It is not shell-free when the program is dynamic (`system(cmd, "x")` runs
+/// whatever `cmd` names) or when it is `sh`, `bash`, `cmd.exe`, `ruby`, `env`
+/// and the like, whose arguments are run as code (`system("sh", "-c", c)`).
+/// A leading environment hash, trailing option pairs (`chdir: dir`), a block
+/// argument and comments are not command words.  A splat makes the word count
+/// unknown, so it is never argv form.
+pub fn kernel_exec_is_argv_form(call: tree_sitter::Node, code: &[u8]) -> bool {
+    let Some(args) = call.child_by_field_name("arguments") else {
+        return false;
+    };
+    let mut cursor = args.walk();
+    let mut words: Vec<tree_sitter::Node> = Vec::new();
+    for (i, child) in args.named_children(&mut cursor).enumerate() {
+        match child.kind() {
+            "splat_argument" | "hash_splat_argument" => return false,
+            "pair" | "block_argument" | "comment" => {}
+            "hash" if i == 0 => {}
+            _ => words.push(child),
+        }
+    }
+    if words.len() < 2 {
+        return false;
+    }
+    match plain_string_value(words[0], code) {
+        Some(program) => !super::is_command_runner_program(&program),
+        None => false,
+    }
+}
+
+/// Value of a Ruby string literal with no interpolation, `None` otherwise.
+fn plain_string_value(node: tree_sitter::Node, code: &[u8]) -> Option<String> {
+    if node.kind() != "string" {
+        return None;
+    }
+    let mut cursor = node.walk();
+    if node
+        .named_children(&mut cursor)
+        .any(|c| !matches!(c.kind(), "string_content" | "escape_sequence"))
+    {
+        return None;
+    }
+    let raw = node.utf8_text(code).ok()?;
+    let body = raw.get(1..raw.len().checked_sub(1)?)?;
+    Some(body.to_string())
 }

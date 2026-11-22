@@ -1,0 +1,26 @@
+{
+  "description": "A loop variable over a file-scope const array of string literals that nothing else touches only takes those literals, so interpolating it into raw SQL is not attacker controlled.",
+  "tags": [
+    "sqli",
+    "sequelize",
+    "migration",
+    "const-collection",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        100000
+      ],
+      "evidence_contains": [],
+      "notes": "safe shape must not fire"
+    }
+  ]
+}

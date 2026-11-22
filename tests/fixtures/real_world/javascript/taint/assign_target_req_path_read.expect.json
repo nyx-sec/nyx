@@ -1,0 +1,25 @@
+{
+  "description": "XSS: req.path is read and reflected into the response",
+  "tags": [
+    "taint",
+    "xss",
+    "express",
+    "assignment-target"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        5,
+        6
+      ],
+      "evidence_contains": [],
+      "notes": "XSS: req.path is read and reflected into the response"
+    }
+  ]
+}

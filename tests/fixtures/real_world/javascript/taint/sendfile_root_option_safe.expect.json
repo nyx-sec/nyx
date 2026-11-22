@@ -1,0 +1,21 @@
+{
+  "description": "res.download and res.sendFile with a root option resolve the user path under root and reject traversal out of it, so no path traversal finding is reported.",
+  "tags": ["taint", "path-traversal", "javascript", "express", "negative"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [5, 12],
+      "notes": "the send module confines the path to root",
+      "must_not_match": true
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [5, 12],
+      "notes": "the send module confines the path to root",
+      "must_not_match": true
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "description": "A JDBC Statement receiver with a concatenated SQL string still fires the Tier-B execute pattern.",
+  "tags": ["sqli", "java", "jdbc", "pattern"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "java.sqli.execute_concat",
+      "severity": null,
+      "line_range": [7, 7],
+      "notes": "st.execute with string concatenation on a Statement variable"
+    }
+  ]
+}

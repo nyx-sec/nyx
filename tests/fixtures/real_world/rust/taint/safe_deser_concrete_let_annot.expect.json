@@ -1,0 +1,14 @@
+{
+  "description": "toml::from_str into a concrete annotated type is not a polymorphic decode",
+  "tags": ["taint", "deserialization", "negative"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [1, 14],
+      "notes": "Concrete target type; no deserialization flow"
+    }
+  ]
+}

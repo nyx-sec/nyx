@@ -1,0 +1,24 @@
+{
+  "description": "An exported literal collection can be mutated by an importer, so a loop over it is not constant.",
+  "tags": [
+    "sqli",
+    "const-collection",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        5,
+        5
+      ],
+      "evidence_contains": [],
+      "notes": "An exported literal collection can be mutated by an importer, so a loop over it is not constant."
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "description": "A predicate whose name ends in close or free used as an if condition is not a release. A real fclose in the condition followed by another fclose is a double close.",
+  "tags": ["state", "double-close", "condition-release"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "state-double-close",
+      "severity": null,
+      "must_match": false,
+      "line_range": [9, 30],
+      "evidence_contains": [],
+      "notes": "should_close and is_free are predicates; each handle is closed once per path"
+    },
+    {
+      "rule_id": "state-double-close",
+      "severity": null,
+      "must_match": true,
+      "line_range": [39, 39],
+      "evidence_contains": [],
+      "notes": "fclose in the condition releases f, the next fclose closes it again"
+    }
+  ]
+}

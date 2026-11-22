@@ -1,0 +1,47 @@
+{
+  "description": "FILE_IO builtins called as \\unlink or consumed by `or die` still see their path argument.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "file-io",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        4,
+        4
+      ],
+      "evidence_contains": [],
+      "notes": "Tainted value reaches the sink on line 4"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        9,
+        9
+      ],
+      "evidence_contains": [],
+      "notes": "Tainted value reaches the sink on line 9"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        13,
+        13
+      ],
+      "evidence_contains": [],
+      "notes": "Tainted value reaches the sink on line 13"
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "description": "A boolean helper named for redirect safety clears OPEN_REDIRECT on its true edge only.",
+  "tags": [
+    "taint",
+    "open-redirect",
+    "safe-redirect-helper",
+    "polarity"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "must_not_match": true,
+      "line_range": [
+        14,
+        14
+      ],
+      "notes": "only a vetted target survives"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "must_not_match": true,
+      "line_range": [
+        22,
+        22
+      ],
+      "notes": "guarded by the predicate"
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "must_match": true,
+      "line_range": [
+        28,
+        28
+      ],
+      "notes": ""
+    },
+    {
+      "rule_id": "taint-open-redirect",
+      "must_match": true,
+      "line_range": [
+        34,
+        34
+      ],
+      "notes": "runs for rejected targets"
+    }
+  ]
+}

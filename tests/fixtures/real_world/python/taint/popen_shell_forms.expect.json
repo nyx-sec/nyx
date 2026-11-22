@@ -1,0 +1,109 @@
+{
+  "description": "Bare Popen shapes that run caller text as code: clustered shell flag, wrapper, interpreter, args= keyword, tainted program, ** spread, positional and truthy shell",
+  "tags": [
+    "taint",
+    "cmdi",
+    "python"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        37,
+        37
+      ],
+      "evidence_contains": [],
+      "notes": "clustered shell flag"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        38,
+        38
+      ],
+      "evidence_contains": [],
+      "notes": "env wrapper"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        39,
+        39
+      ],
+      "evidence_contains": [],
+      "notes": "interpreter -c"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        40,
+        40
+      ],
+      "evidence_contains": [],
+      "notes": "args= keyword"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        41,
+        41
+      ],
+      "evidence_contains": [],
+      "notes": "tainted program"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        42,
+        42
+      ],
+      "evidence_contains": [],
+      "notes": "** spread shell"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        43,
+        43
+      ],
+      "evidence_contains": [],
+      "notes": "positional shell"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        44,
+        44
+      ],
+      "evidence_contains": [],
+      "notes": "truthy shell"
+    }
+  ]
+}

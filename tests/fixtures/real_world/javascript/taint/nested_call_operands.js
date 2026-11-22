@@ -9,7 +9,7 @@ function getCmd(req) { var v = req.query.cmd; return v; }
 function card(title, body) { return '<h2>' + escapeHtml(title) + '</h2>' + body; }
 
 app.get('/partial', function (req, res) {
-    var html = '<p>' + escapeHtml(req.query.name) + '</p>' + req.query.bio;
+    var bio = req.query.bio; var html = '<p>' + escapeHtml(req.query.name) + '</p>' + bio;
     res.send(html);
 });
 

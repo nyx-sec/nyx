@@ -1,0 +1,25 @@
+{
+  "description": "Optional parameter with a default still receives the positional argument",
+  "tags": [
+    "taint",
+    "cmdi",
+    "ruby"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        3,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "params[:dest] flows to the optional dest parameter and into the shell"
+    }
+  ]
+}

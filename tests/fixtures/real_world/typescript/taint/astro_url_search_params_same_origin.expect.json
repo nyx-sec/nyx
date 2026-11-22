@@ -1,0 +1,27 @@
+{
+  "description": "Astro endpoint with an origin check on the parsed URL: clean.",
+  "tags": [
+    "taint",
+    "ssrf",
+    "astro",
+    "host-compare"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow",
+    "taint-open-redirect"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        13,
+        13
+      ],
+      "notes": "target keeps the site origin"
+    }
+  ]
+}

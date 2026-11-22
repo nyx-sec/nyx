@@ -1247,9 +1247,11 @@ fn clone_preserves_all_sub_structs() {
             arg_string_literals: vec![Some("lit".into())],
             arg_string_prefixes: vec![None],
             arg_bare_names: 0b1,
+            arg_raw_string_mask: 0b10,
             destination_uses: None,
             gate_filters: Vec::new(),
             is_constructor: false,
+            callee_nesting: CalleeNesting::Own,
             ctor_owned_args: vec!["in".into()],
             produces_null_proto: false,
             hoisted_sink: Some(Box::new(crate::cfg::HoistedSink {
@@ -1277,6 +1279,7 @@ fn clone_preserves_all_sub_structs() {
                 }],
             })),
             receiver_decl_type: Some(crate::ssa::type_facts::TypeKind::JdbcTemplate),
+            kw_arg_positions: Vec::new(),
         },
         taint: TaintMeta {
             labels: {
@@ -1285,6 +1288,7 @@ fn clone_preserves_all_sub_structs() {
                 v
             },
             const_text: Some("42".into()),
+            const_collection: false,
             defines: Some("r".into()),
             uses: vec!["a".into(), "b".into()],
             extra_defines: vec!["c".into()],
@@ -2069,9 +2073,9 @@ fn js_fluent_response_chain_classifies_by_final_method() {
     let src = b"function h(req, res) {\n\
                   res.status(200).send(req.query.q);\n\
                   res.set('Content-Type', 'text/html').send(req.query.q);\n\
-                  res.status(204).json();\n\
                   return res.status(302).redirect(req.query.next);\n\
                 }\n\
+                function e(req, res) { res.status(204).json(); }\n\
                 function g(db, q) { db.collection('users').find(q); }";
     let ts_lang = Language::from(tree_sitter_javascript::LANGUAGE);
     let file_cfg = parse_to_file_cfg(src, "javascript", ts_lang);
@@ -2089,7 +2093,9 @@ fn js_fluent_response_chain_classifies_by_final_method() {
     let redirects = js_call_nodes(&file_cfg, "res.redirect");
     assert!(!redirects.is_empty());
     assert!(redirects.iter().all(|n| has_sink(n, Cap::OPEN_REDIRECT)));
-    // `res.status(204).json()` passes no body, so it is not a sink.
+    // `res.status(204).json()` passes no body, so it is not a sink.  It sits
+    // in its own function: in one that sets `text/html` a `res.json` call
+    // is named `res.send`.
     let empty_bodies: Vec<_> = js_call_nodes(&file_cfg, "res.json");
     assert_eq!(empty_bodies.len(), 1);
     assert!(!has_sink(empty_bodies[0], Cap::HTML_ESCAPE));
@@ -2320,6 +2326,68 @@ fn c_function_extracts_param_names() {
         params.contains(&"arg".to_string()),
         "expected 'arg' in params, got: {:?}",
         params
+    );
+}
+
+#[test]
+fn c_pointer_returning_functions_keep_param_names() {
+    let src = b"static FILE *open_pipe(char *cmd, int mode) { return 0; }\n\
+char **table(char *key) { return 0; }\n\
+void *(*pick(int sel))(void) { return 0; }\n";
+    let ts_lang = Language::from(tree_sitter_c::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "c", ts_lang);
+    let by_name = |n: &str| {
+        file_cfg
+            .summaries
+            .iter()
+            .find(|(k, _)| k.name == n)
+            .map(|(_, s)| s.param_names.clone())
+    };
+    assert_eq!(
+        by_name("open_pipe"),
+        Some(vec!["cmd".into(), "mode".into()])
+    );
+    assert_eq!(by_name("table"), Some(vec!["key".into()]));
+    assert_eq!(by_name("pick"), Some(vec!["sel".into()]));
+}
+
+#[test]
+fn c_condition_assignment_defines_target() {
+    let src = b"void f(void) {\n\
+    char *e;\n\
+    int c;\n\
+    if ((e = getenv(\"X\")) == NULL) return;\n\
+    while ((c = getc(stdin)) != EOF) { }\n\
+    if (!(e = getenv(\"Y\"))) return;\n\
+    if ((c += 1) > 2) return;\n\
+}\n";
+    let ts_lang = Language::from(tree_sitter_c::LANGUAGE);
+    let (g, _entry) = parse_and_build(src, "c", ts_lang);
+    let defs: Vec<(StmtKind, Option<String>)> = g
+        .node_indices()
+        .filter(|&i| matches!(g[i].kind, StmtKind::If | StmtKind::Loop))
+        .map(|i| (g[i].kind, g[i].taint.defines.clone()))
+        .collect();
+    assert_eq!(
+        defs,
+        vec![
+            (StmtKind::If, Some("e".to_string())),
+            (StmtKind::Loop, Some("c".to_string())),
+            (StmtKind::If, Some("e".to_string())),
+            (StmtKind::If, None),
+        ],
+        "plain assignments in a condition define their target; compound ones do not"
+    );
+}
+
+#[test]
+fn c_preproc_group_bodies_are_lowered() {
+    let src = b"#ifndef X\nvoid f(void) { char *e = getenv(\"A\"); system(e); }\n#endif\n";
+    let ts_lang = Language::from(tree_sitter_c::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "c", ts_lang);
+    assert!(
+        file_cfg.summaries.keys().any(|k| k.name == "f"),
+        "a function inside #ifndef must be summarised"
     );
 }
 
@@ -7559,6 +7627,120 @@ class T {
     assert_eq!(kind_of("Files.readString"), None);
 }
 
+#[test]
+fn java_response_write_sink_keeps_declared_stream_type() {
+    use crate::ssa::type_facts::TypeKind;
+    let src = br#"
+import java.io.FileWriter;
+import java.io.PrintStream;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+class T {
+    FileWriter log;
+    PrintStream err;
+    PrintWriter out;
+    void f(String m, java.io.DataOutputStream peer, StringWriter buf) throws Exception {
+        log.write(m);
+        buf.write(m);
+        err.println(m);
+        out.println(m);
+        peer.write(m.getBytes());
+    }
+}
+"#;
+    let types = java_receiver_decl_types(src);
+    let kind_of = |callee: &str| {
+        types
+            .iter()
+            .find(|(c, _)| c == callee)
+            .unwrap_or_else(|| panic!("no call node for {callee}: {types:?}"))
+            .1
+            .clone()
+    };
+    // File and memory writers can never be the servlet response.
+    assert_eq!(kind_of("log.write"), Some(TypeKind::FileHandle));
+    assert_eq!(kind_of("buf.write"), Some(TypeKind::FileHandle));
+    // Wrapping streams can sit on the response
+    // (`new PrintStream(resp.getOutputStream())`), and a PrintWriter is the
+    // servlet response writer type, so none of them drops the sink.
+    assert_eq!(kind_of("err.println"), None);
+    assert_eq!(kind_of("peer.write"), None);
+    assert_eq!(
+        kind_of("out.println"),
+        None,
+        "a PrintWriter is the servlet response writer type"
+    );
+}
+
+#[test]
+fn java_stream_resource_println_keeps_declared_type() {
+    use crate::ssa::type_facts::TypeKind;
+    let src = br#"
+import java.io.*;
+class T {
+    void copy(File out, File f, String header) throws Exception {
+        try (PrintStream ps = new PrintStream(new FileOutputStream(out));
+             BufferedReader br = new BufferedReader(new FileReader(f))) {
+            for (String l = br.readLine(); l != null; l = br.readLine()) {
+                ps.println(l);
+            }
+            ps.print(header);
+        }
+    }
+}
+"#;
+    let types = java_receiver_decl_types(src);
+    for callee in ["ps.println", "ps.print"] {
+        let kind = types
+            .iter()
+            .find(|(c, _)| c == callee)
+            .unwrap_or_else(|| panic!("no call node for {callee}: {types:?}"))
+            .1
+            .clone();
+        assert_eq!(kind, Some(TypeKind::FileHandle), "{callee}");
+    }
+}
+
+#[test]
+fn java_wrapping_stream_on_response_or_reassigned_keeps_no_type() {
+    let src = br#"
+import java.io.*;
+class T {
+    void a(javax.servlet.http.HttpServletResponse resp, String m) throws Exception {
+        PrintStream ps = new PrintStream(resp.getOutputStream());
+        ps.println(m);
+    }
+    void b(javax.servlet.http.HttpServletResponse resp, File f, String m) throws Exception {
+        PrintStream qs = new PrintStream(new FileOutputStream(f));
+        qs = new PrintStream(resp.getOutputStream());
+        qs.println(m);
+    }
+    void c(PrintWriter w, String m) {
+        PrintWriter pw = new PrintWriter(new BufferedWriter(new FileWriter("log")));
+        pw.println(m);
+        w.println(m);
+    }
+}
+"#;
+    let types = java_receiver_decl_types(src);
+    let kind_of = |callee: &str| {
+        types
+            .iter()
+            .find(|(c, _)| c == callee)
+            .unwrap_or_else(|| panic!("no call node for {callee}: {types:?}"))
+            .1
+            .clone()
+    };
+    assert_eq!(kind_of("ps.println"), None, "wraps the servlet response");
+    assert_eq!(kind_of("qs.println"), None, "reassigned to the response");
+    assert_eq!(kind_of("w.println"), None, "a PrintWriter formal");
+    assert_eq!(
+        kind_of("pw.println"),
+        Some(crate::ssa::type_facts::TypeKind::FileHandle),
+        "nested wrappers over a FileWriter"
+    );
+}
+
 /// Callee text of every Java call node that carries a `Source` label.
 fn java_source_callees(src: &[u8]) -> Vec<String> {
     let file_cfg = parse_to_file_cfg(src, "java", Language::from(tree_sitter_java::LANGUAGE));
@@ -8542,4 +8724,708 @@ fn rust_unwrap_rebind_never_counts_as_all_literal() {
         .find(|(c, _)| c.contains("unwrap"))
         .expect("unwrap call node");
     assert!(!unwrapped.1, "peeled call must stay not-all-literal");
+}
+
+/// Whether the first prefix-test condition in the file was flagged as having a
+/// root that provably lacks a trailing separator.
+fn first_prefix_test_root_unterminated(src: &[u8], lang: &str, ts_lang: Language) -> bool {
+    let file_cfg = parse_to_file_cfg(src, lang, ts_lang);
+    for body in &file_cfg.bodies {
+        for n in body.graph.node_indices() {
+            let info = &body.graph[n];
+            if info.condition_text.as_deref().is_some_and(|t| {
+                crate::abstract_interp::path_domain::starts_with_root_arg(t).is_some()
+            }) {
+                return info.root_unterminated;
+            }
+        }
+    }
+    panic!("no prefix-test condition in source");
+}
+
+#[test]
+fn js_root_constant_without_trailing_separator_is_flagged() {
+    let js = Language::from(tree_sitter_javascript::LANGUAGE);
+    let flagged = |root: &str| {
+        let src = format!(
+            "const path = require('path');\nconst ROOT = {root};\n\
+             function f(p) {{ if (!p.startsWith(ROOT)) {{ return; }} use(p); }}"
+        );
+        first_prefix_test_root_unterminated(src.as_bytes(), "javascript", js.clone())
+    };
+    // path.resolve strips a trailing separator; a bare literal has none.
+    assert!(flagged("path.resolve('/srv/files')"));
+    assert!(flagged("'/srv/files'"));
+    // A separator at the end of the literal, or appended to the call, makes
+    // the root a directory prefix.
+    assert!(!flagged("'/srv/files/'"));
+    assert!(!flagged("path.resolve('/srv/files') + path.sep"));
+    assert!(!flagged("path.resolve('/srv/files') + '/'"));
+    // An opaque value is not resolved, so the lock stays accepted.
+    assert!(!flagged("loadRoot()"));
+    assert!(!flagged("process.env.ROOT"));
+}
+
+#[test]
+fn root_constant_rebound_or_shadowed_is_not_flagged() {
+    let js = Language::from(tree_sitter_javascript::LANGUAGE);
+    // Two definitions: the value at the test is unknown.
+    let rebound = b"let ROOT = '/srv/files';\nROOT = loadRoot();\n\
+                    function f(p) { if (!p.startsWith(ROOT)) { return; } use(p); }";
+    assert!(!first_prefix_test_root_unterminated(
+        rebound,
+        "javascript",
+        js.clone()
+    ));
+    // A parameter named like the constant shadows it.
+    let shadowed = b"const ROOT = '/srv/files';\n\
+                     function f(p, ROOT) { if (!p.startsWith(ROOT)) { return; } use(p); }";
+    assert!(!first_prefix_test_root_unterminated(
+        shadowed,
+        "javascript",
+        js
+    ));
+}
+
+#[test]
+fn python_root_constant_without_trailing_separator_is_flagged() {
+    let py = Language::from(tree_sitter_python::LANGUAGE);
+    let flagged = |root: &str| {
+        let src = format!(
+            "import os\nROOT = {root}\n\
+             def f(p):\n    if not p.startswith(ROOT):\n        return\n    use(p)\n"
+        );
+        first_prefix_test_root_unterminated(src.as_bytes(), "python", py.clone())
+    };
+    assert!(flagged("'/srv/files'"));
+    assert!(flagged("os.path.abspath('/srv/files')"));
+    assert!(flagged("os.path.realpath(BASE)"));
+    assert!(!flagged("'/srv/files/'"));
+    assert!(!flagged("os.path.abspath('/srv/files') + os.sep"));
+    assert!(!flagged("os.path.join(BASE, '')"));
+    assert!(!flagged("load_root()"));
+}
+
+#[test]
+fn java_and_rust_root_constants_are_not_resolved() {
+    // `startsWith` / `starts_with` may be component-wise `Path` methods there.
+    let java = Language::from(tree_sitter_java::LANGUAGE);
+    let src = b"class C { static final String ROOT = \"/srv/files\";\n\
+                void f(String p) { if (!p.startsWith(ROOT)) { return; } use(p); } }";
+    assert!(!first_prefix_test_root_unterminated(src, "java", java));
+}
+
+/// Whether any node of the snippet carries a DESERIALIZE sink label.
+fn rust_has_deserialize_sink(src: &[u8]) -> bool {
+    let file_cfg = parse_to_file_cfg(src, "rust", Language::from(tree_sitter_rust::LANGUAGE));
+    file_cfg.bodies.iter().any(|b| {
+        b.graph.node_indices().any(|n| {
+            b.graph[n]
+                .taint
+                .labels
+                .iter()
+                .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::DESERIALIZE)))
+        })
+    })
+}
+
+#[test]
+fn rust_dyn_let_annotation_makes_toml_decode_a_sink() {
+    assert!(rust_has_deserialize_sink(
+        b"fn f(s: &str) { let v: Box<dyn P> = toml::from_str(s).unwrap(); }"
+    ));
+    assert!(rust_has_deserialize_sink(
+        b"fn f(s: &str) -> R { let v: Box<dyn P> = ron::from_str(s).map_err(e)?; Ok(()) }"
+    ));
+    assert!(!rust_has_deserialize_sink(
+        b"fn f(s: &str) { let v: Config = toml::from_str(s).unwrap(); }"
+    ));
+    assert!(!rust_has_deserialize_sink(
+        b"fn f(s: &str) { let v: Box<Config> = toml::from_str(s).unwrap(); }"
+    ));
+    assert!(!rust_has_deserialize_sink(
+        b"fn f(s: &str) { let v: Result<Config, Box<dyn Error>> = toml::from_str(s); }"
+    ));
+    assert!(rust_has_deserialize_sink(
+        b"fn f(s: &str) { let v: Result<Box<dyn P>, E> = toml::from_str(s); }"
+    ));
+    assert!(
+        !rust_has_deserialize_sink(
+            b"fn f(s: &str) { let (a, b): (Box<dyn P>, X) = (build(), toml::from_str(s)?); }"
+        ),
+        "a dyn annotation that is not the decode target must not label it"
+    );
+}
+
+/// Whether any node of the Ruby snippet carries a sink label with `cap`.
+fn ruby_has_sink(src: &[u8], cap: Cap) -> bool {
+    let file_cfg = parse_to_file_cfg(src, "ruby", Language::from(tree_sitter_ruby::LANGUAGE));
+    file_cfg.bodies.iter().any(|b| {
+        b.graph.node_indices().any(|n| {
+            b.graph[n]
+                .taint
+                .labels
+                .iter()
+                .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(cap)))
+        })
+    })
+}
+
+#[test]
+fn ruby_connection_chain_keeps_the_connection_segment() {
+    for src in [
+        &b"def f(q)\n  ActiveRecord::Base.connection.execute(q)\nend"[..],
+        b"def f(q)\n  Report.connection.execute(\n    \"S\" + q\n  )\nend",
+        b"def f(q)\n  Report.lease_connection.execute(q)\nend",
+    ] {
+        assert!(
+            ruby_has_sink(src, Cap::SQL_QUERY),
+            "{}",
+            String::from_utf8_lossy(src)
+        );
+    }
+    assert!(!ruby_has_sink(
+        b"def f(q)\n  Report.execute(q)\nend",
+        Cap::SQL_QUERY
+    ));
+    assert!(!ruby_has_sink(
+        b"def f(q)\n  Report.connection.reload(q)\nend",
+        Cap::SQL_QUERY
+    ));
+}
+
+/// Declared receiver type recorded on the Rust call nodes of a snippet, keyed
+/// by callee text.
+fn rust_receiver_decl_types(src: &[u8]) -> Vec<(String, Option<crate::ssa::type_facts::TypeKind>)> {
+    let file_cfg = parse_to_file_cfg(src, "rust", Language::from(tree_sitter_rust::LANGUAGE));
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| {
+            b.graph
+                .node_indices()
+                .filter_map(|n| {
+                    let callee = b.graph[n].call.callee.clone()?;
+                    Some((callee, b.graph[n].call.receiver_decl_type.clone()))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn rust_receiver_decl_type_follows_the_declaration() {
+    use crate::ssa::type_facts::TypeKind;
+    let src = br#"
+use rusqlite::Connection;
+use std::sync::{Arc, Mutex};
+struct Store { conn: Connection, pool: Arc<Mutex<Connection>>, log: Vec<String>, other: Other }
+struct Other { n: u32 }
+impl Store {
+    fn field(&self) { self.conn.execute("a", []); }
+    fn field_chain(&self) { self.conn.execute("b", []).unwrap(); }
+    fn locked(&self) { let c = self.pool.lock().unwrap(); c.execute("c", []); }
+    fn not_conn(&self) { self.log.push(1); self.other.touch(); }
+    fn no_self() { self.conn.execute("d", []); }
+    fn shadowed(&self) { let c = self.pool.lock().unwrap(); let c = make(); c.run_it(); }
+    fn closure_shadow(&self) { let c = self.pool.lock().unwrap(); items.iter().for_each(|c| c.visit_it()); }
+}
+fn annotated() { let c: Connection = open_db(); c.execute("e", []); }
+fn formal(pool: &Arc<Mutex<Connection>>) { let g = pool.lock().unwrap(); g.execute("f", []); }
+fn pool_formal(pool: &Pool) { let g = pool.get().unwrap(); g.execute("g", []); }
+fn plain_formal(conn: &Connection) { conn.execute("h", []); }
+"#;
+    let types = rust_receiver_decl_types(src);
+    let kind_of = |callee_part: &str| {
+        types
+            .iter()
+            .find(|(c, _)| c.contains(callee_part))
+            .unwrap_or_else(|| panic!("no call node for {callee_part}: {types:?}"))
+            .1
+            .clone()
+    };
+    let conn = Some(TypeKind::DatabaseConnection);
+    assert_eq!(kind_of("self.conn.execute"), conn, "{types:?}");
+    assert_eq!(kind_of("c.execute"), conn);
+    assert_eq!(kind_of("g.execute"), conn);
+    assert_eq!(kind_of("self.log.push"), None);
+    assert_eq!(kind_of("self.other.touch"), None);
+    assert_eq!(kind_of("c.run_it"), None, "a later let shadows the guard");
+    assert_eq!(
+        kind_of("c.visit_it"),
+        None,
+        "a closure formal shadows the guard"
+    );
+    let no_self: Vec<_> = types
+        .iter()
+        .filter(|(c, _)| c.contains("self.conn.execute(\"d\""))
+        .collect();
+    assert!(no_self.iter().all(|(_, k)| k.is_none()), "{no_self:?}");
+    let pool_get: Vec<_> = types
+        .iter()
+        .filter(|(c, _)| c.starts_with("g.execute(\"g\""))
+        .collect();
+    assert!(pool_get.iter().all(|(_, k)| k.is_none()), "{pool_get:?}");
+}
+
+/// Callee texts of the nested-call tree of the Ruby call node `callee`.
+fn ruby_nested_callees(src: &[u8], callee: &str) -> Option<Vec<String>> {
+    let file_cfg = parse_to_file_cfg(src, "ruby", Language::from(tree_sitter_ruby::LANGUAGE));
+    for b in &file_cfg.bodies {
+        for n in b.graph.node_indices() {
+            let info = &b.graph[n];
+            if info.call.callee.as_deref() == Some(callee) {
+                return Some(
+                    info.call
+                        .nested_calls
+                        .as_deref()
+                        .map(|t| t.calls.iter().map(|c| c.callee.clone()).collect())
+                        .unwrap_or_default(),
+                );
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn ruby_bare_identifier_argument_is_an_implicit_call_unless_bound() {
+    let calls = |body: &str| {
+        let src = format!("class C\n  def a(formal)\n{body}\n  end\nend\n");
+        ruby_nested_callees(src.as_bytes(), "redirect_to")
+            .unwrap_or_else(|| panic!("no redirect_to node in {src}"))
+    };
+    assert_eq!(calls("    redirect_to helper"), ["redirect_to", "helper"]);
+    assert_eq!(calls("    redirect_to helper()"), ["redirect_to", "helper"]);
+    // Locals, formals and block parameters are variables.
+    assert!(
+        calls("    helper = 1\n    redirect_to helper")
+            .iter()
+            .all(|c| c != "helper")
+    );
+    assert!(
+        calls("    redirect_to formal")
+            .iter()
+            .all(|c| c != "formal")
+    );
+    assert!(
+        calls("    [1].each { |helper| redirect_to helper }")
+            .iter()
+            .all(|c| c != "helper")
+    );
+    assert!(
+        calls("    a, helper = pair\n    redirect_to helper")
+            .iter()
+            .all(|c| c != "helper")
+    );
+    assert!(
+        calls("    for helper in list\n      redirect_to helper\n    end")
+            .iter()
+            .all(|c| c != "helper")
+    );
+    assert!(
+        calls("    begin\n      go\n    rescue => helper\n      redirect_to helper\n    end")
+            .iter()
+            .all(|c| c != "helper")
+    );
+    // A name bound later in the method is still a variable: nothing is
+    // guessed about control flow.
+    assert!(
+        calls("    redirect_to helper\n    helper = 1")
+            .iter()
+            .all(|c| c != "helper")
+    );
+    // A name that carries a label keeps its label handling.
+    assert!(
+        calls("    redirect_to params")
+            .iter()
+            .all(|c| c != "params")
+    );
+}
+
+#[test]
+fn c_short_circuit_condition_assignment_is_a_source_node() {
+    let src = b"void f(void) {\n char *x;\n if ((x = getenv(\"T\")) == NULL || strlen(x) > 5) return;\n system(x);\n}\n";
+    let ts_lang = Language::from(tree_sitter_c::LANGUAGE);
+    let (g, _entry) = parse_and_build(src, "c", ts_lang);
+    let n = g
+        .node_indices()
+        .find(|&i| g[i].taint.defines.as_deref() == Some("x") && g[i].kind == StmtKind::If)
+        .expect("the assigning operand defines x");
+    assert_eq!(g[n].call.callee.as_deref(), Some("getenv"));
+    assert!(
+        g[n].taint
+            .labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Source(_)))
+    );
+}
+
+#[test]
+fn c_condition_assignment_target_is_not_a_read() {
+    let src =
+        b"void f(void) {\n char *cmd = getenv(\"X\");\n if ((cmd = safe) == NULL) return;\n}\n";
+    let ts_lang = Language::from(tree_sitter_c::LANGUAGE);
+    let (g, _entry) = parse_and_build(src, "c", ts_lang);
+    let n = g
+        .node_indices()
+        .find(|&i| g[i].taint.defines.as_deref() == Some("cmd") && g[i].kind == StmtKind::If)
+        .expect("the condition defines cmd");
+    assert_eq!(g[n].taint.uses, vec!["safe".to_string()]);
+}
+
+#[test]
+fn c_call_through_a_local_function_pointer_has_no_function_callee() {
+    // `cmp` is a variable here, so the call must not resolve to a function
+    // that shares the name in this or another file.
+    let callees_of = |src: &[u8]| -> Vec<String> {
+        let ts_lang = Language::from(tree_sitter_c::LANGUAGE);
+        let (g, _entry) = parse_and_build(src, "c", ts_lang);
+        g.node_indices()
+            .filter_map(|i| g[i].call.callee.clone())
+            .collect()
+    };
+    let local = callees_of(
+        b"int f(int (*pick)(const char *, const char *), const char *s) {\n int (*cmp)(const char *, const char *) = pick;\n int a = cmp(s, s);\n int b = pick(s, s);\n return a + b;\n}\n",
+    );
+    assert!(local.iter().any(|c| c == "(*cmp)"), "{local:?}");
+    assert!(local.iter().any(|c| c == "(*pick)"), "{local:?}");
+    let global = callees_of(b"int g(const char *s) { return cmp(s, s); }\n");
+    assert!(global.iter().any(|c| c == "cmp"), "{global:?}");
+}
+
+fn ruby_call_node(file_cfg: &FileCfg, body: usize, callee_suffix: &str) -> NodeInfo {
+    file_cfg.bodies[body]
+        .graph
+        .node_weights()
+        .find(|n| {
+            n.kind == StmtKind::Call
+                && n.call
+                    .callee
+                    .as_deref()
+                    .is_some_and(|c| c.ends_with(callee_suffix))
+        })
+        .unwrap_or_else(|| panic!("call to {callee_suffix} should exist"))
+        .clone()
+}
+
+/// A block argument (`&blk`) is not a positional argument, so it must not
+/// change the call's arity or add an `arg_uses` group.
+#[test]
+fn ruby_block_argument_is_not_positional() {
+    let src = b"
+def outer(p, blk)
+  inner(p, &blk)
+end
+";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "ruby", ts_lang);
+    let call = ruby_call_node(&file_cfg, 1, "inner");
+    assert_eq!(call.call.arg_uses, vec![vec!["p".to_string()]]);
+}
+
+/// Keyword arguments aimed at a same-file method move to the slot of the
+/// parameter of that name; omitted parameters leave an empty slot.
+#[test]
+fn ruby_keyword_args_follow_callee_parameter_order() {
+    let src = b"
+def target(a, dir: '.', name: 'x')
+  use(a, dir, name)
+end
+def outer(p, q)
+  target(p, name: q)
+end
+";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "ruby", ts_lang);
+    let call = ruby_call_node(&file_cfg, 2, "target");
+    assert_eq!(
+        call.call.arg_uses,
+        vec![vec!["p".to_string()], vec![], vec!["q".to_string()]]
+    );
+}
+
+/// A keyword the callee does not declare leaves the call in syntactic order.
+#[test]
+fn ruby_unknown_keyword_keeps_syntactic_order() {
+    let src = b"
+def target(a, dir: '.')
+  use(a, dir)
+end
+def outer(p, q)
+  target(p, other: q)
+end
+";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "ruby", ts_lang);
+    let call = ruby_call_node(&file_cfg, 2, "target");
+    assert_eq!(
+        call.call.arg_uses,
+        vec![vec!["p".to_string()], vec!["q".to_string()]]
+    );
+}
+
+/// Optional and keyword parameters count as parameters; splat and block
+/// parameters do not.
+#[test]
+fn ruby_param_kinds_cover_optional_and_keyword() {
+    let src = b"
+def target(a, b = 1, *rest, c:, d: 2, &blk)
+  use(a)
+end
+";
+    let ts_lang = Language::from(tree_sitter_ruby::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "ruby", ts_lang);
+    let names: Vec<_> = file_cfg
+        .summaries
+        .iter()
+        .find(|(k, _)| k.name == "target")
+        .map(|(_, s)| s.param_names.clone())
+        .expect("summary for target");
+    assert_eq!(names, vec!["a", "b", "c", "d"]);
+}
+
+#[cfg(test)]
+mod popen_shell_shape_tests {
+    use super::super::literals::extract_shell_array_payload_idents;
+    use tree_sitter::Parser;
+
+    fn matches(src: &str) -> usize {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let stmt = tree.root_node().named_child(0).unwrap();
+        let call = stmt.named_child(0).unwrap();
+        extract_shell_array_payload_idents(call, src.as_bytes()).len()
+    }
+
+    #[test]
+    fn popen_shapes_that_run_code() {
+        for src in [
+            r#"Popen(["bash", "-lc", x])"#,
+            r#"Popen(("bash", "-c", x))"#,
+            r#"Popen(["env", "bash", "-c", x])"#,
+            r#"Popen(["sudo", "-u", "root", "sh", "-c", x])"#,
+            r#"Popen(["python", "-c", x])"#,
+            r#"Popen(args=["bash", "-c", f"echo {x}"])"#,
+            r#"Popen([x, "a"])"#,
+            r#"Popen(args=[x, "a"])"#,
+            r#"Popen(["bash", "-c", x], **opts)"#,
+        ] {
+            assert_eq!(matches(src), 1, "{src}");
+        }
+    }
+
+    #[test]
+    fn popen_shapes_that_do_not() {
+        for src in [
+            r#"Popen(["git", "log", x])"#,
+            r#"Popen(["bash", "run.sh", x])"#,
+            r#"Popen(["bash", "-c", "ls"])"#,
+            r#"Popen(args=["git", "log", x])"#,
+            r#"Popen(x)"#,
+            r#"other([x, "a"])"#,
+        ] {
+            assert_eq!(matches(src), 0, "{src}");
+        }
+    }
+}
+
+fn go_elem_reads_of(src: &[u8]) -> Vec<Vec<String>> {
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "go", ts_lang);
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter(|n| !n.elem_reads.is_empty())
+        // The synthetic element read of a call argument is not a statement.
+        .filter(|n| n.call.callee.as_deref() != Some("__index_get__"))
+        .map(|n| n.elem_reads.iter().map(|e| e.to_string()).collect())
+        .collect()
+}
+
+/// Whether the node reading `parts[0]` in `src` is marked unstable.
+fn go_elem_base_unstable_in(src: &str) -> bool {
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src.as_bytes(), "go", ts_lang);
+    let nodes: Vec<_> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter(|n| !n.elem_reads.is_empty())
+        .collect();
+    assert!(!nodes.is_empty(), "no element read in {src}");
+    nodes.iter().any(|n| n.elem_base_unstable)
+}
+
+#[test]
+fn go_elem_base_with_other_write_routes_is_unstable() {
+    let wrap = |mid: &str| {
+        format!(
+            "package p\nfunc f(s string) {{\n  parts := strings.Split(s, \" \")\n  {mid}\n  use(parts[0])\n}}"
+        )
+    };
+    for mid in [
+        "sort.Strings(parts)",
+        "copy(parts, other)",
+        "fill(parts)",
+        "p := &parts; (*p)[0] = s",
+        "q := parts; q[0] = s",
+        "parts[0] = s",
+        "set := func() { parts[0] = s }; set()",
+        "r := parts[1:]; r[0] = s",
+        "parts = append(parts, s)",
+    ] {
+        assert!(go_elem_base_unstable_in(&wrap(mid)), "{mid}");
+    }
+    for mid in [
+        "n := len(parts)",
+        "i := 1; _ = parts[i]",
+        "for _, p := range parts { use(p) }",
+        "parts = strings.Split(s, \",\")",
+        "",
+    ] {
+        assert!(!go_elem_base_unstable_in(&wrap(mid)), "{mid}");
+    }
+}
+
+#[test]
+fn go_constant_index_reads_are_recorded() {
+    let src = b"package p\n\
+        func f(s string) {\n\
+          parts := strings.Split(s, \" \")\n\
+          x := parts[0]\n\
+          y := parts[i]\n\
+          if parts[1] != \"asc\" { return }\n\
+          parts[2] = s\n\
+          z := parts[0] + parts[1]\n\
+          w := strings.Join(parts, parts[0])\n\
+        }";
+    let reads = go_elem_reads_of(src);
+    assert!(reads.contains(&vec!["parts[0]".to_string()]), "{reads:?}");
+    assert!(reads.contains(&vec!["parts[1]".to_string()]), "{reads:?}");
+    assert!(
+        reads.contains(&vec!["parts[0]".to_string(), "parts[1]".to_string()]),
+        "{reads:?}"
+    );
+    // Variable index, an element store, and a base that is also read whole
+    // record nothing.
+    assert!(
+        reads
+            .iter()
+            .flatten()
+            .all(|e| e != "parts[2]" && e != "parts[i]"),
+        "{reads:?}"
+    );
+    assert_eq!(reads.len(), 3, "{reads:?}");
+}
+
+#[test]
+fn go_membership_lookup_accepts_constant_index_key() {
+    let src = b"package p\n\
+        func f(parts []string, m map[string]bool) {\n\
+          _, ok := m[parts[0]]\n\
+          _, ok2 := m[parts[i]]\n\
+        }";
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "go", ts_lang);
+    let lookups: Vec<_> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .filter_map(|n| n.membership_lookup.as_ref())
+        .collect();
+    assert_eq!(lookups.len(), 1);
+    assert_eq!(lookups[0].key, "parts[0]");
+    assert_eq!(lookups[0].base, "m");
+}
+
+#[test]
+fn go_map_stores_record_key_identifiers() {
+    let src = b"package p\n\
+        func f(cols []string) {\n\
+          m := map[string]bool{}\n\
+          n := map[string]bool{k: true, \"lit\": true}\n\
+          for _, c := range cols { m[c] = true }\n\
+          m[\"fixed\"] = true\n\
+        }";
+    let ts_lang = Language::from(tree_sitter_go::LANGUAGE);
+    let file_cfg = parse_to_file_cfg(src, "go", ts_lang);
+    let stores: Vec<_> = file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| b.graph.node_weights())
+        .flat_map(|n| n.map_stores.iter())
+        .map(|s| (s.base.as_str(), s.key_idents.join(",")))
+        .collect();
+    assert!(stores.contains(&("m", "c".to_string())), "{stores:?}");
+    assert!(stores.contains(&("n", "k".to_string())), "{stores:?}");
+    assert!(stores.contains(&("m", String::new())), "{stores:?}");
+}
+
+#[test]
+fn go_address_prefilter_sees_unary_address_of_names_only() {
+    use super::go_body_takes_address_of_name as f;
+    assert!(f(b"func f() { p := 1; g(&p) }"));
+    assert!(f(b"func f() *T { var t T; return &t }"));
+    assert!(f(b"func f() { x := &s.field }"));
+    assert!(f(b"func f() { y = &(z) }"));
+    assert!(!f(b"func f() { if a && b { g() } }"));
+    assert!(!f(b"func f() { x := a & b; y &= 3; z := a &^ b }"));
+    assert!(!f(b"func f() *T { return &T{A: 1} }"));
+    assert!(!f(b"func f() { m := &pkg.Config{} }"));
+}
+
+#[test]
+fn call_arg_nesting_descent_matches_the_bottom_up_walk() {
+    use super::{call_arg_nesting_for_test, call_arg_nesting_reference};
+    let cases: [(&[u8], Language); 4] = [
+        (
+            b"const r = rq(fs.createReadStream(p), { s: [open(q)], t: f(g(h())) });\nfoo(`a${b(c)}`);\nnew X(y(z), [w(v)]);",
+            Language::from(tree_sitter_javascript::LANGUAGE),
+        ),
+        (
+            b"x = json.load(open(p))\ny = f({'a': g(h)}, [k(m)], *args, n=o(p))\nz = sum(t(i) for i in r)\n",
+            Language::from(tree_sitter_python::LANGUAGE),
+        ),
+        (
+            b"package m\nfunc f() { a := g(h(i), []int{j(k)}, T{L: m(n)}); defer o(p(q)) }\n",
+            Language::from(tree_sitter_go::LANGUAGE),
+        ),
+        (
+            b"fn f() { let a = g(h(i), vec![j(k)], S { l: m(n) }); o(&[p(q)]); }",
+            Language::from(tree_sitter_rust::LANGUAGE),
+        ),
+    ];
+    for (src, lang) in cases {
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let root = tree.root_node();
+        // Every node as the target, under every ancestor as the root.
+        let mut stack = vec![root];
+        let mut checked = 0;
+        while let Some(n) = stack.pop() {
+            let mut anc = Some(n);
+            while let Some(r) = anc {
+                let span = (n.start_byte(), n.end_byte());
+                assert_eq!(
+                    call_arg_nesting_for_test(r, span),
+                    call_arg_nesting_reference(r, span),
+                    "root {} target {} ({:?})",
+                    r.kind(),
+                    n.kind(),
+                    std::str::from_utf8(&src[span.0..span.1]).unwrap_or("")
+                );
+                checked += 1;
+                anc = r.parent();
+            }
+            let mut c = n.walk();
+            stack.extend(n.children(&mut c));
+        }
+        assert!(checked > 50);
+    }
 }

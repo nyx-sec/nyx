@@ -1,0 +1,58 @@
+{
+  "description": "A relation method after a safe where (update_all, reorder, select) with an interpolated or request-supplied fragment must keep firing.",
+  "tags": [
+    "active-record",
+    "rails",
+    "sqli",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        3,
+        3
+      ],
+      "evidence_contains": [],
+      "notes": "A relation method after a safe where (update_all, reorder, select) with an interpolated or request-supplied fragment must keep firing."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        7,
+        7
+      ],
+      "evidence_contains": [],
+      "notes": "A relation method after a safe where (update_all, reorder, select) with an interpolated or request-supplied fragment must keep firing."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        11,
+        11
+      ],
+      "evidence_contains": [],
+      "notes": "A relation method after a safe where (update_all, reorder, select) with an interpolated or request-supplied fragment must keep firing."
+    },
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        15,
+        15
+      ],
+      "evidence_contains": [],
+      "notes": "A relation method after a safe where (update_all, reorder, select) with an interpolated or request-supplied fragment must keep firing."
+    }
+  ]
+}

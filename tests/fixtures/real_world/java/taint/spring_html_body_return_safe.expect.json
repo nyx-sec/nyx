@@ -1,0 +1,51 @@
+{
+  "description": "Escaped values, handlers without an HTML content type, and view-name controllers are not XSS sinks.",
+  "tags": [
+    "taint",
+    "xss",
+    "spring",
+    "response-body",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        14,
+        14
+      ],
+      "notes": "escapeHtml4 on the value"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        20,
+        20
+      ],
+      "notes": "no produces=text/html"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        29,
+        29
+      ],
+      "notes": "escaped append"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        38,
+        38
+      ],
+      "notes": "@Controller returns a view name"
+    }
+  ]
+}

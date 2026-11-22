@@ -59,7 +59,7 @@ def s_normpath_rejected():
 def s_normpath_checked():
     name = request.args.get("name")
     p = os.path.normpath(os.path.join(BASE, name))
-    if not p.startswith(BASE):
+    if not p.startswith(BASE + os.sep):
         abort(403)
     return send_file(p)
 

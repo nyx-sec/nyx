@@ -1,0 +1,68 @@
+{
+  "description": "No admin gate, a gate on one branch only, a discarded is_ok() result and a gate placed after the delete all leave the operations unguarded",
+  "tags": [
+    "auth",
+    "positive",
+    "admin-gate"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        10,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "No admin gate, a gate on one branch only, a discarded is_ok() result and a gate placed after the delete all leave the operations unguarded"
+    },
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        11,
+        11
+      ],
+      "evidence_contains": [],
+      "notes": "No admin gate, a gate on one branch only, a discarded is_ok() result and a gate placed after the delete all leave the operations unguarded"
+    },
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        24,
+        24
+      ],
+      "evidence_contains": [],
+      "notes": "No admin gate, a gate on one branch only, a discarded is_ok() result and a gate placed after the delete all leave the operations unguarded"
+    },
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        35,
+        35
+      ],
+      "evidence_contains": [],
+      "notes": "No admin gate, a gate on one branch only, a discarded is_ok() result and a gate placed after the delete all leave the operations unguarded"
+    },
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        45,
+        45
+      ],
+      "evidence_contains": [],
+      "notes": "No admin gate, a gate on one branch only, a discarded is_ok() result and a gate placed after the delete all leave the operations unguarded"
+    }
+  ]
+}

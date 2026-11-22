@@ -1,0 +1,46 @@
+{
+  "description": "A pointer to a sub-object or an aggregate initializer holding a handle is not a move of the handle. A plain alias of a leaked allocation still leaks and is reported at the allocation.",
+  "tags": [
+    "state",
+    "resource-leak",
+    "alias"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        10,
+        25
+      ],
+      "evidence_contains": [],
+      "notes": "no leak: ac is returned and names is freed"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": false,
+      "line_range": [
+        1,
+        1
+      ],
+      "evidence_contains": [],
+      "notes": "a move must not drop the finding on the exit line"
+    },
+    {
+      "rule_id": "state-resource-leak",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        28,
+        28
+      ],
+      "evidence_contains": [],
+      "notes": "leak of the malloc, reported at the acquire even though it is read through q"
+    }
+  ]
+}

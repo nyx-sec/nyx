@@ -1,0 +1,24 @@
+{
+  "description": "The owner comparison proves ownership of the row fetched by message_id only; the fetch and update of a different request id (other_id) stay unauthorised",
+  "tags": [
+    "auth",
+    "positive",
+    "owner-compare"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        13,
+        14
+      ],
+      "evidence_contains": [],
+      "notes": "The owner comparison proves ownership of the row fetched by message_id only; the fetch and update of a different request id (other_id) stay unauthorised"
+    }
+  ]
+}

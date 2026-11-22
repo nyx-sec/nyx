@@ -1,0 +1,14 @@
+{
+  "description": "println and write on a FileWriter or ByteArrayOutputStream field are file or memory output, not an HTML response sink.",
+  "tags": ["taint", "xss", "java", "negative", "response-writer"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [8, 24],
+      "notes": "the receivers are declared FileWriter and ByteArrayOutputStream",
+      "must_not_match": true
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "description": "res.download and res.sendFile without a root option, or with a spread that can override it, still reach the file sink.",
+  "tags": ["taint", "path-traversal", "javascript", "express"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [5, 5],
+      "notes": "no root option"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [11, 11],
+      "notes": "options object without root"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [16, 16],
+      "notes": "spread element can override root"
+    }
+  ]
+}

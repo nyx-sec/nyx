@@ -23,6 +23,17 @@ pub fn copy_propagate(body: &mut SsaBody, cfg: &Cfg) -> (usize, HashMap<SsaValue
                 if uses.len() == 1 {
                     let src = uses[0];
                     let info = &cfg[inst.cfg_node];
+                    // A constant-index element read (`parts[0]`) is a value of
+                    // its own: branch checks and the synthetic element-read
+                    // calls name it, so it must stay distinct from `parts`.
+                    if !info.elem_reads.is_empty()
+                        && inst
+                            .var_name
+                            .as_deref()
+                            .is_some_and(|n| info.elem_reads.iter().any(|e| &**e == n))
+                    {
+                        continue;
+                    }
                     // Skip if the node has labels, sanitizers, sources, sinks
                     // have semantic meaning that must be preserved.
                     if !info.taint.labels.is_empty() {
@@ -35,6 +46,11 @@ pub fn copy_propagate(body: &mut SsaBody, cfg: &Cfg) -> (usize, HashMap<SsaValue
                     // erase the Int type fact and defeat HTML_ESCAPE / SQL /
                     // FILE_IO / SHELL sink suppression.
                     if info.is_numeric_length_access {
+                        continue;
+                    }
+                    // A numeric conversion (`$n = (int) $x`) is not a copy of
+                    // its operand: the taint transfer clears the value.
+                    if info.yields_number {
                         continue;
                     }
                     // Skip Assigns whose CFG node carries a `string_prefix`
@@ -874,6 +890,7 @@ mod tests {
             base: "allowed".into(),
             key: "cmd".into(),
             value_var: None,
+            filled_elsewhere: false,
         });
         let n1 = cfg.add_node(lookup);
 

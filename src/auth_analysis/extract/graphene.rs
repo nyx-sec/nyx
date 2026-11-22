@@ -286,6 +286,7 @@ fn push_meta_permission_checks(unit: &mut AnalysisUnit, span: (usize, usize), li
             args: Vec::new(),
             condition_text: None,
             is_route_level: true,
+            dominates_body: false,
         });
     }
 }

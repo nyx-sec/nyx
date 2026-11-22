@@ -139,6 +139,176 @@ pub(super) fn resolve_prefix_idents(bodies: &mut [BodyCfg]) {
     }
 }
 
+/// Calls whose result never ends with a path separator: they strip trailing
+/// ones (`path.resolve('/srv/uploads/')` is `/srv/uploads`).  A root built
+/// by one of these and then used as a bare `startsWith` / `startswith` /
+/// `HasPrefix` prefix also matches a sibling directory sharing the name.
+const SEPARATOR_STRIPPING_CALLEES: &[&str] = &[
+    "path.resolve",
+    "path.posix.resolve",
+    "path.win32.resolve",
+    "fs.realpathSync",
+    "fs.realpath",
+    "os.path.abspath",
+    "os.path.realpath",
+    "os.path.normpath",
+    "abspath",
+    "realpath",
+    "normpath",
+    "filepath.Abs",
+    "filepath.Clean",
+    "filepath.EvalSymlinks",
+    "path.Clean",
+];
+
+/// How a root constant ends.
+enum RootEnd {
+    /// Ends with a separator: a prefix test against it is a containment test.
+    Terminated,
+    /// Provably has no trailing separator.
+    Unterminated,
+}
+
+/// The right-hand side of the assignment or declaration in `stmt`, without a
+/// trailing `;`.  `None` when there is no plain `=` (comparison operators and
+/// `=>` do not count).
+fn assigned_value(stmt: &str) -> Option<&str> {
+    let b = stmt.as_bytes();
+    let eq = (0..b.len()).find(|&i| {
+        b[i] == b'='
+            && b.get(i + 1) != Some(&b'=')
+            && b.get(i + 1) != Some(&b'>')
+            && !(i > 0 && matches!(b[i - 1], b'=' | b'!' | b'<' | b'>'))
+    })?;
+    let rhs = stmt[eq + 1..].trim().trim_end_matches(';').trim_end();
+    (!rhs.is_empty()).then_some(rhs)
+}
+
+/// True when `rhs` is exactly one call `callee(...)` with nothing after the
+/// closing parenthesis, so no `+ sep` or other suffix changes its result.
+fn is_single_call_to(rhs: &str, callees: &[&str]) -> bool {
+    let Some(open) = rhs.find('(') else {
+        return false;
+    };
+    if !callees.contains(&rhs[..open].trim()) {
+        return false;
+    }
+    let mut depth = 0i32;
+    let mut quote: Option<u8> = None;
+    let bytes = rhs.as_bytes();
+    let mut i = open;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if let Some(q) = quote {
+            if c == b'\\' {
+                i += 1;
+            } else if c == q {
+                quote = None;
+            }
+        } else {
+            match c {
+                b'"' | b'\'' | b'`' => quote = Some(c),
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return i + 1 == bytes.len();
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Classify the value a defining statement assigns, when it is a plain string
+/// literal or one separator-stripping path call and nothing else.
+fn root_end_of(stmt: &str) -> Option<RootEnd> {
+    let rhs = assigned_value(stmt)?;
+    if let Some(value) = string_literal_value(rhs) {
+        return Some(
+            if crate::abstract_interp::path_domain::root_ends_with_separator(value) {
+                RootEnd::Terminated
+            } else {
+                RootEnd::Unterminated
+            },
+        );
+    }
+    is_single_call_to(rhs, SEPARATOR_STRIPPING_CALLEES).then_some(RootEnd::Unterminated)
+}
+
+/// Flag every prefix-test condition whose root is a bare identifier bound
+/// once, to a literal or separator-stripping call, that has no trailing
+/// separator.  The name must have exactly one definition in the whole file.  Anything else (a parameter, a
+/// rebound name, an opaque expression) is left unflagged and keeps the
+/// opaque-root treatment, since the root's bytes are unknown.
+pub(super) fn resolve_root_idents(bodies: &mut [BodyCfg], lang: &str, code: &[u8]) {
+    // Languages whose prefix test is a plain string test.  Java and Rust
+    // `startsWith` / `starts_with` may be component-wise `Path` methods, and
+    // PHP / Ruby spell roots with sigils this pass does not read.
+    if !matches!(lang, "javascript" | "typescript" | "tsx" | "python" | "go") {
+        return;
+    }
+    let mut pending: Vec<(usize, petgraph::graph::NodeIndex, String)> = Vec::new();
+    for (bi, body) in bodies.iter().enumerate() {
+        for idx in body.graph.node_indices() {
+            let Some(text) = body.graph[idx].condition_text.as_deref() else {
+                continue;
+            };
+            if let Some(root) = crate::abstract_interp::path_domain::starts_with_root_arg(text)
+                && is_bare_identifier(root)
+            {
+                pending.push((bi, idx, root.to_string()));
+            }
+        }
+    }
+    if pending.is_empty() {
+        return;
+    }
+    let params = params_in_scope(bodies);
+    // Definition counts per name: whole file, and the module-level node.
+    let mut file_defs: HashMap<&str, u32> = HashMap::new();
+    for body in bodies.iter() {
+        for info in body.graph.node_weights() {
+            for name in info
+                .taint
+                .defines
+                .iter()
+                .chain(info.taint.extra_defines.iter())
+            {
+                *file_defs.entry(name.as_str()).or_default() += 1;
+            }
+        }
+    }
+    let mut flagged: Vec<(usize, petgraph::graph::NodeIndex)> = Vec::new();
+    for (bi, idx, name) in &pending {
+        if params[*bi].contains(name) || file_defs.get(name.as_str()).copied() != Some(1) {
+            continue;
+        }
+        let def = bodies.iter().find_map(|b| {
+            b.graph
+                .node_weights()
+                .find(|n| n.taint.defines.as_deref() == Some(name.as_str()))
+        });
+        let stmt = def.and_then(|n| code.get(n.ast.span.0..n.ast.span.1));
+        let stmt = stmt.and_then(|b| std::str::from_utf8(b).ok());
+        if let Some(RootEnd::Unterminated) = stmt.and_then(root_end_of) {
+            flagged.push((*bi, *idx));
+        }
+    }
+    for (bi, idx) in flagged {
+        bodies[bi].graph[idx].root_unterminated = true;
+    }
+}
+
+fn is_bare_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && !s.starts_with(|c: char| c.is_ascii_digit())
+        && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
 #[cfg(test)]
 mod tests {
     use super::string_literal_value;

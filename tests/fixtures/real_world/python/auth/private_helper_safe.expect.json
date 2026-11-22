@@ -1,0 +1,22 @@
+{
+  "description": "A module-private helper takes ids from its caller, which carries the finding",
+  "tags": [
+    "auth",
+    "auth",
+    "negative",
+    "private-helper"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "py.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "evidence_contains": [],
+      "notes": "A module-private helper takes ids from its caller, which carries the finding"
+    }
+  ]
+}

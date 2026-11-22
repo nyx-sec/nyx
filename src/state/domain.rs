@@ -256,6 +256,17 @@ pub struct ProductState {
     /// Used by `extract_findings` to attribute leaks to the original resource
     /// operation (e.g., fs.openSync at line 7) rather than the proxy call.
     pub proxy_acquire_spans: HashMap<SymbolId, (usize, usize)>,
+    /// Maps a symbol holding an OPEN handle to the span of the node that
+    /// acquired it.  An alias move (`q = p`) carries the span to the new
+    /// owner.  `extract_findings` reads it to place a leak at the real acquire
+    /// instead of searching the CFG by variable name.  Joins keep the earlier
+    /// span so the merge is order-independent.
+    pub acquire_spans: HashMap<SymbolId, (usize, usize)>,
+    /// Maps a name bound to a sub-object address or offset of a handle
+    /// (`s = (char *)sh + hdrlen`, `base = &iter->base`) to the handle's
+    /// symbol.  The handle keeps its own state; a release, hand-off or return
+    /// of the alias is read as one of the handle.  Joins union the entries.
+    pub sub_aliases: HashMap<SymbolId, SymbolId>,
     /// Per-chain-receiver proxy tracking, keyed by joined chain text
     /// (`"c.mu"`, `"c.writer.header"`). Each chain receiver has its own
     /// lifecycle, class group, and acquire span, independent of both
@@ -275,6 +286,8 @@ impl ProductState {
             auth: AuthDomainState::new(),
             receiver_class_group: HashMap::new(),
             proxy_acquire_spans: HashMap::new(),
+            acquire_spans: HashMap::new(),
+            sub_aliases: HashMap::new(),
             chain_proxies: HashMap::new(),
             err_companions: ErrCompanions::empty(),
         }
@@ -288,6 +301,8 @@ impl Lattice for ProductState {
             auth: AuthDomainState::bot(),
             receiver_class_group: HashMap::new(),
             proxy_acquire_spans: HashMap::new(),
+            acquire_spans: HashMap::new(),
+            sub_aliases: HashMap::new(),
             chain_proxies: HashMap::new(),
             err_companions: ErrCompanions::bot(),
         }
@@ -299,6 +314,20 @@ impl Lattice for ProductState {
         class_group.extend(other.receiver_class_group.iter());
         let mut proxy_spans = self.proxy_acquire_spans.clone();
         proxy_spans.extend(other.proxy_acquire_spans.iter());
+        let mut acquire_spans = self.acquire_spans.clone();
+        for (sym, span) in &other.acquire_spans {
+            acquire_spans
+                .entry(*sym)
+                .and_modify(|e| *e = (*e).min(*span))
+                .or_insert(*span);
+        }
+        let mut sub_aliases = self.sub_aliases.clone();
+        for (alias, root) in &other.sub_aliases {
+            sub_aliases
+                .entry(*alias)
+                .and_modify(|e| *e = (*e).min(*root))
+                .or_insert(*root);
+        }
         // Chain proxies: union, with lifecycle joined per-key so an OPEN
         // entry on one path remains OPEN if joined with a missing entry
         // on another path (matches the existing receiver_class_group
@@ -319,6 +348,8 @@ impl Lattice for ProductState {
             auth: self.auth.join(&other.auth),
             receiver_class_group: class_group,
             proxy_acquire_spans: proxy_spans,
+            acquire_spans,
+            sub_aliases,
             chain_proxies: chain,
             err_companions: self.err_companions.join(&other.err_companions),
         }

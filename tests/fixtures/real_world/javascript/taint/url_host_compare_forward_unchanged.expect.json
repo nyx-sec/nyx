@@ -1,0 +1,25 @@
+{
+  "description": "The checked string forwarded unchanged after the same-host check is clean.",
+  "tags": [
+    "taint",
+    "ssrf",
+    "host-compare"
+  ],
+  "modes": [
+    "full"
+  ],
+  "strict_unexpected": [
+    "taint-unsanitised-flow"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        9,
+        9
+      ],
+      "notes": "checked string forwarded as is"
+    }
+  ]
+}

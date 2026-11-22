@@ -37,19 +37,23 @@ mod dto;
 mod helpers;
 mod hierarchy;
 mod imports;
+mod keyword_args;
 mod literals;
 mod module_consts;
 mod nested_calls;
 mod params;
 pub(crate) mod python_shapes;
+mod rust_receivers;
 pub mod safe_fields;
 use blocks::{build_begin_rescue, build_switch, build_try, in_duplicate_finally_copy};
 use helpers::{
-    call_fn_callee_text, call_ident_at_or_under, collect_nested_function_nodes,
-    collect_rhs_object_literal, derive_anon_fn_name_from_context, find_classifiable_inner_call,
-    find_inner_sink_call, find_inner_source_or_sink_call, first_call_ident_with_span,
-    first_callback_sink_call, first_member_label, first_member_text, is_raii_factory,
-    is_subscript_kind, root_member_receiver, subscript_components, subscript_lhs_node,
+    call_fn_callee_text, call_ident_at_or_under, call_node_ident_with_span,
+    collect_nested_function_nodes, collect_rhs_object_literal, derive_anon_fn_name_from_context,
+    find_classifiable_inner_call, find_inner_sink_call, find_inner_source_or_sink_call,
+    first_call_ident_with_span, first_callback_sink_call, first_member_label, first_member_text,
+    is_raii_factory, is_subscript_kind, nested_member_sink_calls, php_direct_operand_sources,
+    php_output_construct, php_output_value_uses, root_member_receiver,
+    scope_sets_html_content_type, subscript_components, subscript_lhs_node,
 };
 pub use nested_calls::{CallSlot, NestedCall, NestedCallTree, NestedUse};
 // Re-exports so sibling submodules can keep using `super::name` for
@@ -63,20 +67,22 @@ use decorators::{extract_auth_decorators, extract_route_path_captures};
 pub(crate) use helpers::{
     HeaderExpr, RmwAssign, ValidSourceGuard, collect_idents, collect_idents_with_paths,
     control_header_expr, find_condition_subtree, find_constructor_type_child, first_call_ident,
-    has_call_descendant, has_function_descendant, member_expr_text, node_str, rmw_assignment,
-    rmw_statement, rmw_target_define, rmw_target_reads, root_receiver_text, slice_str,
-    subtree_has_call, text_of,
+    has_call_descendant, has_function_descendant, member_expr_text, member_expr_text_full,
+    node_str, rmw_assignment, rmw_statement, rmw_target_define, rmw_target_reads,
+    root_receiver_text, slice_str, subtree_has_call, text_of,
 };
 use imports::{
     collect_python_noreturn_imports, extract_import_bindings, extract_local_import_view,
     extract_promisify_aliases, extract_python_import_paths, rust_bare_join_crate_prefix,
 };
+use literals::go_leading_arg_is_context;
 #[cfg(test)]
 use literals::has_sql_placeholders;
+use literals::literal_scalar_collection_rhs;
 use literals::{
-    ParamQueryShape, arg0_kind_and_interpolation, call_has_arg_at, call_ident_of, def_use,
-    destination_field_reading_source, detect_go_replace_call_sanitizer,
-    detect_rust_replace_chain_sanitizer, extract_arg_bare_name_mask, extract_arg_callees,
+    ParamQueryShape, call_has_arg_at, call_ident_of, def_use, destination_field_reading_source,
+    detect_go_replace_call_sanitizer, detect_rust_replace_chain_sanitizer,
+    extract_arg_bare_name_mask, extract_arg_callees, extract_arg_raw_string_mask,
     extract_arg_string_literals, extract_arg_string_prefixes, extract_arg_uses,
     extract_const_keyword_arg, extract_const_macro_arg, extract_const_string_arg,
     extract_destination_field_pairs, extract_destination_kwarg_pairs, extract_kwargs,
@@ -87,7 +93,7 @@ use literals::{
     js_arg_is_prototype_object, js_arg_is_string_valued, js_arg_is_structured_condition,
     js_chain_arg0_kind_for_method, js_chain_outer_method_for_inner, js_orm_query_arg0_is_uid_ref,
     js_positional_arity, js_shell_option_argv_positions, js_sql_template_raw_splices,
-    parameterized_query_shape, python_positional_arity, ruby_chain_arg0_for_method,
+    parameterized_query_shape, python_positional_arity, ruby_statement_ar_queries_safe,
     walk_chain_inner_call_args,
 };
 use params::{
@@ -677,6 +683,30 @@ impl CondArith {
 }
 
 /// Call-related metadata for CFG nodes.
+/// Relation between a node's recorded `callee` and the call the node is.
+///
+/// `callee` can be promoted from a call nested in the node, so the resource
+/// passes need to know whether it still describes the call whose result the
+/// node's definition holds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CalleeNesting {
+    /// The callee is the node's own call, or a chain head used as a receiver
+    /// (`createReadStream(p).on(..)`), whose result is the acquired value.
+    #[default]
+    Own,
+    /// Promoted from the arguments of another call (`wrap(open(p))`): the
+    /// definition holds the outer call's result, not the nested value.
+    InArg,
+    /// As `InArg`, but through an object / array / map literal in the
+    /// arguments (`rq({ files: createReadStream(p) })`): the value is stored
+    /// into an aggregate that the outer call receives.
+    InAggregateArg,
+    /// A member read hoisted out of a callback argument over the node's own
+    /// callee (`describe(.., () => { fs.createReadStream(p) })`).  Names no
+    /// call of this node.
+    Hoisted,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CallMeta {
     pub callee: Option<String>,
@@ -750,6 +780,13 @@ pub struct CallMeta {
     /// Empty for languages without named arguments and for calls that use
     /// only positional arguments.
     pub kwargs: Vec<(String, Vec<String>)>,
+    /// Ruby keyword arguments as `(name, position in arg_uses)`.  Ruby passes
+    /// them as `pair` entries in the argument list, so each sits in a
+    /// positional slot; `keyword_args::reorder_keyword_args` moves the ones
+    /// aimed at a same-file method to that method's parameter slot.  Empty for
+    /// other languages and for calls without keywords.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kw_arg_positions: Vec<(String, usize)>,
     /// String-literal value at each positional argument of this call, parallel
     /// to `arg_uses`, `Some(s)` when the argument is a syntactic string
     /// literal, `None` otherwise.  Empty for non-call nodes or when positional
@@ -775,6 +812,12 @@ pub struct CallMeta {
     /// are never set.
     #[serde(default)]
     pub arg_bare_names: u64,
+    /// Positional arguments that are Go raw string literals (bit `i` for
+    /// argument `i`).  `arg_string_literals[i]` is then the literal's value,
+    /// where for an interpreted literal it is the source text between the
+    /// quotes, escapes unread.  Go only; positions past 63 are never set.
+    #[serde(default)]
+    pub arg_raw_string_mask: u64,
     /// Destination-aware sink filter for outbound-HTTP gates.
     ///
     /// When `Some(names)`, the SSA sink scan restricts taint checks to
@@ -815,6 +858,10 @@ pub struct CallMeta {
     /// must not survive into the constructed object.
     #[serde(default)]
     pub is_constructor: bool,
+    /// Where `callee` sits relative to the node's own call.  See
+    /// [`CalleeNesting`].
+    #[serde(default)]
+    pub callee_nesting: CalleeNesting,
     /// Bare variables whose ownership this constructor takes over: the
     /// arguments of a Java wrapper constructor (`new BufferedInputStream(in)`,
     /// nested wrappers included) and the initialiser of a C++ smart-pointer
@@ -880,6 +927,20 @@ pub struct HoistedSink {
     pub arg_string_literals: Vec<Option<String>>,
 }
 
+impl HoistedSink {
+    /// Whether every payload position of the inner sink call holds a captured
+    /// constant string literal.  `payload_args = Some(non-empty)` lists the
+    /// positions to check; `None` or empty means every argument is a payload,
+    /// so every recorded argument must be a literal and there must be at least
+    /// one (an empty list is unproven).
+    pub fn is_constant(&self) -> bool {
+        crate::cfg_analysis::guards::payload_positions_all_literal(
+            &self.payload_args,
+            &self.arg_string_literals,
+        )
+    }
+}
+
 /// One gate's contribution at a call site whose callee matches multiple
 /// gates.  The SSA taint engine processes each filter independently so a
 /// `fetch({url: tainted}, {body: tainted})` flow surfaces as one SSRF
@@ -913,6 +974,12 @@ pub struct TaintMeta {
     /// Raw text of a constant/literal RHS when this node defines a variable
     /// from a syntactic literal with no uses. Used by SSA constant propagation.
     pub const_text: Option<String>,
+    /// The node binds `defines` to an array / list / tuple literal whose
+    /// elements are all string or number literals, with no uses
+    /// (`const NAMES = ["a", "b"]`).  A loop over such a collection only ever
+    /// binds those literals.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub const_collection: bool,
     pub defines: Option<String>, // variable written by this stmt
     pub uses: Vec<String>,       // variables read
     /// Additional variable definitions from destructuring patterns.
@@ -1025,6 +1092,40 @@ pub struct AstMeta {
     pub enclosing_func: Option<String>,
 }
 
+/// What a C / C++ assignment's value is, for the resource passes: whether it
+/// copies a whole handle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RhsShape {
+    /// An identifier, or any shape not listed below: the new
+    /// name may hold the handle.
+    #[default]
+    Whole,
+    /// The address of a sub-object (`c = &ac->c`) or arithmetic
+    /// (`q = p + 1`): a different value that a tracked handle read by it
+    /// does not move into.
+    SubObject,
+    /// An aggregate initializer (`cc = {.names = names}`, `(S){f}`): a handle
+    /// listed in it is now owned by the aggregate, which is not itself a
+    /// handle.
+    Aggregate,
+    /// A field, element or dereference read (`cur = cur->next`): the value
+    /// is another object reached from the handle.
+    Projection,
+    /// A cast of a plain name (`lp = (T **)src`): a second view of the same
+    /// object.  The original name keeps the handle, and releasing either
+    /// name releases it.
+    CastView,
+}
+
+/// The call a condition header evaluates; see [`NodeInfo::cond_call`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CondCall {
+    /// Callee text, spelled like `CallMeta::callee`.
+    pub callee: String,
+    /// Identifiers of each positional argument, like `CallMeta::arg_uses`.
+    pub arg_uses: Vec<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NodeInfo {
     pub kind: StmtKind,
@@ -1044,6 +1145,12 @@ pub struct NodeInfo {
     /// an acquire produced nothing.
     #[serde(default)]
     pub null_check: Option<NullCheck>,
+    /// For If headers whose condition is a call (`if (fclose(f))`): that call
+    /// as structured data.  The header node
+    /// is not a `StmtKind::Call`, so the resource passes read this to apply
+    /// the call's release effect, which runs before either branch.
+    #[serde(default)]
+    pub cond_call: Option<Box<CondCall>>,
     /// For Return nodes: variables (and member paths) the returned expression
     /// hands to the caller, in escape positions only (see
     /// `helpers::collect_return_escapes`).  `return f`, `return f, nil`,
@@ -1073,6 +1180,16 @@ pub struct NodeInfo {
     /// resource that must be released before the function returns.
     #[serde(default)]
     pub escaping_store: bool,
+    /// Shape of this C / C++ assignment's value; see [`RhsShape`].
+    #[serde(default)]
+    pub rhs_shape: RhsShape,
+    /// Go: the variable this node defines has its address taken (`&p`) or is
+    /// assigned inside a nested function literal, so it can change without
+    /// an assignment the SSA form sees.  Abstract string facts that rest on
+    /// the exclusion of characters (`Trim`, `ReplaceAll`) are not trusted for
+    /// such a variable.
+    #[serde(default)]
+    pub aliased_def: bool,
     /// For If / conditional (ternary) nodes: the condition as a pure
     /// integer-arithmetic + comparison expression tree, when the whole
     /// condition is built only from integer literals, identifiers, arithmetic
@@ -1193,6 +1310,14 @@ pub struct NodeInfo {
     /// SSA value so SSRF prefix-suppression can fire for values constructed
     /// from template literals.
     pub string_prefix: Option<String>,
+    /// True when this node's RHS is exactly `<string literal> + <operand>`
+    /// with a bare identifier or a single call as the operand, and
+    /// [`Self::string_prefix`] is that whole literal.  The result's string
+    /// fact is then the literal concatenated with the operand's fact (a
+    /// `"/" + strings.Trim(p, "/\\")` tail still says which character
+    /// follows the `/`), not just the literal prefix.  Go only for now.
+    #[serde(default)]
+    pub string_concat_tail: bool,
     /// `(identifier, literal tail)` when the string this node builds starts
     /// with a bare identifier instead of a literal (`API + p`,
     /// `` `${API}/x/${id}` ``).  Resolved into [`Self::string_prefix`] at the
@@ -1200,6 +1325,13 @@ pub struct NodeInfo {
     /// constant; cleared there either way, so it is never serialized.
     #[serde(skip)]
     pub string_prefix_ident: Option<(String, String)>,
+    /// For If nodes whose condition is a prefix test against a bare
+    /// identifier (`p.startswith(ROOT)`): true when that identifier resolves
+    /// to a constant that is provably not separator-terminated, so the test
+    /// also admits a sibling directory sharing the prefix.  Set at the end of
+    /// `build_cfg` by `module_consts::resolve_root_idents`.
+    #[serde(skip)]
+    pub root_unterminated: bool,
     /// True when this node is a binary equality/inequality expression whose
     /// operator is `==` / `!=` / `===` / `!==` and exactly one operand is a
     /// syntactic literal (string / number / null / boolean). The SSA taint
@@ -1207,6 +1339,13 @@ pub struct NodeInfo {
     /// boolean outcome of `x === 'literal'` carries no attacker-controlled
     /// data, so downstream branches on it should not inherit x's caps.
     pub is_eq_with_const: bool,
+    /// True when this assignment's right-hand side is a PHP numeric
+    /// conversion (`(int)`, `(float)`, `(bool)` cast) or an arithmetic
+    /// expression (`-`, `*`, `/`, `%`, `**`). PHP evaluates those to a
+    /// number (or throws), so the stored value cannot carry injection
+    /// payload and the SSA taint transfer clears its caps, like `intval`.
+    #[serde(default)]
+    pub yields_number: bool,
     /// True when this node reads a numeric-length property on a container:
     /// `arr.length`, `map.size`, `buf.byteLength`, `items.count`, `vec.len()`
     ///, either as a pure property access or as a zero-arg method call.
@@ -1302,6 +1441,46 @@ pub struct NodeInfo {
     /// (`cfg-error-fallthrough`) do not apply to it.
     #[serde(default)]
     pub is_ternary_condition: bool,
+    /// For an assignment whose whole right-hand side is a subscript read
+    /// `container[key]` of a plain-identifier container (`user = repos[name]`):
+    /// the text of the key.  The key picks which element is read; it is not
+    /// part of the value, so the taint transfer leaves the key operand out of
+    /// the result and takes taint from the container only.  `None` for every
+    /// other node.
+    #[serde(default)]
+    pub index_read_key: Option<Box<str>>,
+    /// Go only: constant-index element reads `base[3]` this node performs on a
+    /// plain identifier, spelled `base[3]`, where `base` is read nowhere else
+    /// in the node.  SSA lowering gives each one a value of its own (one per
+    /// version of `base`), so a check on `parts[0]` and a later read of
+    /// `parts[0]` talk about the same value, as they would for `k := parts[0]`.
+    /// Empty for every other node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub elem_reads: Vec<Box<str>>,
+    /// Go only: some base named in [`Self::elem_reads`] can be written other
+    /// than by redefining it (an indexed store, `sort.Strings(b)`, `copy(b, x)`,
+    /// `f(b)`, `p := &b`, `q := b`, a closure doing any of these), so a check
+    /// on one of its elements does not hold for a later read of the same
+    /// element and no element value is made for it.  Set after the whole file
+    /// is built (see `mark_unstable_elem_bases`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub elem_base_unstable: bool,
+    /// Go only: the map keys this statement adds to a named map, by
+    /// `m[k] = v`, `m[k]++`, or a composite literal with variable keys
+    /// (`m := map[string]bool{k: true}`).  The taint engine reads it to tell
+    /// whether a map used as an allowlist can hold request-controlled keys.
+    /// Empty for every other node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub map_stores: Vec<MapStore>,
+}
+
+/// One named map receiving keys; see [`NodeInfo::map_stores`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MapStore {
+    /// The map; a bare identifier.
+    pub base: String,
+    /// Identifiers read by the key expression (empty for a literal key).
+    pub key_idents: Vec<String>,
 }
 
 /// A `map[key]` read whose presence result lands in `result_var`.  See
@@ -1312,10 +1491,17 @@ pub struct MembershipLookup {
     pub result_var: String,
     /// The map being indexed; a bare identifier.
     pub base: String,
-    /// The key under test; a bare identifier.
+    /// The key under test: a bare identifier, or a constant-index element
+    /// read spelled `parts[0]`.
     pub key: String,
     /// The value binding of the two-target form (`v` in `v, ok := m[k]`).
     pub value_var: Option<String>,
+    /// Go: the map is not defined by the function holding the lookup (a
+    /// package-level map) and another function of the file stores a
+    /// non-literal key into it, so it may hold request-controlled keys.  Set
+    /// after every body is built (see `mark_shared_map_lookups`).
+    #[serde(default)]
+    pub filled_elsewhere: bool,
 }
 
 impl NodeInfo {
@@ -1448,6 +1634,15 @@ pub struct BodyMeta {
     /// input, and the JS/TS handler-param auto-seed paints the decorated
     /// TypeScript formals. Empty for top-level bodies.
     pub param_route_capture: Vec<bool>,
+    /// JS/TS only: names this body binds itself, namely its formals plus
+    /// every `var` / `let` / `const` / destructured binding, function or
+    /// class declaration, `catch` parameter and `for-in` / `for-of` loop
+    /// variable in its own scope (nested functions excluded, their bindings
+    /// belong to them).  The two-level JS/TS solve consults it to keep a
+    /// body's locals out of the top-level seed: only writes to names the
+    /// body does not bind (module-level or captured variables) leave the
+    /// body.  Sorted and deduplicated; empty for other languages.
+    pub declared_names: Vec<String>,
 }
 
 /// A single executable body's CFG plus metadata.
@@ -2029,11 +2224,385 @@ pub(super) fn build_cond_arith(
 /// Find the RHS value node of an assignment-like AST node (variable declarator,
 /// lexical declaration, assignment expression). Used by helpers that need to
 /// inspect what an identifier is being initialized to.
+/// Key text of `container[key]` when `ast` is a plain assignment or
+/// declaration whose entire right-hand side is that subscript read (see
+/// [`NodeInfo::index_read_key`]).  The kind check comes first so ordinary
+/// nodes pay one string match.
+fn plain_index_read_key(ast: Node, code: &[u8]) -> Option<Box<str>> {
+    let assign = match ast.kind() {
+        "variable_declarator"
+        | "assignment_expression"
+        | "assignment"
+        | "lexical_declaration"
+        | "variable_declaration" => ast,
+        "expression_statement" => ast
+            .named_child(0)
+            .filter(|c| matches!(c.kind(), "assignment_expression" | "assignment"))?,
+        _ => return None,
+    };
+    let mut rhs = assignment_rhs(assign)?;
+    while matches!(
+        rhs.kind(),
+        "parenthesized_expression" | "non_null_expression" | "as_expression"
+    ) {
+        rhs = rhs.named_child(0)?;
+    }
+    let (arr, key) = subscript_components(rhs, code)?;
+    (arr != key).then(|| key.into_boxed_str())
+}
+
+/// Keys stored into named maps by a Go statement (see
+/// [`NodeInfo::map_stores`]).
+fn go_map_stores(ast: Node, code: &[u8]) -> Vec<MapStore> {
+    let mut out = Vec::new();
+    let mut push_index = |n: Node| {
+        if n.kind() == "index_expression"
+            && let (Some(op), Some(ix)) = (
+                n.child_by_field_name("operand"),
+                n.child_by_field_name("index"),
+            )
+            && op.kind() == "identifier"
+            && let Some(base) = text_of(op, code)
+        {
+            let mut key_idents = Vec::new();
+            collect_idents(ix, code, &mut key_idents);
+            out.push(MapStore { base, key_idents });
+        }
+    };
+    match ast.kind() {
+        "assignment_statement" => {
+            if let Some(left) = ast.child_by_field_name("left") {
+                if left.kind() == "expression_list" {
+                    let mut c = left.walk();
+                    for l in left.named_children(&mut c) {
+                        push_index(l);
+                    }
+                } else {
+                    push_index(left);
+                }
+            }
+        }
+        "inc_dec_statement" => {
+            if let Some(op) = ast.named_child(0) {
+                push_index(op);
+            }
+        }
+        _ => {}
+    }
+    // `m := map[K]V{k: v}` / `m = map[K]V{k: v}` / `var m = map[K]V{k: v}`.
+    let (names, values) = match ast.kind() {
+        "short_var_declaration" | "assignment_statement" => (
+            ast.child_by_field_name("left"),
+            ast.child_by_field_name("right"),
+        ),
+        "var_spec" => (
+            ast.child_by_field_name("name"),
+            ast.child_by_field_name("value"),
+        ),
+        _ => (None, None),
+    };
+    if let (Some(names), Some(values)) = (names, values)
+        && let Some(base) = {
+            let first = if names.kind() == "expression_list" {
+                names.named_child(0)
+            } else {
+                Some(names)
+            };
+            first
+                .filter(|n| n.kind() == "identifier")
+                .and_then(|n| text_of(n, code))
+        }
+    {
+        let lit = if values.kind() == "expression_list" {
+            values.named_child(0)
+        } else {
+            Some(values)
+        };
+        if let Some(lit) = lit.filter(|l| l.kind() == "composite_literal") {
+            let mut stack = vec![lit];
+            while let Some(n) = stack.pop() {
+                if n.kind() == "func_literal" {
+                    continue;
+                }
+                if n.kind() == "keyed_element"
+                    && let Some(key) = n.named_child(0)
+                {
+                    let mut key_idents = Vec::new();
+                    collect_idents(key, code, &mut key_idents);
+                    if !key_idents.is_empty() {
+                        out.push(MapStore {
+                            base: base.clone(),
+                            key_idents,
+                        });
+                    }
+                }
+                let mut c = n.walk();
+                stack.extend(n.children(&mut c));
+            }
+        }
+    }
+    out
+}
+
+/// Go: how many statements of `func` (and of function literals nested in it)
+/// define the plain identifier `base`.  More than one means a redefinition or
+/// a shadowing declaration, so a guard on `base[0]` may name another variable
+/// than the one a later read of `base[0]` does.
+pub(crate) fn go_base_def_count(cfg: &Cfg, func: Option<&str>, base: &str) -> usize {
+    let mut range: Option<(usize, usize)> = None;
+    for n in cfg.node_weights() {
+        if n.ast.enclosing_func.as_deref() == func {
+            let (a, b) = n.ast.span;
+            range = Some(match range {
+                Some((lo, hi)) => (lo.min(a), hi.max(b)),
+                None => (a, b),
+            });
+        }
+    }
+    let Some((lo, hi)) = range else {
+        return 0;
+    };
+    cfg.node_weights()
+        .filter(|n| {
+            (n.ast.enclosing_func.as_deref() == func || (n.ast.span.0 >= lo && n.ast.span.1 <= hi))
+                && (n.taint.defines.as_deref() == Some(base)
+                    || n.taint.extra_defines.iter().any(|d| d == base))
+        })
+        .count()
+}
+
+/// Whether this occurrence of the Go identifier `id` cannot write the array it
+/// names: an element read, `len`/`cap`, ranging over it, or (re)defining the
+/// variable itself.
+fn go_base_use_is_benign(id: Node, code: &[u8]) -> bool {
+    let Some(p) = id.parent() else {
+        return false;
+    };
+    let is_left = |owner: Node, child: Node| {
+        owner
+            .child_by_field_name("left")
+            .is_some_and(|l| l.id() == child.id())
+    };
+    match p.kind() {
+        "index_expression" => {
+            if p.child_by_field_name("operand").map(|o| o.id()) != Some(id.id()) {
+                return false;
+            }
+            // A target list `a[0], b = ...` wraps the element in an expression_list.
+            let mut anc = p;
+            if let Some(list) = p.parent().filter(|l| l.kind() == "expression_list") {
+                anc = list;
+            }
+            match anc.parent() {
+                Some(g) if g.kind() == "assignment_statement" => !is_left(g, anc),
+                Some(g) if g.kind() == "inc_dec_statement" => false,
+                // `&parts[0]` hands out a pointer to the element.
+                Some(g) if g.kind() == "unary_expression" => {
+                    g.child(0).is_some_and(|op| op.kind() != "&")
+                }
+                _ => true,
+            }
+        }
+        "argument_list" => p
+            .parent()
+            .filter(|c| c.kind() == "call_expression")
+            .and_then(|c| c.child_by_field_name("function"))
+            .filter(|f| f.kind() == "identifier")
+            .and_then(|f| text_of(f, code))
+            .is_some_and(|f| matches!(f.as_str(), "len" | "cap")),
+        "short_var_declaration" | "assignment_statement" => is_left(p, id),
+        "expression_list" => p.parent().is_some_and(|g| {
+            matches!(
+                g.kind(),
+                "short_var_declaration" | "assignment_statement" | "range_clause"
+            ) && is_left(g, p)
+        }),
+        "range_clause" => true,
+        "var_spec" | "parameter_declaration" => true,
+        _ => false,
+    }
+}
+
+/// Set [`NodeInfo::elem_base_unstable`] on every Go node that reads a
+/// constant-index element of a base the enclosing function can write through
+/// another route.  Runs once per Go file and only when such reads exist; the
+/// function is walked once per distinct base.
+fn mark_unstable_elem_bases(bodies: &mut [BodyCfg], root: Node, code: &[u8]) {
+    let mut targets: Vec<(usize, petgraph::graph::NodeIndex)> = Vec::new();
+    for (i, b) in bodies.iter().enumerate() {
+        for idx in b.graph.node_indices() {
+            if !b.graph[idx].elem_reads.is_empty() {
+                targets.push((i, idx));
+            }
+        }
+    }
+    if targets.is_empty() {
+        return;
+    }
+    let mut cache: HashMap<(usize, usize, String), bool> = HashMap::new();
+    for (i, idx) in targets {
+        let info = &bodies[i].graph[idx];
+        let (lo, hi) = info.ast.span;
+        let bases: Vec<String> = info
+            .elem_reads
+            .iter()
+            .filter_map(|e| e.split_once('[').map(|(b, _)| b.to_string()))
+            .collect();
+        // Outermost function around the read; closures sit inside it.
+        let mut func = root;
+        if let Some(mut n) = root.descendant_for_byte_range(lo, hi) {
+            let mut outer = None;
+            loop {
+                if matches!(
+                    n.kind(),
+                    "function_declaration" | "method_declaration" | "func_literal"
+                ) {
+                    outer = Some(n);
+                }
+                match n.parent() {
+                    Some(p) => n = p,
+                    None => break,
+                }
+            }
+            func = outer.unwrap_or(root);
+        }
+        let key = (func.start_byte(), func.end_byte());
+        let mut unstable = false;
+        for base in bases {
+            let u = *cache
+                .entry((key.0, key.1, base.clone()))
+                .or_insert_with(|| {
+                    let mut stack = vec![func];
+                    while let Some(n) = stack.pop() {
+                        if n.kind() == "identifier"
+                            && text_of(n, code).as_deref() == Some(base.as_str())
+                            && !go_base_use_is_benign(n, code)
+                        {
+                            return true;
+                        }
+                        let mut c = n.walk();
+                        stack.extend(n.children(&mut c));
+                    }
+                    false
+                });
+            unstable |= u;
+        }
+        if unstable {
+            bodies[i].graph[idx].elem_base_unstable = true;
+        }
+    }
+}
+
+/// `base[idx]` spelling of a constant-index element read, when `idx` is a
+/// plain decimal literal and `base` a bare identifier.
+fn const_index_name(base: &str, idx: &str) -> Option<String> {
+    let plain_base =
+        !base.is_empty() && base.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_');
+    let plain_idx = idx.len() <= 4
+        && idx.bytes().all(|c| c.is_ascii_digit())
+        && (idx == "0" || !idx.starts_with('0'));
+    (plain_base && plain_idx).then(|| format!("{base}[{idx}]"))
+}
+
+/// Constant-index element reads in a Go expression or statement (see
+/// [`NodeInfo::elem_reads`]).  Only `ident[<decimal literal>]` counts, and only
+/// when the identifier is not read any other way in the same subtree, because
+/// lowering swaps the base operand for the element value.  Assignment targets
+/// are writes and are left out; function literals are separate bodies.
+fn go_const_index_reads(root: Node, code: &[u8]) -> Vec<Box<str>> {
+    // Only `ident[<decimal literal>]` counts, so a `[` directly followed by a
+    // digit is a sound witness; slices, maps and generics skip the walk.
+    if !code
+        .get(root.start_byte()..root.end_byte())
+        .is_some_and(|b| b.windows(2).any(|w| w[0] == b'[' && w[1].is_ascii_digit()))
+    {
+        return Vec::new();
+    }
+    let start = if matches!(
+        root.kind(),
+        "assignment_statement" | "short_var_declaration"
+    ) {
+        match root.child_by_field_name("right") {
+            Some(r) => r,
+            None => return Vec::new(),
+        }
+    } else {
+        root
+    };
+    let mut elems: Vec<String> = Vec::new();
+    let mut bare: Vec<String> = Vec::new();
+    let mut stack = vec![start];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "func_literal" => continue,
+            "identifier" => {
+                if let Some(t) = text_of(n, code) {
+                    bare.push(t);
+                }
+                continue;
+            }
+            "index_expression" => {
+                if let (Some(op), Some(ix)) = (
+                    n.child_by_field_name("operand"),
+                    n.child_by_field_name("index"),
+                ) && op.kind() == "identifier"
+                    && ix.kind() == "int_literal"
+                    && let (Some(b), Some(i)) = (text_of(op, code), text_of(ix, code))
+                    && let Some(name) = const_index_name(&b, &i)
+                {
+                    elems.push(name);
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        let mut c = n.walk();
+        stack.extend(n.children(&mut c));
+    }
+    elems.sort();
+    elems.dedup();
+    elems
+        .into_iter()
+        .filter(|e| {
+            let base = e.split_once('[').map_or(e.as_str(), |(b, _)| b);
+            !bare.iter().any(|b| b == base)
+        })
+        .map(String::into_boxed_str)
+        .collect()
+}
+
+/// The subtree [`go_const_index_reads`] should scan for a CFG node, or `None`
+/// for node kinds that never carry such reads.  An `if` node reads only its
+/// condition; its body is built from separate nodes.
+fn go_elem_read_scope<'a>(ast: Node<'a>, is_if: bool) -> Option<Node<'a>> {
+    if is_if {
+        return helpers::find_condition_subtree(ast, "go");
+    }
+    matches!(
+        ast.kind(),
+        "short_var_declaration"
+            | "assignment_statement"
+            | "var_declaration"
+            | "expression_statement"
+            | "return_statement"
+            | "go_statement"
+            | "defer_statement"
+            | "call_expression"
+            | "binary_expression"
+            | "unary_expression"
+            | "parenthesized_expression"
+    )
+    .then_some(ast)
+}
+
 fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
     match ast.kind() {
-        "variable_declarator" | "assignment_expression" | "assignment" => ast
-            .child_by_field_name("value")
-            .or_else(|| ast.child_by_field_name("right")),
+        // Go `x = ...` is an `assignment_statement` whose value sits on the
+        // `right` expression list.
+        "variable_declarator" | "assignment_expression" | "assignment" | "assignment_statement" => {
+            ast.child_by_field_name("value")
+                .or_else(|| ast.child_by_field_name("right"))
+        }
         // Phase 14 — Java `local_variable_declaration`, Go
         // `short_var_declaration` / `var_spec`, Rust `let_declaration`,
         // Python `assignment` (already covered above), and PHP
@@ -2088,6 +2657,52 @@ fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
         }
         _ => None,
     }
+}
+
+/// The operand of a Go `<string literal> + <operand>` right-hand side, with the
+/// literal's whole text, when the operand is a bare identifier or a call.
+/// The literal must hold no escape sequence so its text is its value.
+fn go_literal_plus_operand<'a>(scope: Node<'a>, code: &[u8]) -> Option<(String, Node<'a>)> {
+    fn unwrap<'t>(mut n: Node<'t>) -> Node<'t> {
+        for _ in 0..4 {
+            match n.kind() {
+                "parenthesized_expression" => match n.named_child(0) {
+                    Some(c) => n = c,
+                    None => return n,
+                },
+                "expression_list" if n.named_child_count() == 1 => match n.named_child(0) {
+                    Some(c) => n = c,
+                    None => return n,
+                },
+                _ => return n,
+            }
+        }
+        n
+    }
+    if !matches!(
+        scope.kind(),
+        "assignment_statement" | "short_var_declaration"
+    ) {
+        return None;
+    }
+    let rhs = unwrap(assignment_rhs(scope)?);
+    if rhs.kind() != "binary_expression" || rhs.child_by_field_name("operator")?.kind() != "+" {
+        return None;
+    }
+    let left = unwrap(rhs.child_by_field_name("left")?);
+    if !matches!(
+        left.kind(),
+        "interpreted_string_literal" | "raw_string_literal"
+    ) {
+        return None;
+    }
+    let text = text_of(left, code)?;
+    let inner = text.get(1..text.len().checked_sub(1)?)?;
+    if inner.is_empty() || inner.contains('\\') && left.kind() == "interpreted_string_literal" {
+        return None;
+    }
+    let operand = unwrap(rhs.child_by_field_name("right")?);
+    matches!(operand.kind(), "identifier" | "call_expression").then(|| (inner.to_string(), operand))
 }
 
 /// Extract a constant leading string prefix from an assignment-like node's
@@ -2856,10 +3471,15 @@ pub(crate) fn is_numeric_length_property(name: &str) -> bool {
 /// expressions, computed-key subscripts, optional-chaining, etc.) so
 /// the legacy copy-prop / Unknown propagation continues to apply.
 fn detect_member_field_assignment(ast: Node, code: &[u8]) -> Option<String> {
-    // Pull the RHS the same way `detect_numeric_length_access` does so
-    // both detectors look at the same node grain.
-    let target = ast
-        .child_by_field_name("value")
+    extract_member_field_name(assignment_rhs_or_self(ast), code)
+}
+
+/// The value expression of a declaration / assignment statement, or `ast`
+/// itself when it has none.  Pulled the same way by every detector that reads
+/// the RHS so they look at the same node grain.
+#[inline]
+fn assignment_rhs_or_self(ast: Node) -> Node {
+    ast.child_by_field_name("value")
         .or_else(|| ast.child_by_field_name("right"))
         .or_else(|| {
             let mut cursor = ast.walk();
@@ -2882,8 +3502,74 @@ fn detect_member_field_assignment(ast: Node, code: &[u8]) -> Option<String> {
                 .find(|c| matches!(c.kind(), "assignment"))
                 .and_then(|a| a.child_by_field_name("right"))
         })
-        .unwrap_or(ast);
-    extract_member_field_name(target, code)
+        .unwrap_or(ast)
+}
+
+/// See [`RhsShape`].
+fn rhs_shape_of(ast: Node) -> RhsShape {
+    let mut rhs = assignment_rhs_or_self(ast);
+    if rhs.id() == ast.id() {
+        // `expression_statement > assignment_expression`
+        let mut cursor = ast.walk();
+        let Some(inner) = ast
+            .named_children(&mut cursor)
+            .find(|c| c.kind() == "assignment_expression")
+            .and_then(|a| a.child_by_field_name("right"))
+        else {
+            return RhsShape::Whole;
+        };
+        rhs = inner;
+    }
+    let v = strip_parens_and_casts(rhs);
+    if v.kind() == "identifier" && unwrap_parens(rhs).kind() == "cast_expression" {
+        return RhsShape::CastView;
+    }
+    match v.kind() {
+        "initializer_list" | "compound_literal_expression" => RhsShape::Aggregate,
+        "binary_expression" | "unary_expression" | "sizeof_expression" | "update_expression" => {
+            RhsShape::SubObject
+        }
+        "pointer_expression" => {
+            if v.child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "&")
+            {
+                RhsShape::SubObject
+            } else {
+                RhsShape::Projection
+            }
+        }
+        "field_expression" | "subscript_expression" => RhsShape::Projection,
+        // `c ? a : b` copies a handle only when a branch is one itself.
+        "conditional_expression" => {
+            let copies = ["consequence", "alternative"].iter().any(|f| {
+                v.child_by_field_name(f).is_some_and(|n| {
+                    matches!(
+                        strip_parens_and_casts(n).kind(),
+                        "identifier" | "this" | "conditional_expression"
+                    )
+                })
+            });
+            if copies {
+                RhsShape::Whole
+            } else {
+                RhsShape::SubObject
+            }
+        }
+        _ => RhsShape::Whole,
+    }
+}
+
+/// `v` without enclosing parentheses and C-style casts (`(char *)p`), which
+/// still copy the handle.
+fn strip_parens_and_casts(mut v: Node) -> Node {
+    v = unwrap_parens(v);
+    while v.kind() == "cast_expression" {
+        let Some(inner) = v.child_by_field_name("value") else {
+            break;
+        };
+        v = unwrap_parens(inner);
+    }
+    v
 }
 
 fn extract_member_field_name(node: Node, code: &[u8]) -> Option<String> {
@@ -2910,6 +3596,51 @@ fn extract_member_field_name(node: Node, code: &[u8]) -> Option<String> {
             }
         }
         _ => None,
+    }
+}
+
+/// PHP `$x = (int) $y;`, `$x = ($a - 1) * $b;`: the assigned value is a
+/// number. `+` is left out (array union), as is `.` (concatenation).
+fn php_assigns_number(ast: Node, code: &[u8]) -> bool {
+    let assign = match ast.kind() {
+        "assignment_expression" => ast,
+        "expression_statement" => match ast.named_child(0) {
+            Some(c) if c.kind() == "assignment_expression" => c,
+            _ => return false,
+        },
+        _ => return false,
+    };
+    // Only a plain variable target: a field or element write is a weak
+    // update of its base, so it must keep the taint flowing as before.
+    if assign
+        .child_by_field_name("left")
+        .is_none_or(|l| l.kind() != "variable_name")
+    {
+        return false;
+    }
+    let Some(mut rhs) = assign.child_by_field_name("right") else {
+        return false;
+    };
+    while rhs.kind() == "parenthesized_expression" {
+        match rhs.named_child(0) {
+            Some(inner) => rhs = inner,
+            None => return false,
+        }
+    }
+    match rhs.kind() {
+        "cast_expression" => rhs
+            .child_by_field_name("type")
+            .and_then(|t| text_of(t, code))
+            .is_some_and(|t| {
+                matches!(
+                    t.trim().to_ascii_lowercase().as_str(),
+                    "int" | "integer" | "float" | "double" | "real" | "bool" | "boolean"
+                )
+            }),
+        "binary_expression" => rhs
+            .child_by_field_name("operator")
+            .is_some_and(|op| matches!(op.kind(), "-" | "*" | "/" | "%" | "**")),
+        _ => false,
     }
 }
 
@@ -3424,13 +4155,31 @@ pub(super) fn push_node<'a>(
     // below the enclosing statement (e.g. call inside a multi-line template
     // literal).
     let mut inner_text_span: Option<(usize, usize)> = None;
+    let mut php_test_in_output = false;
     if matches!(
         lookup(lang, ast.kind()),
         Kind::CallWrapper | Kind::Assignment | Kind::Return
     ) {
-        if let Some((inner, inner_span)) = first_call_ident_with_span(ast, lang, code) {
+        // `echo isset($a) ? $a : ''`: `isset` / `empty` only test a value,
+        // so the output construct stays the node's callee.
+        let php_output = (lang == "php")
+            .then(|| php_output_construct(ast, code))
+            .flatten();
+        let inner_call = first_call_ident_with_span(ast, lang, code).filter(|(name, _)| {
+            let test = php_output.is_some() && matches!(name.as_str(), "isset" | "empty");
+            php_test_in_output |= test;
+            !test
+        });
+        if let Some((inner, inner_span)) = inner_call {
             text = inner;
             inner_text_span = Some(inner_span);
+        } else if lang == "php"
+            && let Some(construct) = php_output_construct(ast, code)
+        {
+            // `print $x;` and `<?= $x ?>`: the keyword is not the node's first
+            // child, so name the construct explicitly.
+            text = construct.keyword.to_string();
+            inner_text_span = Some(construct.keyword_span);
         } else if matches!(lookup(lang, ast.kind()), Kind::CallWrapper) {
             // Fallback for language-construct "calls" (e.g. PHP `echo_statement`,
             // `print` expression):  the first child is a keyword leaf (e.g. "echo")
@@ -3449,8 +4198,24 @@ pub(super) fn push_node<'a>(
 
     /* ── 2.  LABEL LOOK-UP  ───────────────────────────────────────────── */
 
+    // `\unlink($p)`: the global-namespace prefix names the same builtin.
+    if lang == "php" && text.starts_with('\\') {
+        text.remove(0);
+    }
+
     let extra = analysis_rules.map(|r| r.extra_labels.as_slice());
     let mut labels = classify_all(lang, &text, extra);
+
+    // `let v: Box<dyn Plugin> = toml::from_str(&s)?;` picks the concrete type
+    // from the document exactly like the turbofish form, but the dyn target
+    // sits on the declaration, not in the callee text.
+    if lang == "rust"
+        && crate::labels::is_polymorphic_decode_head(text.split('(').next().unwrap_or("").trim())
+        && !labels.contains(&crate::labels::POLYMORPHIC_DECODE)
+        && rust_let_decodes_into_dyn(ast, code)
+    {
+        labels.push(crate::labels::POLYMORPHIC_DECODE);
+    }
 
     // Java stream accessors are sources only when the stream can carry
     // attacker bytes.  The label belongs to the call `text` came from.
@@ -3644,6 +4409,26 @@ pub(super) fn push_node<'a>(
     //       (a JSON_PARSE / HTML_ESCAPE cap on the parsed *result* is
     //       unrelated to the inner sink's path/query/command argument),
     //       and only fires when no Sink label is present yet.
+    // Provenance for a Sink label that came from a call nested inside this
+    // node (a wrapper's callback body, or an argument position) rather than
+    // the node's own callee.  Consumed by the CFG node's
+    // `CallMeta.hoisted_sink`.
+    let mut hoisted_sink: Option<Box<HoistedSink>> = None;
+    // Go `for _, c := range strings.Split(r.URL.Query().Get("k"), ",")`: the
+    // iterable's own text names no source, but a source call nested in it
+    // taints the loop binding exactly as it would when bound to a variable
+    // first.  Only the iterable is searched, never the loop body.
+    if lang == "go"
+        && labels.is_empty()
+        && matches!(lookup(lang, ast.kind()), Kind::For)
+        && let Some(HeaderExpr::Iterable(iter)) = header
+        && let Some((inner_text, label @ DataLabel::Source(_), inner_node)) =
+            find_classifiable_inner_call(iter, lang, code, extra)
+    {
+        labels.push(label);
+        text = inner_text;
+        inner_callee_span = Some((inner_node.start_byte(), inner_node.end_byte()));
+    }
     let outer_has_sink_label = labels.iter().any(|l| matches!(l, DataLabel::Sink(_)));
     if !outer_has_sink_label
         && matches!(
@@ -3685,14 +4470,25 @@ pub(super) fn push_node<'a>(
             match find_classifiable_inner_call(ast, lang, code, extra) {
                 Some((_, DataLabel::Sanitizer(_), _))
                     if !text.is_empty()
-                        && !crate::labels::classify_gated_sink(
+                        && (!crate::labels::classify_gated_sink(
                             lang,
                             &text,
                             |_| None,
                             |_| None,
                             |_| false,
                         )
-                        .is_empty() =>
+                        .is_empty()
+                            || find_call_node(ast, lang).is_some_and(|cn| {
+                                // The call's own arguments select the gate
+                                // (`shell=True`), or it is an inline shell
+                                // array (`Popen(["sh", "-c", x])`).
+                                literals::chain_level_is_gated(lang, &text, cn, code)
+                                    || (matches!(
+                                        lang,
+                                        "javascript" | "js" | "typescript" | "ts" | "python" | "py"
+                                    ) && !extract_shell_array_payload_idents(cn, code)
+                                        .is_empty())
+                            })) =>
                 {
                     find_inner_source_or_sink_call(ast, lang, code, extra)
                 }
@@ -3714,6 +4510,43 @@ pub(super) fn push_node<'a>(
                 outer_callee = Some(text.clone());
                 text = inner_text;
                 inner_callee_span = Some((inner_node.start_byte(), inner_node.end_byte()));
+                // JS/TS: a sink call nested in an argument position
+                // (`User.findAll({ where: Sequelize.literal(`const`) })`)
+                // has payload positions of its own, which the outer call's
+                // `sink_payload_args` / `arg_string_literals` do not describe.
+                // Record the nested sink calls so the unguarded-sink check can
+                // tell a constant payload from a tainted one.  Every sink call
+                // the statement names as a member expression is a candidate;
+                // all must be constant, so a constant sink cannot vouch for a
+                // tainted one beside it.
+                if inner_is_sink
+                    && matches!(lang, "javascript" | "typescript" | "tsx")
+                    && matches!(
+                        lookup(lang, inner_node.kind()),
+                        Kind::CallFn | Kind::CallMethod
+                    )
+                {
+                    let mut calls = nested_member_sink_calls(ast, lang, code, extra);
+                    if let Some(calls) = calls.as_mut()
+                        && !calls.iter().any(|c| c.id() == inner_node.id())
+                    {
+                        calls.push(inner_node);
+                    }
+                    // A sink member expression that is not a call callee has no
+                    // call provenance; leave the node unproven then.
+                    if let Some(mut calls) = calls {
+                        calls.sort_by_key(|c| c.start_byte());
+                        let mut all: Vec<HoistedSink> = calls
+                            .into_iter()
+                            .map(|c| compute_hoisted_sink(c, lang, code))
+                            .collect();
+                        // Recorded only when every one is constant: a node with
+                        // a non-constant sink keeps the checks it had before.
+                        if all.iter().all(HoistedSink::is_constant) {
+                            hoisted_sink = Some(Box::new(all.swap_remove(0)));
+                        }
+                    }
+                }
                 // Inner-nested-sink argument attribution.  The Sink label was
                 // contributed by a call nested inside a larger, non-sink outer
                 // expression (`Ok(Reader { meta: <tainted>, h:
@@ -3772,7 +4605,12 @@ pub(super) fn push_node<'a>(
         if let Some(assign) = assign_node
             && let Some(lhs) = assign.child_by_field_name("left")
             && let Some(l) = classify_assignment_lhs(lhs, lang, code, extra)
-            && (!rhs_source_only || matches!(l, DataLabel::Sink(_)))
+            // An assignment target is written, not read: only a Sink label
+            // (`el.innerHTML = x`) is meaningful.  A Source or Sanitizer
+            // label on the target (`req.path = '/x'`, `req.headers[k] = v`)
+            // would turn a write into a read of attacker data.
+            && matches!(l, DataLabel::Sink(_))
+            && !is_koa_json_body_assignment(assign, lhs, lang, code, &l)
         {
             if rhs_source_only {
                 labels.clear();
@@ -3784,10 +4622,6 @@ pub(super) fn push_node<'a>(
     // names, so that call cannot anchor the node's call nesting.
     let labelled_by_assign_target = unlabelled_before_target_check && !labels.is_empty();
 
-    // Provenance for a Sink label hoisted onto a wrapper from a callback body
-    // (populated in the hoist block below).  Consumed by the CFG node's
-    // `CallMeta.hoisted_sink`.
-    let mut hoisted_sink: Option<Box<HoistedSink>> = None;
     // Set when the hoist block below rewrites `text` to a member expression
     // found inside the node rather than the node's own callee.
     let mut text_from_member_label = false;
@@ -3821,8 +4655,10 @@ pub(super) fn push_node<'a>(
             ) && !rhs_is_function_literal(ast, lang)))
         && let Some(found) = first_member_label(ast, lang, code, extra)
         && (!is_bare_return || matches!(found, DataLabel::Source(_)))
+        && !is_koa_json_body_node(ast, lang, code, &found)
     {
         let hoisted_is_sink = matches!(found, DataLabel::Sink(_));
+        let hoisted_is_source = matches!(found, DataLabel::Source(_));
         labels.push(found);
         // When the hoisted label is a Sink contributed from inside a
         // callback-argument function literal (the `sequelize.transaction(async
@@ -3857,7 +4693,7 @@ pub(super) fn push_node<'a>(
         // The Source label still attaches, so the resolved-value taint
         // flows from the inner `Promise.resolve(req.body)`.
         if !outer_is_promise_callback {
-            if let Some(member_text) = first_member_text(ast, code) {
+            if let Some(member_text) = first_member_text(ast, code, hoisted_is_source) {
                 if outer_callee.is_none() && text != member_text {
                     outer_callee = Some(text.clone());
                 }
@@ -3867,6 +4703,33 @@ pub(super) fn push_node<'a>(
         }
     }
 
+    // JS/TS: a sink call nested in the value an assignment or declaration
+    // binds (`where = { [Op.and]: [Sequelize.literal(`const`)] }`) names the
+    // node's callee but is not the statement's own call, so no payload
+    // positions describe it.  Record every nested sink call; the unguarded-sink
+    // check then proves the node constant only when all of them are.
+    if hoisted_sink.is_none()
+        && matches!(lang, "javascript" | "typescript" | "tsx")
+        && matches!(
+            lookup(lang, ast.kind()),
+            Kind::Assignment | Kind::CallWrapper
+        )
+        && labels.iter().any(|l| matches!(l, DataLabel::Sink(_)))
+        && scope.and_then(|s| find_call_node(s, lang)).is_none()
+        && let Some(calls) = nested_member_sink_calls(ast, lang, code, extra)
+        && !calls.is_empty()
+    {
+        let mut all: Vec<HoistedSink> = calls
+            .into_iter()
+            .map(|c| compute_hoisted_sink(c, lang, code))
+            .collect();
+        if all.iter().all(HoistedSink::is_constant) {
+            hoisted_sink = Some(Box::new(all.swap_remove(0)));
+        }
+    }
+
+    // Set when `text` below is the callee of a call in a condition header.
+    let mut cond_call_text = false;
     // Conditions can contain source/sink calls whose argument side effects are
     // load-bearing for taint, e.g. C `if (!fgets(buf, n, stdin)) return;`.
     // Classify the condition call so output-parameter sources still lower as
@@ -3882,6 +4745,7 @@ pub(super) fn push_node<'a>(
             labels.push(l);
         }
         text = ident;
+        cond_call_text = true;
         if inner_text_span.is_none() {
             inner_text_span = Some(ident_span);
         }
@@ -3916,6 +4780,30 @@ pub(super) fn push_node<'a>(
 
     // Hoist call-node lookup: reused for gated sinks and arg_uses.
     let mut call_ast = scope.and_then(|s| find_call_node(s, lang));
+    // C / C++ `if ((x = getenv("V")) == NULL)`: the assigned call sits deeper
+    // than the generic probe looks, and it is the call the header evaluates.
+    if call_ast.is_none()
+        && matches!(lang, "c" | "cpp")
+        && header.is_some()
+        && let Some(cond) = scope
+    {
+        call_ast = literals::condition_assigned_call(cond, lang);
+    }
+
+    // Go `p = "/" + strings.Trim(q, "/")`: the call is the right operand of a
+    // concatenation, one level deeper than `find_call_node` looks.  It is
+    // still the node's only call, so its arguments and literals describe the
+    // node the way they do for `p = strings.Trim(q, "/")`.
+    let go_concat_operand = if lang == "go" && call_ast.is_none() {
+        scope.and_then(|s| go_literal_plus_operand(s, code))
+    } else {
+        None
+    };
+    if let Some((_, operand)) = go_concat_operand
+        && operand.kind() == "call_expression"
+    {
+        call_ast = Some(operand);
+    }
 
     // Rust `conn.execute(sql, params![v]).unwrap()`: `.unwrap()` / `.expect(..)`
     // only unwrap the result, so the arguments that matter for gate payload
@@ -4000,7 +4888,7 @@ pub(super) fn push_node<'a>(
         && let Some(outer) = call_ast
         && let Some((inner, inner_callee_text)) = find_chained_gated_sink_call(outer, lang, code)
             .or_else(|| find_chained_inner_call(outer, lang, code))
-        && !classify_gated_sink(lang, &inner_callee_text, |_| None, |_| None, |_| false).is_empty()
+        && literals::chain_level_is_gated(lang, &inner_callee_text, inner, code)
     {
         call_ast = Some(inner);
         if !only_hoisted_source {
@@ -4073,6 +4961,22 @@ pub(super) fn push_node<'a>(
                 .or_else(|| cn.child_by_field_name("name"))
                 .and_then(|f| call_fn_callee_text(f, lang, code))
                 .map(|t| t.chars().filter(|c| !c.is_whitespace()).collect::<String>());
+            // PHP `$obj->method()` keeps its receiver in the `object` field,
+            // so the `name` field alone is the bare method name, which would
+            // match an exact-name gate (`=unlink`) meant for the builtin.
+            let function_field_text = if lang == "php"
+                && lookup(lang, cn.kind()) == Kind::CallMethod
+                && let Some((qualified, _)) = call_node_ident_with_span(cn, lang, code)
+            {
+                Some(
+                    qualified
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect::<String>(),
+                )
+            } else {
+                function_field_text
+            };
             let has_source_label = labels
                 .iter()
                 .any(|l| matches!(l, crate::labels::DataLabel::Source(_)));
@@ -4232,6 +5136,19 @@ pub(super) fn push_node<'a>(
                         } else {
                             gm.payload_args.to_vec()
                         };
+
+                    // Go database calls that lead with a `context.Context`
+                    // (`db.Exec(ctx, query, args...)`) carry the SQL one
+                    // position later than the context-free forms the gate
+                    // describes.
+                    if lang == "go"
+                        && payload_vec.as_slice() == [0]
+                        && matches!(gm.label, DataLabel::Sink(c) if c.contains(Cap::SQL_QUERY))
+                        && gm.object_destination_fields.is_empty()
+                        && go_leading_arg_is_context(cn, code)
+                    {
+                        payload_vec = vec![1];
+                    }
 
                     // Destination-aware gates: when the gate declares
                     // destination-bearing object fields and a payload-position
@@ -4439,7 +5356,32 @@ pub(super) fn push_node<'a>(
     // doesn't match (string + object args, no shell-array literal).  When
     // the payload elements are constant strings the helper returns no
     // match, so a literal `["bash", "-c", "ls -la"]` doesn't fire either.
-    if matches!(lang, "javascript" | "js" | "typescript" | "ts") {
+    //
+    // Python reaches the same shape through `from subprocess import Popen` /
+    // `Popen(["bash", "-c", f"... {x}"])` (a `list` literal, f-string payload).
+    // When the call is the receiver of a method chain whose outer call is not
+    // itself classified (`Popen([...]).wait()`), the chain's inner call is
+    // the one that holds the array, so it takes over like in the gated-sink
+    // chain rebinding above.
+    if matches!(lang, "python" | "py")
+        && labels.is_empty()
+        && let Some(outer) = call_ast
+        && let Some(inner) = literals::chain_receiver_calls(outer, lang)
+            .into_iter()
+            .find(|c| !extract_shell_array_payload_idents(*c, code).is_empty())
+        && let Some(callee_text) = inner
+            .child_by_field_name("function")
+            .and_then(|f| call_fn_callee_text(f, lang, code))
+    {
+        call_ast = Some(inner);
+        outer_callee = Some(text.clone());
+        text = callee_text.chars().filter(|c| !c.is_whitespace()).collect();
+        inner_callee_span = Some((inner.start_byte(), inner.end_byte()));
+    }
+    if matches!(
+        lang,
+        "javascript" | "js" | "typescript" | "ts" | "python" | "py"
+    ) {
         if let Some(cn) = call_ast.or_else(|| scope.and_then(|s| find_call_node_deep(s, lang, 4))) {
             let shell_matches = extract_shell_array_payload_idents(cn, code);
             if !shell_matches.is_empty() {
@@ -4537,6 +5479,41 @@ pub(super) fn push_node<'a>(
         labels.retain(|l| !matches!(l, DataLabel::Sink(c) if c.is_empty()));
     }
 
+    // Express `res.sendFile(p, { root })` / `res.download(p, { root })`: the
+    // `send` module resolves `p` under `root` and rejects any path that
+    // climbs out of it, so the call is confined to the root directory and is
+    // not a file-read sink for `p`.
+    if matches!(lang, "javascript" | "typescript" | "tsx")
+        && labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::FILE_IO)))
+        && (text.ends_with("res.sendFile")
+            || text.ends_with("res.download")
+            || text.ends_with("res.sendfile"))
+        && let Some(cn) = call_ast
+        && literals::object_arg_sets_property_without_spread(cn, 1, "root", code)
+        && literals::extract_object_arg_property(cn, 1, "root", code).is_some_and(|v| {
+            let t = v.trim_matches(|c| c == '"' || c == '\'' || c == '`');
+            v.starts_with(['"', '\'', '`'])
+                && v.len() >= 2
+                && !t.is_empty()
+                && !t.contains("${")
+                && !t.trim_matches('/').trim_matches('.').is_empty()
+        })
+    {
+        for label in labels.iter_mut() {
+            if let DataLabel::Sink(c) = label {
+                *c &= !Cap::FILE_IO;
+            }
+        }
+        labels.retain(|l| !matches!(l, DataLabel::Sink(c) if c.is_empty()));
+        if !labels.iter().any(|l| matches!(l, DataLabel::Sink(_))) {
+            sink_payload_args = None;
+            destination_uses = None;
+            gate_filters.clear();
+        }
+    }
+
     // React JSX text-content auto-escape sanitizer synthesis.  When the
     // assignment / wrapper / return AST contains a `{expr}` interpolation as
     // a direct child of a `jsx_element` or `jsx_fragment` (NOT inside a
@@ -4594,23 +5571,29 @@ pub(super) fn push_node<'a>(
             .iter()
             .any(|l| matches!(l, DataLabel::Sanitizer(c) if c.contains(Cap::SQL_QUERY)))
     {
-        // Identify the matched AR query method from the callee `text`
-        // (e.g. "Issue.where" → "where", "joins(:project).where" → "where").
-        let leaf = text.rsplit(['.', ':']).next().unwrap_or(&text);
-        const AR_QUERY_METHODS: &[&str] = &["where", "order", "group", "having", "joins", "pluck"];
-        if AR_QUERY_METHODS.contains(&leaf) {
-            // Try the outer call's arg 0 first (handles direct calls);
-            // fall back to walking the receiver chain for collapsed
-            // chained-call CFG nodes.
-            let shape = call_ast
-                .and_then(arg0_kind_and_interpolation)
-                .or_else(|| scope.and_then(|s| ruby_chain_arg0_for_method(s, &[leaf], code)));
-            if let Some((arg0_kind, has_interp)) = shape
-                && crate::labels::ruby::ar_query_safe_shape(&text, &arg0_kind, has_interp)
-            {
-                labels.push(DataLabel::Sanitizer(Cap::SQL_QUERY));
-            }
+        if scope.is_some_and(|s| ruby_statement_ar_queries_safe(s, code, extra)) {
+            labels.push(DataLabel::Sanitizer(Cap::SQL_QUERY));
         }
+    }
+
+    // Ruby `system(prog, arg, ...)` / `exec(prog, arg, ...)` with two or more
+    // command words and a fixed non-shell program is the argv form: Ruby
+    // execs the program directly and never starts a shell, so metacharacters
+    // in any word are inert.  The single-string form goes through `/bin/sh`,
+    // and a dynamic or shell/interpreter program still runs tainted text as
+    // code (see `kernel_exec_is_argv_form`).  The same-node
+    // `Sanitizer` follows the AR-query precedent above.
+    if (lang == "ruby" || lang == "rb")
+        && matches!(text.as_str(), "system" | "exec")
+        && labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(Cap::SHELL_ESCAPE)))
+        && !labels
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sanitizer(c) if c.contains(Cap::SHELL_ESCAPE)))
+        && call_ast.is_some_and(|cn| crate::labels::ruby::kernel_exec_is_argv_form(cn, code))
+    {
+        labels.push(DataLabel::Sanitizer(Cap::SHELL_ESCAPE));
     }
 
     // Shape-based sanitizer synthesis for Java JPA / JDBC parameterised
@@ -4786,8 +5769,14 @@ pub(super) fn push_node<'a>(
 
     /* ── 3.  GRAPH INSERTION + DEBUG ──────────────────────────────────── */
 
-    let (defines, uses, extra_defines, array_pattern_indices, rhs_array_elements) =
+    let (defines, mut uses, extra_defines, array_pattern_indices, rhs_array_elements) =
         def_use(ast, lang, code, extra);
+    // `echo isset($a) ? $b : ''`: the `isset` test is not output, so its
+    // operands are not uses of the echo.
+    if php_test_in_output && let Some(construct) = php_output_construct(ast, code) {
+        uses.clear();
+        php_output_value_uses(construct.operand, code, &mut uses);
+    }
     let rhs_object_literal = match defines.as_deref() {
         Some(name) if extra_defines.is_empty() => collect_rhs_object_literal(ast, lang, code, name),
         _ => None,
@@ -4798,6 +5787,13 @@ pub(super) fn push_node<'a>(
     // text, template prefix, member-field type, `.length` Int) do not
     // describe the result.
     let rmw = rmw_statement(ast, lang);
+
+    // `$n = (int) $_GET['n']`: the stored value is a number, so a source read
+    // on the right-hand side does not label the node as a source.
+    let yields_number = lang == "php" && rmw.is_none() && php_assigns_number(ast, code);
+    if yields_number {
+        labels.retain(|l| !matches!(l, DataLabel::Source(_)));
+    }
 
     // Capture constant text for SSA constant propagation: when this node
     // defines a variable from a syntactic literal (no identifier uses),
@@ -4816,11 +5812,46 @@ pub(super) fn push_node<'a>(
         None
     };
 
-    let callee = if kind == StmtKind::Call || !labels.is_empty() {
+    let const_collection = rmw.is_none()
+        && defines.is_some()
+        && uses.is_empty()
+        && literal_scalar_collection_rhs(ast, lang, code);
+
+    // C / C++ `if (!realpath(dir, out))`: an unlabelled call in a branch or
+    // loop condition still writes its output arguments.  Keep it as the
+    // node's callee when it has an arg-to-arg propagation rule so the buffer
+    // it fills carries the input's taint, as the same call in statement
+    // position does.
+    let mut header_call_propagates = false;
+    if labels.is_empty()
+        && header.is_some()
+        && matches!(lang, "c" | "cpp")
+        && let Some(cn) = call_ast
+        && let Some((ident, ident_span)) = call_ident_at_or_under(cn, lang, code)
+        && crate::labels::arg_propagation(lang, &ident).is_some()
+    {
+        text = ident;
+        inner_text_span = Some(ident_span);
+        header_call_propagates = true;
+    }
+
+    let mut callee = if kind == StmtKind::Call || !labels.is_empty() || header_call_propagates {
         Some(text.clone())
     } else {
         None
     };
+    // C / C++ `cmp(a, b)` where `cmp` is a function-pointer variable or
+    // parameter of the enclosing function.  The name stands for whatever the
+    // pointer holds, so it must not resolve to an unrelated function that
+    // happens to share the name in this or another file.
+    if labels.is_empty()
+        && matches!(lang, "c" | "cpp")
+        && let Some(c) = callee.as_deref()
+        && let Some(cn) = call_ast
+        && helpers::c_callee_is_local_pointer(cn, c, code)
+    {
+        callee = Some(format!("(*{c})"));
+    }
 
     // Call nesting for statement-level nodes that lower to an SSA `Call`.
     // The anchor is the call `text` was taken from: the classified inner
@@ -4882,9 +5913,33 @@ pub(super) fn push_node<'a>(
     } else {
         None
     };
-    let param_query_shape = param_query_call
+    let mut param_query_call = param_query_call;
+    let mut param_query_shape = param_query_call
         .map(|cn| parameterized_query_shape(cn, code))
         .unwrap_or(ParamQueryShape::NotParameterized);
+    // A SQL sink in the middle of a call chain (`scope.where("a = ?", x).
+    // order(:id)`): the node's outer call is the chain's last call, but the
+    // sink is the inner call that supplied the callee.  Read the query shape
+    // off that call.
+    if param_query_shape == ParamQueryShape::NotParameterized
+        && param_query_call.is_some()
+        && let Some((s, e)) = inner_callee_span
+        && let Some(mut inner) = ast.descendant_for_byte_range(s, e)
+    {
+        while (inner.start_byte(), inner.end_byte()) != (s, e) {
+            match inner.parent() {
+                Some(p) => inner = p,
+                None => break,
+            }
+        }
+        if (inner.start_byte(), inner.end_byte()) == (s, e) {
+            let shape = parameterized_query_shape(inner, code);
+            if shape != ParamQueryShape::NotParameterized {
+                param_query_shape = shape;
+                param_query_call = Some(inner);
+            }
+        }
+    }
     let parameterized_query = param_query_shape == ParamQueryShape::ConstantQuery;
     let parameterized_query_interpolated = param_query_shape == ParamQueryShape::InterpolatedQuery;
 
@@ -4905,7 +5960,15 @@ pub(super) fn push_node<'a>(
 
     // Extract per-argument identifiers for Call nodes.
     // Also extract for gated-sink nodes so payload-arg filtering works.
-    let arg_uses = if kind == StmtKind::Call || sink_payload_args.is_some() {
+    // A C / C++ branch or loop header whose condition calls something
+    // (`if (!realpath(a, b))`, `while ((n = read(fd, buf, len)) > 0)`) needs
+    // the per-argument groups too, so output-argument positions resolve.
+    let c_header_call = header.is_some() && callee.is_some() && matches!(lang, "c" | "cpp");
+    let arg_uses = if php_test_in_output {
+        // The `isset` call is not the callee, so its arguments are not the
+        // echo's arguments.
+        Vec::new()
+    } else if kind == StmtKind::Call || sink_payload_args.is_some() || c_header_call {
         call_ast
             .or(narrowed_query_call)
             .map(|cn| extract_arg_uses(cn, code))
@@ -4936,6 +5999,24 @@ pub(super) fn push_node<'a>(
         Vec::new()
     };
     let arg_bare_names = call_ast.map(extract_arg_bare_name_mask).unwrap_or(0);
+    let arg_raw_string_mask = if lang == "go" {
+        call_ast.map(extract_arg_raw_string_mask).unwrap_or(0)
+    } else {
+        0
+    };
+
+    let cond_call = if cond_call_text && kind == StmtKind::If {
+        call_ast
+            .filter(|cn| scope.is_none_or(|root| runs_unconditionally(root, *cn)))
+            .map(|cn| {
+                Box::new(CondCall {
+                    callee: text.clone(),
+                    arg_uses: extract_arg_uses(cn, code),
+                })
+            })
+    } else {
+        None
+    };
 
     // Extract keyword / named arguments for Call and gated-sink nodes.
     // Languages whose grammar doesn't produce `keyword_argument` / `named_argument`
@@ -4943,6 +6024,14 @@ pub(super) fn push_node<'a>(
     let kwargs = if kind == StmtKind::Call || sink_payload_args.is_some() {
         call_ast
             .map(|cn| extract_kwargs(cn, code))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    let kw_arg_positions = if lang == "ruby" && kind == StmtKind::Call {
+        call_ast
+            .map(|cn| literals::extract_ruby_kw_arg_positions(cn, code))
             .unwrap_or_default()
     } else {
         Vec::new()
@@ -5138,6 +6227,11 @@ pub(super) fn push_node<'a>(
         _ => SmallVec::new(),
     };
     let string_prefix = scope_prefix.or_else(|| template_prefix_of(&call_ops, lang, code));
+    let string_concat_tail = rmw.is_none()
+        && go_concat_operand
+            .as_ref()
+            .zip(string_prefix.as_deref())
+            .is_some_and(|((lit, _), prefix)| lit == prefix);
     let url_sink = labels
         .iter()
         .any(|l| matches!(l, DataLabel::Sink(c) if c.intersects(Cap::SSRF | Cap::OPEN_REDIRECT)));
@@ -5165,6 +6259,12 @@ pub(super) fn push_node<'a>(
     // actually narrows against `ast.span`, storing a redundant copy would
     // just bloat every labeled Call node.
     let callee_span = inner_callee_span.or(inner_text_span).filter(|s| *s != span);
+    let callee_nesting =
+        if text_from_member_label && inner_callee_span.is_none() && outer_callee.is_some() {
+            CalleeNesting::Hoisted
+        } else {
+            callee_span.map_or(CalleeNesting::Own, |cs| call_arg_nesting(ast, cs))
+        };
 
     // Constructor detection: a `new X(...)` call carries different cap
     // semantics than a plain function call. The SSA Call transfer uses
@@ -5193,13 +6293,19 @@ pub(super) fn push_node<'a>(
 
     // Java receivers typed only by a declaration (injected fields, formals,
     // locals bound to an untyped call).  Skipped when the node already has a
-    // sink: type-qualified resolution only runs on calls with none.
-    let receiver_decl_type =
-        if lang == "java" && !labels.iter().any(|l| matches!(l, DataLabel::Sink(_))) {
+    // sink: type-qualified resolution only runs on calls with none.  The one
+    // Java exception is a node whose sinks are all response-write sinks
+    // (`println` / `write`): the declared type lets the taint engine drop the
+    // cap when the receiver is plainly not an HTTP response (a `PrintStream`).
+    let receiver_decl_type = match lang {
+        "java" if labels.iter().all(html_escape_only_sink_or_non_sink) => {
             call_ast.and_then(|cn| java_call_receiver_decl_type(cn, code))
-        } else {
-            None
-        };
+        }
+        "rust" if !labels.iter().any(|l| matches!(l, DataLabel::Sink(_))) => {
+            call_ast.and_then(|cn| rust_receivers::call_receiver_decl_type(cn, code))
+        }
+        _ => None,
+    };
 
     let return_escapes = if kind == StmtKind::Return {
         helpers::collect_return_escapes(ast, lang, code)
@@ -5218,6 +6324,22 @@ pub(super) fn push_node<'a>(
         Vec::new()
     };
 
+    let elem_reads = if lang == "go" {
+        go_elem_read_scope(ast, matches!(lookup(lang, ast.kind()), Kind::If))
+            .map(|n| go_const_index_reads(n, code))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let map_stores = if lang == "go" {
+        go_map_stores(ast, code)
+    } else {
+        Vec::new()
+    };
+    let mut condition_vars = condition_vars;
+    if matches!(lookup(lang, ast.kind()), Kind::If) {
+        condition_vars.extend(elem_reads.iter().map(|e| e.to_string()));
+    }
     let idx = g.add_node(NodeInfo {
         kind,
         call: CallMeta {
@@ -5231,12 +6353,15 @@ pub(super) fn push_node<'a>(
             sink_payload_args,
             sink_reaching_uses,
             kwargs,
+            kw_arg_positions,
             arg_string_literals,
             arg_string_prefixes,
             arg_bare_names,
+            arg_raw_string_mask,
             destination_uses,
             gate_filters,
             is_constructor,
+            callee_nesting,
             ctor_owned_args,
             produces_null_proto,
             hoisted_sink,
@@ -5246,6 +6371,7 @@ pub(super) fn push_node<'a>(
         taint: TaintMeta {
             labels,
             const_text,
+            const_collection,
             defines,
             uses,
             extra_defines,
@@ -5261,10 +6387,17 @@ pub(super) fn push_node<'a>(
         condition_vars,
         condition_negated,
         null_check,
+        cond_call,
         returned_idents: return_escapes.idents,
         returned_call_callees: return_escapes.call_callees,
         implicit_return: false,
         escaping_store: assignment_target_is_indirect(ast, lang),
+        rhs_shape: if matches!(lang, "c" | "cpp") {
+            rhs_shape_of(ast)
+        } else {
+            RhsShape::Whole
+        },
+        aliased_def: false,
         cond_arith,
         all_args_literal,
         catch_param: false,
@@ -5286,8 +6419,11 @@ pub(super) fn push_node<'a>(
         parameterized_query,
         parameterized_query_interpolated,
         string_prefix,
+        string_concat_tail,
         string_prefix_ident,
+        root_unterminated: false,
         is_eq_with_const: rmw.is_none() && detect_eq_with_const(ast, lang),
+        yields_number,
         is_numeric_length_access: rmw.is_none() && detect_numeric_length_access(ast, lang, code),
         member_field: if rmw.is_none() {
             detect_member_field_assignment(ast, code)
@@ -5305,6 +6441,14 @@ pub(super) fn push_node<'a>(
             None
         },
         is_ternary_condition: false,
+        index_read_key: if rmw.is_none() {
+            plain_index_read_key(ast, code)
+        } else {
+            None
+        },
+        elem_reads,
+        elem_base_unstable: false,
+        map_stores,
     });
 
     debug!(
@@ -5744,7 +6888,18 @@ pub(crate) fn java_declared_receiver_kind(
         // `createNativeQuery` statement API as the Hibernate session.
         "Session" | "StatelessSession" | "EntityManager" => Some(TypeKind::HibernateSession),
         "CallableStatement" => Some(TypeKind::DatabaseConnection),
+        // Output streams and writers that sit on a file or memory buffer.
+        // `PrintStream` / `DataOutputStream` / `ObjectOutputStream` are left
+        // out too: they wrap any stream, including the servlet response
+        // (`new PrintStream(resp.getOutputStream())`).  `PrintWriter` /
+        // `Writer` / `OutputStream` / `ServletOutputStream` /
+        // `BufferedWriter` are left out because servlet code declares the
+        // response writer with those types.
+        "FileOutputStream" | "FileWriter" | "ByteArrayOutputStream" | "StringWriter" => {
+            Some(TypeKind::FileHandle)
+        }
         "ProcessBuilder" => Some(TypeKind::ProcessBuilder),
+        "StringBuilder" | "StringBuffer" => Some(TypeKind::StringBuilder),
         // Parser factories: `dbf.newDocumentBuilder().parse(x)` reads as
         // `dbf.parse`, and StAX parses straight off the factory
         // (`xif.createXMLStreamReader(in)`).
@@ -5764,6 +6919,16 @@ pub(crate) fn java_declared_receiver_kind(
     }
 }
 
+/// True for labels that leave a Java call node open to declared-type receiver
+/// resolution: anything that is not a sink, or a sink carrying only
+/// `HTML_ESCAPE`.
+fn html_escape_only_sink_or_non_sink(label: &DataLabel) -> bool {
+    match label {
+        DataLabel::Sink(caps) => *caps == Cap::HTML_ESCAPE,
+        _ => true,
+    }
+}
+
 /// Declared service kind of the receiver of a Java `method_invocation`: a
 /// plain identifier resolved through the enclosing scopes, or `this.f`
 /// resolved against the enclosing class fields.  A class name used as a
@@ -5772,7 +6937,150 @@ fn java_call_receiver_decl_type(
     call: Node,
     code: &[u8],
 ) -> Option<crate::ssa::type_facts::TypeKind> {
-    java_receiver_declared_type(call, code).and_then(|ty| java_declared_receiver_kind(&ty))
+    let ty = java_receiver_declared_type(call, code)?;
+    if let Some(kind) = java_declared_receiver_kind(&ty) {
+        return Some(kind);
+    }
+    // A wrapping stream (`PrintStream`, `PrintWriter`, ...) can sit on the
+    // servlet response, so its declared type alone says nothing.  When the
+    // variable is bound once to a constructor chain that bottoms out in a
+    // file or memory stream (`new PrintStream(new FileOutputStream(f))`), it
+    // is a file writer.
+    (java_is_wrapping_stream_type(&ty) && java_receiver_wraps_file_stream(call, code))
+        .then_some(crate::ssa::type_facts::TypeKind::FileHandle)
+}
+
+/// Java stream and writer types that wrap another stream or writer.
+fn java_is_wrapping_stream_type(ty: &str) -> bool {
+    matches!(
+        ty.rsplit('.').next().unwrap_or(ty),
+        "PrintStream"
+            | "PrintWriter"
+            | "DataOutputStream"
+            | "ObjectOutputStream"
+            | "BufferedOutputStream"
+            | "BufferedWriter"
+            | "OutputStreamWriter"
+    )
+}
+
+/// Whether the identifier receiver of a Java `method_invocation` is bound,
+/// exactly once, to a constructor chain of wrapping streams around a file or
+/// memory stream: a `try (T x = new ...)` resource, or a block local with no
+/// later reassignment.  Anything else (a formal, a field, a reassigned local,
+/// an initializer that is not a constructor) gives `false`.
+fn java_receiver_wraps_file_stream(call: Node, code: &[u8]) -> bool {
+    let Some(obj) = call.child_by_field_name("object") else {
+        return false;
+    };
+    if obj.kind() != "identifier" {
+        return false;
+    }
+    let Some(var) = text_of(obj, code) else {
+        return false;
+    };
+    let mut cur = call;
+    while let Some(parent) = cur.parent() {
+        match parent.kind() {
+            "try_with_resources_statement" => {
+                if let Some(specs) = parent.child_by_field_name("resources") {
+                    let mut cursor = specs.walk();
+                    for res in specs.named_children(&mut cursor) {
+                        if res.kind() == "resource"
+                            && res
+                                .child_by_field_name("name")
+                                .and_then(|n| n.utf8_text(code).ok())
+                                == Some(var.as_str())
+                        {
+                            return res
+                                .child_by_field_name("value")
+                                .is_some_and(|v| java_ctor_chain_ends_in_file_stream(v, code));
+                        }
+                    }
+                }
+            }
+            "block" | "constructor_body" => {
+                let mut cursor = parent.walk();
+                let decl = parent.named_children(&mut cursor).find(|c| {
+                    c.kind() == "local_variable_declaration"
+                        && java_decl_defines_var(*c, &var, code)
+                });
+                if let Some(decl) = decl {
+                    let mut c2 = decl.walk();
+                    let value = decl
+                        .named_children(&mut c2)
+                        .filter(|d| d.kind() == "variable_declarator")
+                        .find(|d| {
+                            d.child_by_field_name("name")
+                                .and_then(|n| n.utf8_text(code).ok())
+                                == Some(var.as_str())
+                        })
+                        .and_then(|d| d.child_by_field_name("value"));
+                    return value.is_some_and(|v| java_ctor_chain_ends_in_file_stream(v, code))
+                        && !java_subtree_assigns(parent, &var, code);
+                }
+            }
+            "method_declaration"
+            | "constructor_declaration"
+            | "lambda_expression"
+            | "class_body" => return false,
+            _ => {}
+        }
+        cur = parent;
+    }
+    false
+}
+
+/// Whether `expr` is `new W(new W2(... new F(..)))`, every `W` a wrapping
+/// stream and `F` a file or memory stream, the wrapped stream always being the
+/// first constructor argument.
+fn java_ctor_chain_ends_in_file_stream(expr: Node, code: &[u8]) -> bool {
+    let mut cur = expr;
+    for _ in 0..8 {
+        if cur.kind() != "object_creation_expression" {
+            return false;
+        }
+        let Some(ty) = cur
+            .child_by_field_name("type")
+            .and_then(|t| text_of(t, code))
+        else {
+            return false;
+        };
+        let leaf = ty.rsplit('.').next().unwrap_or(&ty);
+        if matches!(
+            leaf,
+            "FileOutputStream" | "FileWriter" | "ByteArrayOutputStream" | "StringWriter"
+        ) {
+            return true;
+        }
+        if !java_is_wrapping_stream_type(leaf) {
+            return false;
+        }
+        let Some(first) = cur
+            .child_by_field_name("arguments")
+            .and_then(|a| a.named_child(0))
+        else {
+            return false;
+        };
+        cur = first;
+    }
+    false
+}
+
+/// Whether any assignment under `scope` writes the bare identifier `var`.
+fn java_subtree_assigns(scope: Node, var: &str, code: &[u8]) -> bool {
+    let mut stack = vec![scope];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "assignment_expression"
+            && n.child_by_field_name("left")
+                .is_some_and(|l| l.kind() == "identifier" && l.utf8_text(code).ok() == Some(var))
+        {
+            return true;
+        }
+        let mut cursor = n.walk();
+        stack.extend(n.named_children(&mut cursor));
+    }
+    false
 }
 
 /// Declared type text of the receiver of a Java `method_invocation`: a plain
@@ -6010,6 +7318,38 @@ pub(super) fn connect_all(g: &mut Cfg, froms: &[NodeIndex], to: NodeIndex, kind:
     }
 }
 
+/// Whether `ast` is (or holds) a `let` with a trait-object type annotation
+/// whose initialiser starts with the decode call itself, so the annotation is
+/// the decode target (`let v: Box<dyn P> = toml::from_str(s)?`, not a tuple or
+/// a wrapper call that merely contains it).
+fn rust_let_decodes_into_dyn(ast: Node, code: &[u8]) -> bool {
+    let decl = if ast.kind() == "let_declaration" {
+        ast
+    } else {
+        let mut cursor = ast.walk();
+        match ast
+            .children(&mut cursor)
+            .find(|c| c.kind() == "let_declaration")
+        {
+            Some(d) => d,
+            None => return false,
+        }
+    };
+    let (Some(ty), Some(value)) = (
+        decl.child_by_field_name("type"),
+        decl.child_by_field_name("value"),
+    ) else {
+        return false;
+    };
+    let (Some(ty_text), Some(value_text)) = (text_of(ty, code), text_of(value, code)) else {
+        return false;
+    };
+    crate::labels::rust_decode_target_is_dyn(&ty_text)
+        && crate::labels::is_polymorphic_decode_head(
+            value_text.split('(').next().unwrap_or("").trim(),
+        )
+}
+
 /// Pre-emit dedicated Source CFG nodes for call arguments that contain source
 /// member expressions.
 ///
@@ -6170,9 +7510,20 @@ fn extract_go_membership_lookup(ast: Node, code: &[u8]) -> Option<MembershipLook
     }
     let base = index.child_by_field_name("operand")?;
     let key = index.child_by_field_name("index")?;
-    if base.kind() != "identifier" || key.kind() != "identifier" {
+    if base.kind() != "identifier" {
         return None;
     }
+    // The key is a bare identifier or a constant-index element read
+    // (`fields[parts[0]]`), which lowering gives a value named `parts[0]`.
+    let key_text = if key.kind() == "identifier" {
+        text_of(key, code)?
+    } else {
+        let reads = go_const_index_reads(key, code);
+        match (key.kind(), reads.as_slice()) {
+            ("index_expression", [one]) => one.to_string(),
+            _ => return None,
+        }
+    };
     let left = ast.child_by_field_name("left")?;
     let mut cursor = left.walk();
     let targets: Vec<Node> = left.named_children(&mut cursor).collect();
@@ -6188,8 +7539,9 @@ fn extract_go_membership_lookup(ast: Node, code: &[u8]) -> Option<MembershipLook
     Some(MembershipLookup {
         result_var,
         base: text_of(base, code)?,
-        key: text_of(key, code)?,
+        key: key_text,
         value_var,
+        filled_elsewhere: false,
     })
 }
 
@@ -6789,7 +8141,13 @@ fn try_lower_subscript_write(
         pp_payload_args = Some(vec![0]);
     }
 
+    let map_stores = if lang == "go" {
+        go_map_stores(assign_ast, code)
+    } else {
+        Vec::new()
+    };
     let n = g.add_node(NodeInfo {
+        map_stores,
         kind: StmtKind::Call,
         call: CallMeta {
             callee: Some("__index_set__".to_string()),
@@ -6927,6 +8285,276 @@ fn try_lower_spring_redirect_return(
     });
     connect_all(g, preds, n, EdgeKind::Seq);
     Some(n)
+}
+
+/// Annotations of a Java declaration as `(leaf name, full annotation text)`.
+fn java_declaration_annotations<'a>(decl: Node<'a>, code: &'a [u8]) -> Vec<(&'a str, &'a str)> {
+    let mut out = Vec::new();
+    let mut cursor = decl.walk();
+    for child in decl.children(&mut cursor) {
+        if child.kind() != "modifiers" {
+            continue;
+        }
+        let mut inner = child.walk();
+        for ann in child.children(&mut inner) {
+            if !matches!(ann.kind(), "marker_annotation" | "annotation") {
+                continue;
+            }
+            let Some(name) = ann
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(code).ok())
+            else {
+                continue;
+            };
+            let Ok(full) = ann.utf8_text(code) else {
+                continue;
+            };
+            out.push((name.rsplit('.').next().unwrap_or(name).trim(), full));
+        }
+    }
+    out
+}
+
+/// True when `ret` sits in a Spring handler method that answers with an HTML
+/// body: a mapping annotation whose `produces` names `text/html`, on a
+/// `@ResponseBody` method or in a `@RestController` / `@ResponseBody` class,
+/// and a `String` return type.  A handler that does not declare an HTML
+/// content type returns JSON or plain text, where reflecting input is not
+/// cross-site scripting, so it never matches.
+fn spring_html_body_handler(ret: Node, code: &[u8]) -> bool {
+    const MAPPINGS: &[&str] = &[
+        "RequestMapping",
+        "GetMapping",
+        "PostMapping",
+        "PutMapping",
+        "DeleteMapping",
+        "PatchMapping",
+    ];
+    let produces_html = |text: &str| {
+        text.find("produces").is_some_and(|i| {
+            let rest = &text[i..];
+            rest.contains("text/html") || rest.contains("TEXT_HTML")
+        })
+    };
+    let mut cur = ret.parent();
+    let method = loop {
+        let Some(n) = cur else { return false };
+        match n.kind() {
+            "method_declaration" => break n,
+            // A return inside a lambda or a nested class returns from that
+            // body, not from the handler.
+            "lambda_expression" | "class_body" | "constructor_declaration" => return false,
+            _ => cur = n.parent(),
+        }
+    };
+    if method
+        .child_by_field_name("type")
+        .and_then(|t| t.utf8_text(code).ok())
+        .map(str::trim)
+        != Some("String")
+    {
+        return false;
+    }
+    let anns = java_declaration_annotations(method, code);
+    let mapping = anns.iter().find(|(n, _)| MAPPINGS.contains(n));
+    let Some((_, mapping_text)) = mapping else {
+        return false;
+    };
+    let class = method
+        .parent()
+        .and_then(|b| b.parent())
+        .filter(|c| c.kind() == "class_declaration");
+    let class_anns = class
+        .map(|c| java_declaration_annotations(c, code))
+        .unwrap_or_default();
+    let body_response = anns.iter().any(|(n, _)| *n == "ResponseBody")
+        || class_anns
+            .iter()
+            .any(|(n, _)| matches!(*n, "RestController" | "ResponseBody"));
+    if !body_response {
+        return false;
+    }
+    produces_html(mapping_text)
+        || class_anns
+            .iter()
+            .any(|(n, t)| *n == "RequestMapping" && produces_html(t))
+}
+
+/// Identifiers whose taint reaches the value of a returned HTML string:
+/// plain names, `+` concatenation, ternary arms, and value-preserving string
+/// methods.  A call to anything else is skipped, since it may be a sanitizer
+/// (`escapeHtml4(x)`, `HtmlUtils.htmlEscape(x)`) whose result is clean.
+fn collect_html_return_idents<'a>(
+    n: Node<'a>,
+    code: &[u8],
+    out: &mut Vec<String>,
+    sources: &mut Vec<Node<'a>>,
+) {
+    const PASS_THROUGH: &[&str] = &[
+        "toString",
+        "valueOf",
+        "format",
+        "formatted",
+        "concat",
+        "trim",
+        "strip",
+        "stripLeading",
+        "stripTrailing",
+        "toLowerCase",
+        "toUpperCase",
+        "replace",
+        "replaceAll",
+        "replaceFirst",
+        "substring",
+        "subSequence",
+        "repeat",
+        "intern",
+    ];
+    match n.kind() {
+        "identifier" => {
+            if let Ok(t) = n.utf8_text(code) {
+                out.push(t.to_string());
+            }
+        }
+        "binary_expression" => {
+            for side in ["left", "right"] {
+                if let Some(c) = n.child_by_field_name(side) {
+                    collect_html_return_idents(c, code, out, sources);
+                }
+            }
+        }
+        "parenthesized_expression" => {
+            if let Some(c) = n.named_child(0) {
+                collect_html_return_idents(c, code, out, sources);
+            }
+        }
+        "ternary_expression" => {
+            for arm in ["consequence", "alternative"] {
+                if let Some(c) = n.child_by_field_name(arm) {
+                    collect_html_return_idents(c, code, out, sources);
+                }
+            }
+        }
+        "method_invocation" => {
+            let name = n
+                .child_by_field_name("name")
+                .and_then(|c| c.utf8_text(code).ok());
+            if name.is_some_and(|m| !PASS_THROUGH.contains(&m)) {
+                // Not a value-preserving method: it may be a sanitizer, so
+                // only a call that is itself a source contributes.
+                sources.push(n);
+            } else if name.is_some() {
+                if let Some(obj) = n.child_by_field_name("object") {
+                    collect_html_return_idents(obj, code, out, sources);
+                }
+                if let Some(args) = n.child_by_field_name("arguments") {
+                    let mut cursor = args.walk();
+                    for a in args.named_children(&mut cursor) {
+                        collect_html_return_idents(a, code, out, sources);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Spring `@RestController` / `@ResponseBody` handler that declares
+/// `produces = "text/html"` and returns a `String`: the returned string is
+/// the response body, so it is an HTML sink (CVE-2024-23819).  Emits a
+/// synthetic `__spring_html_body__` Call with `Sink(HTML_ESCAPE)` between
+/// `preds` and the Return node.  Returns the new frontier, or `preds`
+/// unchanged when the handler does not qualify.
+fn try_lower_spring_html_return(
+    ast: Node,
+    preds: &[NodeIndex],
+    g: &mut Cfg,
+    lang: &str,
+    code: &[u8],
+    enclosing_func: Option<&str>,
+    call_ordinal: &mut u32,
+) -> Vec<NodeIndex> {
+    if lang != "java" || !spring_html_body_handler(ast, code) {
+        return preds.to_vec();
+    }
+    let Some(expr) = ast.named_child(0) else {
+        return preds.to_vec();
+    };
+    let mut uses: Vec<String> = Vec::new();
+    let mut candidates: Vec<Node> = Vec::new();
+    collect_html_return_idents(expr, code, &mut uses, &mut candidates);
+    // A source call in the returned expression (`r.getParameter("q")`) has
+    // no variable of its own, so it gets a pre-emitted source node that
+    // defines one, which the sink then reads.
+    let mut preds: Vec<NodeIndex> = preds.to_vec();
+    for (i, call) in candidates.into_iter().enumerate() {
+        let Some(args) = call.child_by_field_name("arguments") else {
+            continue;
+        };
+        let Ok(callee) = std::str::from_utf8(&code[call.start_byte()..args.start_byte()]) else {
+            continue;
+        };
+        let callee: String = callee.chars().filter(|c| !c.is_whitespace()).collect();
+        let caps = crate::labels::classify_all("java", &callee, None)
+            .iter()
+            .fold(Cap::empty(), |acc, l| match l {
+                DataLabel::Source(bits) => acc | *bits,
+                _ => acc,
+            });
+        if caps.is_empty() {
+            continue;
+        }
+        let synth_name = format!("__nyx_src_{}_ret{}", g.node_count(), i);
+        let src_idx = g.add_node(NodeInfo {
+            kind: StmtKind::Seq,
+            call: CallMeta {
+                callee: Some(callee),
+                ..Default::default()
+            },
+            taint: TaintMeta {
+                labels: smallvec::smallvec![DataLabel::Source(caps)],
+                defines: Some(synth_name.clone()),
+                ..Default::default()
+            },
+            ast: AstMeta {
+                span: (call.start_byte(), call.end_byte()),
+                enclosing_func: enclosing_func.map(|s| s.to_string()),
+            },
+            ..Default::default()
+        });
+        connect_all(g, &preds, src_idx, EdgeKind::Seq);
+        preds = vec![src_idx];
+        uses.push(synth_name);
+    }
+    if uses.is_empty() {
+        return preds;
+    }
+    let ord = *call_ordinal;
+    *call_ordinal += 1;
+    let mut labels: smallvec::SmallVec<[DataLabel; 2]> = smallvec::SmallVec::new();
+    labels.push(DataLabel::Sink(Cap::HTML_ESCAPE));
+    let n = g.add_node(NodeInfo {
+        kind: StmtKind::Call,
+        call: CallMeta {
+            callee: Some("__spring_html_body__".to_string()),
+            arg_uses: vec![uses.clone()],
+            call_ordinal: ord,
+            sink_payload_args: Some(vec![0]),
+            ..Default::default()
+        },
+        taint: TaintMeta {
+            labels,
+            uses,
+            ..Default::default()
+        },
+        ast: AstMeta {
+            span: (ast.start_byte(), ast.end_byte()),
+            enclosing_func: enclosing_func.map(|s| s.to_string()),
+        },
+        ..Default::default()
+    });
+    connect_all(g, &preds, n, EdgeKind::Seq);
+    vec![n]
 }
 
 /// React JSX `dangerouslySetInnerHTML={{ __html: x }}` recogniser.  Walks
@@ -7574,6 +9202,58 @@ fn pp_extract_eq_compare(expr: Node, code: &[u8]) -> Option<(String, String)> {
     None
 }
 
+/// `is_koa_json_body_assignment` for a statement node that is, or wraps, the
+/// assignment.  Only reached after a Sink label was found, so the lookups
+/// stay off the common path.
+fn is_koa_json_body_node(ast: Node, lang: &str, code: &[u8], label: &DataLabel) -> bool {
+    if !matches!(lang, "javascript" | "typescript" | "tsx")
+        || !matches!(label, DataLabel::Sink(c) if *c == Cap::HTML_ESCAPE)
+    {
+        return false;
+    }
+    let assign = if matches!(lookup(lang, ast.kind()), Kind::Assignment) {
+        Some(ast)
+    } else {
+        let mut cursor = ast.walk();
+        ast.children(&mut cursor)
+            .find(|c| matches!(lookup(lang, c.kind()), Kind::Assignment))
+    };
+    assign
+        .and_then(|a| a.child_by_field_name("left").map(|l| (a, l)))
+        .is_some_and(|(a, l)| is_koa_json_body_assignment(a, l, lang, code, label))
+}
+
+/// Koa serialises an object or array `ctx.body` as JSON with
+/// `Content-Type: application/json`, so assigning a literal of that shape is
+/// not a direct XSS sink.  A string, template, identifier or call value keeps
+/// the sink because Koa may send it as `text/html`.
+fn is_koa_json_body_assignment(
+    assign: Node,
+    lhs: Node,
+    lang: &str,
+    code: &[u8],
+    label: &DataLabel,
+) -> bool {
+    if !matches!(lang, "javascript" | "typescript" | "tsx")
+        || !matches!(label, DataLabel::Sink(c) if *c == Cap::HTML_ESCAPE)
+        || lhs.kind() != "member_expression"
+    {
+        return false;
+    }
+    let Some(rhs) = assign.child_by_field_name("right") else {
+        return false;
+    };
+    if !matches!(rhs.kind(), "object" | "array") {
+        return false;
+    }
+    // With an HTML content type set in the same function, the body is
+    // rendered as markup (an object with a custom `toString` included), so
+    // the sink stays.
+    member_expr_text(lhs, code).is_some_and(|t| {
+        t.eq_ignore_ascii_case("ctx.body") || t.eq_ignore_ascii_case("ctx.response.body")
+    }) && !scope_sets_html_content_type(assign, code)
+}
+
 /// Label of an assignment target (`el.innerHTML`, `location.href`,
 /// `res.headers['X']`).  The full member path is tried first (`location.href`,
 /// more specific and avoids false positives on `a.href`), then the property
@@ -7668,10 +9348,11 @@ fn pre_emit_sink_assignment_sources(
             Some(r.extra_labels.as_slice())
         }
     });
-    if !matches!(
-        classify_assignment_lhs(lhs, lang, code, extra),
-        Some(DataLabel::Sink(_))
-    ) {
+    let Some(target_label @ DataLabel::Sink(_)) = classify_assignment_lhs(lhs, lang, code, extra)
+    else {
+        return (effective_preds, names);
+    };
+    if is_koa_json_body_assignment(assign, lhs, lang, code, &target_label) {
         return (effective_preds, names);
     }
     let mut found: Vec<(Node, Cap, String)> = Vec::new();
@@ -7764,10 +9445,12 @@ fn collect_rhs_member_sources<'a>(
             {
                 return;
             }
-            if let Some(full) = member_expr_text(n, code) {
+            if let Some(full) = member_expr_text_full(n, code) {
                 let mut candidate = full.as_str();
                 loop {
-                    if let Some(DataLabel::Source(caps)) = classify(lang, candidate, extra) {
+                    if let Some(DataLabel::Source(caps)) = classify(lang, candidate, extra)
+                        && helpers::long_source_path_ok(candidate)
+                    {
                         out.push((n, caps, candidate.to_string()));
                         return;
                     }
@@ -7783,7 +9466,7 @@ fn collect_rhs_member_sources<'a>(
         }
         "subscript_expression" => {
             if let Some(DataLabel::Source(caps)) = first_member_label(n, lang, code, extra) {
-                let text = first_member_text(n, code).unwrap_or_default();
+                let text = first_member_text(n, code, true).unwrap_or_default();
                 out.push((n, caps, text));
             } else if let Some(obj) = n.child_by_field_name("object") {
                 collect_rhs_member_sources(obj, lang, code, extra, out);
@@ -7823,9 +9506,7 @@ fn js_rebound_chain_sink_call<'a>(
         return None;
     }
     let (inner, inner_text) = find_chained_gated_sink_call(outer, lang, code)?;
-    if inner.id() == outer.id()
-        || classify_gated_sink(lang, &inner_text, |_| None, |_| None, |_| false).is_empty()
-    {
+    if inner.id() == outer.id() || !literals::chain_level_is_gated(lang, &inner_text, inner, code) {
         return None;
     }
     let outer_text = outer
@@ -7874,9 +9555,57 @@ fn pre_emit_arg_source_nodes(
         }
     });
 
+    // PHP `echo` / `print` / `<?=` take bare operands instead of an argument
+    // list, so a source read straight into them (`echo $_GET['a']`) needs its
+    // synthetic Source node here. The names feed the node's `uses` only: the
+    // node may also be a call (`echo f($x), $_GET['a']`) whose own argument
+    // positions must stay untouched.
+    if lang == "php"
+        && let Some(construct) = php_output_construct(ast, code)
+    {
+        let mut found = Vec::new();
+        php_direct_operand_sources(construct.operand, code, extra, &mut found);
+        for (label, member_text, span) in found {
+            let synth_name = format!("__nyx_src_{}_{}", g.node_count(), uses_only.len());
+            let mut src_labels: SmallVec<[DataLabel; 2]> = SmallVec::new();
+            src_labels.push(label);
+            let src_idx = g.add_node(NodeInfo {
+                kind: StmtKind::Seq,
+                call: CallMeta {
+                    callee: member_text,
+                    ..Default::default()
+                },
+                taint: TaintMeta {
+                    labels: src_labels,
+                    defines: Some(synth_name.clone()),
+                    ..Default::default()
+                },
+                ast: AstMeta {
+                    span,
+                    enclosing_func: enclosing_func.map(|s| s.to_string()),
+                },
+                ..Default::default()
+            });
+            connect_all(g, &effective_preds, src_idx, EdgeKind::Seq);
+            effective_preds.clear();
+            effective_preds.push(src_idx);
+            uses_only.push(synth_name);
+        }
+    }
+
     let Some(outer_call) = find_call_node(ast, lang) else {
         return (effective_preds, bindings, uses_only);
     };
+    // `echo isset($_GET['c']) ? .. : ..`: `isset` / `empty` are not the node's
+    // callee (see the callee choice in `push_node`), so their arguments are
+    // not sink inputs.
+    if lang == "php"
+        && php_output_construct(ast, code).is_some()
+        && call_node_ident_with_span(outer_call, lang, code)
+            .is_some_and(|(name, _)| matches!(name.as_str(), "isset" | "empty"))
+    {
+        return (effective_preds, bindings, uses_only);
+    }
     // A JS/TS method chain whose sink sits in the middle
     // (`repo.createQueryBuilder('u').where(<cond>).getMany()`): `push_node`
     // reads the argument positions from that inner call, so the sources are
@@ -7921,7 +9650,7 @@ fn pre_emit_arg_source_nodes(
             // Use the *current* node count as a unique token, it equals the
             // index the new Source node will receive.
             let synth_name = format!("__nyx_src_{}_{}", g.node_count(), pos);
-            let member_text = first_member_text(*child, code);
+            let member_text = first_member_text(*child, code, true);
             let span = (child.start_byte(), child.end_byte());
 
             let mut src_labels: SmallVec<[DataLabel; 2]> = SmallVec::new();
@@ -7970,7 +9699,18 @@ fn pre_emit_arg_source_nodes(
             let synth_name = format!("__nyx_idxget_{}_{}", g.node_count(), pos);
             let span = (child.start_byte(), child.end_byte());
 
+            // A constant-index Go read is also the element value lowering
+            // names `arr[idx]`; the synthetic read takes it as its receiver
+            // so a check on the element carries to the read's result.
+            let elem_reads: Vec<Box<str>> = if lang == "go" {
+                const_index_name(&arr_text, &idx_text)
+                    .map(|n| vec![n.into_boxed_str()])
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             let idx_node = g.add_node(NodeInfo {
+                elem_reads,
                 kind: StmtKind::Call,
                 call: CallMeta {
                     callee: Some("__index_get__".to_string()),
@@ -8047,7 +9787,7 @@ fn pre_emit_arg_source_nodes(
             let src_label = first_member_label(arg, lang, code, extra);
             if let Some(DataLabel::Source(caps)) = src_label {
                 let synth_name = format!("__nyx_chainsrc_{}_{}", g.node_count(), uses_only.len());
-                let member_text = first_member_text(arg, code);
+                let member_text = first_member_text(arg, code, true);
                 let span = (arg.start_byte(), arg.end_byte());
 
                 let mut src_labels: SmallVec<[DataLabel; 2]> = SmallVec::new();
@@ -8607,6 +10347,27 @@ fn assignment_target_is_indirect(ast: Node, lang: &str) -> bool {
     } else {
         None
     };
+    // C / C++ chained store `regs = cfg->priv = xmalloc(n)`: the value also
+    // lands in the inner target, which the outer name does not own.
+    if matches!(lang, "c" | "cpp") {
+        let mut cur = assign;
+        while let Some(a) = cur
+            && let Some(inner) = a
+                .child_by_field_name("right")
+                .map(unwrap_parens)
+                .filter(|r| lookup(lang, r.kind()) == Kind::Assignment)
+        {
+            if let Some(l) = inner.child_by_field_name("left").map(unwrap_parens)
+                && matches!(
+                    l.kind(),
+                    "field_expression" | "pointer_expression" | "subscript_expression"
+                )
+            {
+                return true;
+            }
+            cur = Some(inner);
+        }
+    }
     let Some(lhs) = assign.and_then(|a| a.child_by_field_name("left")) else {
         return false;
     };
@@ -8629,8 +10390,40 @@ fn assignment_target_is_indirect(ast: Node, lang: &str) -> bool {
         | "index_expression"
         | "array_access"
         | "element_reference" => true,
+        // `f(..)->field = v`, `get().field = v`: the object is a call result,
+        // so the field lives in storage the call hands out, not in a local.
+        "field_expression"
+        | "member_expression"
+        | "field_access"
+        | "selector_expression"
+        | "member_access_expression"
+        | "attribute" => member_base_is_call(lhs, lang),
         _ => false,
     }
+}
+
+/// True when the object a member expression reads from, looking through
+/// nested member accesses and parentheses, is a call.
+fn member_base_is_call(member: Node, lang: &str) -> bool {
+    let mut cur = member;
+    for _ in 0..8 {
+        let Some(base) = cur
+            .child_by_field_name("argument")
+            .or_else(|| cur.child_by_field_name("object"))
+            .or_else(|| cur.child_by_field_name("operand"))
+        else {
+            return false;
+        };
+        let base = unwrap_parens(base);
+        if matches!(
+            lookup(lang, base.kind()),
+            Kind::CallFn | Kind::CallMethod | Kind::CallMacro
+        ) {
+            return true;
+        }
+        cur = base;
+    }
+    false
 }
 
 /// Names a C / C++ / Go / Java function declares itself: parameters
@@ -8775,10 +10568,98 @@ impl PendingStores {
     }
 }
 
+fn is_js_ts_lang(lang: &str) -> bool {
+    matches!(lang, "javascript" | "typescript" | "tsx")
+}
+
+/// Collect the names a JS/TS scope binds itself into `out` (see
+/// [`BodyMeta::declared_names`]).  `root` is the function node (`is_fn`) or
+/// the program root; nested function and class bodies are not entered.
+fn collect_js_declared_names(root: Node, code: &[u8], is_fn: bool, out: &mut Vec<String>) {
+    fn pattern_names(n: Node, code: &[u8], out: &mut Vec<String>) {
+        match n.kind() {
+            "identifier" | "shorthand_property_identifier_pattern" => {
+                if let Some(t) = node_str(n, code) {
+                    out.push(t.to_string());
+                }
+            }
+            "pair_pattern" => {
+                if let Some(v) = n.child_by_field_name("value") {
+                    pattern_names(v, code, out);
+                }
+            }
+            "assignment_pattern" | "object_assignment_pattern" => {
+                if let Some(l) = n.child_by_field_name("left") {
+                    pattern_names(l, code, out);
+                }
+            }
+            "object_pattern" | "array_pattern" | "rest_pattern" => {
+                let mut cursor = n.walk();
+                for c in n.named_children(&mut cursor) {
+                    pattern_names(c, code, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn walk(n: Node, code: &[u8], out: &mut Vec<String>) {
+        match n.kind() {
+            "variable_declarator" => {
+                if let Some(name) = n.child_by_field_name("name") {
+                    pattern_names(name, code, out);
+                }
+            }
+            "catch_clause" => {
+                if let Some(p) = n.child_by_field_name("parameter") {
+                    pattern_names(p, code, out);
+                }
+            }
+            "for_in_statement" => {
+                // Only a declaring loop (`for (const x of ..)`) binds `x`.
+                if n.child_by_field_name("kind").is_some()
+                    && let Some(l) = n.child_by_field_name("left")
+                {
+                    pattern_names(l, code, out);
+                }
+            }
+            "function_declaration" | "generator_function_declaration" | "class_declaration" => {
+                if let Some(name) = n.child_by_field_name("name") {
+                    pattern_names(name, code, out);
+                }
+                return;
+            }
+            "function_expression"
+            | "function"
+            | "generator_function"
+            | "arrow_function"
+            | "method_definition"
+            | "class"
+            | "class_expression" => return,
+            _ => {}
+        }
+        let mut cursor = n.walk();
+        for c in n.children(&mut cursor) {
+            walk(c, code, out);
+        }
+    }
+    if is_fn {
+        let mut cursor = root.walk();
+        for c in root.children(&mut cursor) {
+            walk(c, code, out);
+        }
+    } else {
+        walk(root, code, out);
+    }
+}
+
 /// Flag nodes of a C / C++ / Go / Java body that assign a name the function
 /// never declares (a global, package variable or unqualified field).  See
 /// [`NodeInfo::escaping_store`].
 fn mark_nonlocal_defines(g: &mut Cfg, func: Node, lang: &str, code: &[u8], params: &[String]) {
+    if matches!(lang, "javascript" | "typescript" | "tsx") {
+        mark_param_rooted_member_stores(g, params);
+        return;
+    }
     if !matches!(lang, "c" | "cpp" | "go" | "java") {
         return;
     }
@@ -8820,19 +10701,219 @@ fn mark_nonlocal_defines(g: &mut Cfg, func: Node, lang: &str, code: &[u8], param
     }
 }
 
-/// Mark the CFG node built from the tail statement of a Ruby method body as
-/// the method's implicit return value.  Only a plain value expression
+/// JS / TS: flag `param.field = v` / `param.a.b = v` stores.  The object
+/// belongs to the caller, so a handle stored on it is handed off (Koa
+/// `ctx.body = fs.createReadStream(p)`).  `this.field` is not flagged: a
+/// class-field acquire is the leak the state checks exist to report.
+fn mark_param_rooted_member_stores(g: &mut Cfg, params: &[String]) {
+    if params.is_empty() {
+        return;
+    }
+    for idx in g.node_indices().collect::<Vec<_>>() {
+        let info = &mut g[idx];
+        let Some(def) = info.taint.defines.as_deref() else {
+            continue;
+        };
+        let Some((root, _)) = def.split_once('.') else {
+            continue;
+        };
+        if root != "this" && params.iter().any(|p| p == root) {
+            info.escaping_store = true;
+        }
+    }
+}
+
+/// Root identifier of a Go operand: `p`, `p.f`, `p[i]`, `(p)`.
+fn go_root_ident<'a>(mut n: Node<'a>, code: &[u8]) -> Option<String> {
+    loop {
+        match n.kind() {
+            "identifier" => return text_of(n, code),
+            "selector_expression" | "index_expression" | "parenthesized_expression" => {
+                n = n
+                    .child_by_field_name("operand")
+                    .or_else(|| n.named_child(0))?;
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Whether `func` is a callback whose return value the caller throws away:
+/// an argument of `forEach` / `for_each`, or of a Python `map(..)` used as a
+/// statement.  A handle such a callback opens never reaches anyone.
+fn callback_result_is_discarded(func: Node, code: &[u8]) -> bool {
+    let Some(args) = func.parent() else {
+        return false;
+    };
+    if !matches!(args.kind(), "arguments" | "argument_list") {
+        return false;
+    }
+    let Some(call) = args.parent() else {
+        return false;
+    };
+    let Some(callee) = call
+        .child_by_field_name("function")
+        .or_else(|| call.child_by_field_name("name"))
+    else {
+        return false;
+    };
+    let Ok(text) = callee.utf8_text(code) else {
+        return false;
+    };
+    let leaf = text.rsplit(['.', ':']).next().unwrap_or(text);
+    match leaf {
+        "forEach" | "for_each" => true,
+        "map" if text == "map" => call
+            .parent()
+            .is_some_and(|p| p.kind() == "expression_statement"),
+        _ => false,
+    }
+}
+
+/// Node kind ids the alias walk dispatches on, resolved once per walk:
+/// comparing `kind_id()` avoids the C-string conversion `kind()` does on
+/// every node.
+struct GoAliasKinds {
+    func_literal: u16,
+    unary_expression: u16,
+    assignment_statement: u16,
+}
+
+fn collect_go_aliased_names(n: Node, in_closure: bool, code: &[u8], out: &mut HashSet<String>) {
+    let lang = n.language();
+    let kinds = GoAliasKinds {
+        func_literal: lang.id_for_node_kind("func_literal", true),
+        unary_expression: lang.id_for_node_kind("unary_expression", true),
+        assignment_statement: lang.id_for_node_kind("assignment_statement", true),
+    };
+    collect_go_aliased_names_with(n, in_closure, code, &kinds, out);
+}
+
+fn collect_go_aliased_names_with(
+    n: Node,
+    in_closure: bool,
+    code: &[u8],
+    kinds: &GoAliasKinds,
+    out: &mut HashSet<String>,
+) {
+    let mut in_closure = in_closure;
+    let kind = n.kind_id();
+    if kind == kinds.func_literal {
+        in_closure = true;
+    } else if kind == kinds.unary_expression {
+        if n.child_by_field_name("operator")
+            .is_some_and(|o| o.kind() == "&")
+            && let Some(operand) = n.child_by_field_name("operand")
+            && let Some(name) = go_root_ident(operand, code)
+        {
+            out.insert(name);
+        }
+    } else if kind == kinds.assignment_statement
+        && in_closure
+        && let Some(left) = n.child_by_field_name("left")
+    {
+        let mut cursor = left.walk();
+        for target in left.named_children(&mut cursor) {
+            if let Some(name) = go_root_ident(target, code) {
+                out.insert(name);
+            }
+        }
+    }
+    let mut cursor = n.walk();
+    for c in n.children(&mut cursor) {
+        collect_go_aliased_names_with(c, in_closure, code, kinds, out);
+    }
+}
+
+/// Flag Go nodes that define a variable whose address is taken or that a
+/// nested function literal assigns.  See [`NodeInfo::aliased_def`].
+/// Byte pre-filter for [`mark_aliased_defines`]: whether `body` may take the
+/// address of a variable (`&p`, `&p.f`, `&p[i]`).  A unary `&` follows an
+/// operator, an opening bracket, a separator or the start of the text, and
+/// is followed by a name.  `&&`, `&=`, `&^`, a binary `a & b` and the
+/// composite literal `&T{..}` (no variable) do not count.  A superset of what
+/// the walk collects is fine; missing one is not.
+pub(super) fn go_body_takes_address_of_name(body: &[u8]) -> bool {
+    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut i = 0;
+    while let Some(off) = body[i..].iter().position(|&b| b == b'&') {
+        let at = i + off;
+        i = at + 1;
+        let next = body.get(at + 1).copied().unwrap_or(b' ');
+        if !(next.is_ascii_alphabetic() || next == b'_' || next == b'(') {
+            continue;
+        }
+        let before = body[..at].trim_ascii_end();
+        let prev = before.last().copied().unwrap_or(b'(');
+        if prev == b'&' || matches!(prev, b')' | b']' | b'}' | b'"' | b'\'' | b'`') {
+            continue;
+        }
+        if is_ident(prev) {
+            // `a &b` is a binary and, but after a keyword (`return &x`,
+            // `range &xs`) the `&` is unary.
+            let word_start = before
+                .iter()
+                .rposition(|&b| !is_ident(b))
+                .map_or(0, |p| p + 1);
+            if !matches!(
+                &before[word_start..],
+                b"return" | b"range" | b"case" | b"go" | b"defer" | b"else"
+            ) {
+                continue;
+            }
+        }
+        // Skip the operand path; a `{` right after it is a composite literal.
+        let mut j = at + 1;
+        while j < body.len() && (is_ident(body[j]) || body[j] == b'.') {
+            j += 1;
+        }
+        if body.get(j) == Some(&b'{') {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+fn mark_aliased_defines(g: &mut Cfg, func: Node, lang: &str, code: &[u8]) {
+    if lang != "go" {
+        return;
+    }
+    // Both shapes leave a byte witness, so most functions skip the walk.
+    let body = &code[func.start_byte()..func.end_byte().min(code.len())];
+    let has_closure = body
+        .windows(5)
+        .skip(1)
+        .any(|w| w == b"func(" || w == b"func ");
+    if !has_closure && !go_body_takes_address_of_name(body) {
+        return;
+    }
+    let mut names = HashSet::new();
+    collect_go_aliased_names(func, false, code, &mut names);
+    if names.is_empty() {
+        return;
+    }
+    for idx in g.node_indices().collect::<Vec<_>>() {
+        let info = &mut g[idx];
+        if info
+            .taint
+            .defines
+            .as_deref()
+            .is_some_and(|d| names.contains(d))
+        {
+            info.aliased_def = true;
+        }
+    }
+}
+
+/// Mark the CFG node built from the tail statement of a Ruby method body, or
+/// from the expression body of an arrow function / lambda / closure, as the
+/// function's implicit return value.  Only a plain value expression
 /// qualifies (a variable, a call, a literal container); control flow
 /// (`if` / `case` / `begin`), assignments and explicit `return` keep their
 /// own semantics.  The node is matched by span so only the node that
 /// evaluates the whole statement is marked.
-fn mark_ruby_implicit_return(
-    g: &mut Cfg,
-    stmt: Node,
-    exits: &[NodeIndex],
-    lang: &str,
-    code: &[u8],
-) {
+fn mark_implicit_return(g: &mut Cfg, stmt: Node, exits: &[NodeIndex], lang: &str, code: &[u8]) {
     if !matches!(
         lookup(lang, stmt.kind()),
         Kind::CallFn | Kind::CallMethod | Kind::CallWrapper | Kind::Other
@@ -8878,6 +10959,35 @@ pub(super) fn build_sub<'a>(
     next_body_id: &mut u32,
     current_body_id: BodyId,
 ) -> Vec<NodeIndex> {
+    // C / C++ `#if` / `#ifdef` / `#elif` / `#else` groups wrap statements,
+    // declarations and whole function definitions.  Lower them as a branch
+    // with a merge so their contents are analysed instead of collapsing into
+    // one opaque node.
+    if matches!(lang, "c" | "cpp")
+        && matches!(
+            ast.kind(),
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef" | "preproc_else"
+        )
+    {
+        return build_preproc_group(
+            ast,
+            preds,
+            g,
+            lang,
+            code,
+            summaries,
+            file_path,
+            enclosing_func,
+            call_ordinal,
+            analysis_rules,
+            break_targets,
+            continue_targets,
+            throw_targets,
+            bodies,
+            next_body_id,
+            current_body_id,
+        );
+    }
     match lookup(lang, ast.kind()) {
         //  IF‑/ELSE: two branches that re‑merge afterwards
         Kind::If => {
@@ -9477,6 +11587,15 @@ pub(super) fn build_sub<'a>(
                     call_ordinal,
                     analysis_rules,
                 );
+                let post_jsx = try_lower_spring_html_return(
+                    ast,
+                    &post_jsx,
+                    g,
+                    lang,
+                    code,
+                    enclosing_func,
+                    call_ordinal,
+                );
                 let ret = push_node(
                     g,
                     StmtKind::Return,
@@ -9559,6 +11678,15 @@ pub(super) fn build_sub<'a>(
                     enclosing_func,
                     call_ordinal,
                     analysis_rules,
+                );
+                effective_preds = try_lower_spring_html_return(
+                    ast,
+                    &effective_preds,
+                    g,
+                    lang,
+                    code,
+                    enclosing_func,
+                    call_ordinal,
                 );
                 let ret = push_node(
                     g,
@@ -9828,7 +11956,7 @@ pub(super) fn build_sub<'a>(
                 }
 
                 if ruby_tail_stmt == Some(child.id()) {
-                    mark_ruby_implicit_return(g, child, &child_exits, lang, code);
+                    mark_implicit_return(g, child, &child_exits, lang, code);
                 }
 
                 let is_preproc = child.kind().starts_with("preproc_");
@@ -9863,6 +11991,10 @@ pub(super) fn build_sub<'a>(
                 anon_fn_name(ast.start_byte())
             } else {
                 ast.child_by_field_name("name")
+                    .or_else(|| {
+                        params::c_function_declarator(ast)
+                            .and_then(|d| d.child_by_field_name("declarator"))
+                    })
                     .or_else(|| ast.child_by_field_name("declarator"))
                     .and_then(|n| {
                         let mut tmp = Vec::new();
@@ -9990,6 +12122,17 @@ pub(super) fn build_sub<'a>(
                 fn_body_id,
             );
             drop(receiver_aliases);
+
+            // An expression body (`() => fs.createReadStream(p)`,
+            // `lambda: open(p)`) is the function's return value.
+            if matches!(
+                lang,
+                "javascript" | "typescript" | "tsx" | "python" | "rust"
+            ) && lookup(lang, body_ast.kind()) != Kind::Block
+                && !callback_result_is_discarded(ast, code)
+            {
+                mark_implicit_return(&mut fn_graph, body_ast, &body_exits, lang, code);
+            }
 
             // ── 3) Wire exits to Exit node ────────────────────────────────────
             for &b in &body_exits {
@@ -10161,8 +12304,21 @@ pub(super) fn build_sub<'a>(
 
             // ── 5b) Flag assignments to names this body never declares ───────
             mark_nonlocal_defines(&mut fn_graph, ast, lang, code, &param_names);
+            mark_aliased_defines(&mut fn_graph, ast, lang, code);
 
             // ── 6) Push BodyCfg ───────────────────────────────────────────────
+            let declared_names = if is_js_ts_lang(lang) {
+                let mut names = param_names.clone();
+                for fields in &param_destructured_fields {
+                    names.extend(fields.iter().cloned());
+                }
+                collect_js_declared_names(ast, code, true, &mut names);
+                names.sort_unstable();
+                names.dedup();
+                names
+            } else {
+                Vec::new()
+            };
             let auth_decorators = extract_auth_decorators(ast, lang, code);
             let route_captures = extract_route_path_captures(ast, lang, code);
             let param_route_capture: Vec<bool> = if lang == "java" {
@@ -10196,6 +12352,7 @@ pub(super) fn build_sub<'a>(
                     func_key: Some(body_func_key),
                     auth_decorators,
                     param_route_capture,
+                    declared_names,
                 },
                 graph: fn_graph,
                 entry: fn_entry,
@@ -10337,7 +12494,9 @@ pub(super) fn build_sub<'a>(
             // `res.redirect(req.body.returnTo)`).  Created BEFORE the Call
             // node so they get lower indices, see doc comment on
             // `pre_emit_arg_source_nodes` for why this ordering matters.
-            let (effective_preds, src_bindings, mut src_uses_only) = if kind == StmtKind::Call {
+            let (effective_preds, src_bindings, mut src_uses_only) = if kind == StmtKind::Call
+                || (lang == "php" && php_output_construct(ast, code).is_some())
+            {
                 pre_emit_arg_source_nodes(g, ast, lang, code, enclosing_func, analysis_rules, preds)
             } else {
                 (SmallVec::from_slice(preds), Vec::new(), Vec::new())
@@ -10677,6 +12836,93 @@ pub(super) fn build_sub<'a>(
     }
 }
 
+/// Lower one C / C++ preprocessor conditional group.
+///
+/// The group body runs sequentially from `preds`.  The `alternative` chain
+/// (`#elif` / `#else`) is an independent path from the same `preds`.  Without
+/// an `#else` the body may also be skipped, so `preds` is an exit too.  Exits
+/// are the union, so a definition in one arm never kills one from another.
+#[allow(clippy::too_many_arguments)]
+fn build_preproc_group<'a>(
+    ast: Node<'a>,
+    preds: &[NodeIndex],
+    g: &mut Cfg,
+    lang: &str,
+    code: &'a [u8],
+    summaries: &mut FuncSummaries,
+    file_path: &str,
+    enclosing_func: Option<&str>,
+    call_ordinal: &mut u32,
+    analysis_rules: Option<&LangAnalysisRules>,
+    break_targets: &mut Vec<NodeIndex>,
+    continue_targets: &mut Vec<NodeIndex>,
+    throw_targets: &mut Vec<NodeIndex>,
+    bodies: &mut Vec<BodyCfg>,
+    next_body_id: &mut u32,
+    current_body_id: BodyId,
+) -> Vec<NodeIndex> {
+    let condition = ast.child_by_field_name("condition");
+    let name = ast.child_by_field_name("name");
+    let alternative = ast.child_by_field_name("alternative");
+    let mut frontier = preds.to_vec();
+    let mut cursor = ast.walk();
+    for child in ast.named_children(&mut cursor) {
+        let is_header = [condition, name, alternative]
+            .into_iter()
+            .flatten()
+            .any(|n| n.id() == child.id());
+        if is_header {
+            continue;
+        }
+        frontier = build_sub(
+            child,
+            &frontier,
+            g,
+            lang,
+            code,
+            summaries,
+            file_path,
+            enclosing_func,
+            call_ordinal,
+            analysis_rules,
+            break_targets,
+            continue_targets,
+            throw_targets,
+            bodies,
+            next_body_id,
+            current_body_id,
+        );
+    }
+    let mut exits = frontier;
+    match alternative {
+        Some(alt) => exits.extend(build_sub(
+            alt,
+            preds,
+            g,
+            lang,
+            code,
+            summaries,
+            file_path,
+            enclosing_func,
+            call_ordinal,
+            analysis_rules,
+            break_targets,
+            continue_targets,
+            throw_targets,
+            bodies,
+            next_body_id,
+            current_body_id,
+        )),
+        // `#else` is itself the last alternative; every other group can be
+        // skipped entirely.
+        None if ast.kind() != "preproc_else" => exits.extend_from_slice(preds),
+        None => {}
+    }
+    let mut seen = std::collections::HashSet::new();
+    exits.retain(|n| seen.insert(*n));
+    exits
+}
+
 /// Languages whose `x = cond ? a : b` assignments lower to a CFG diamond
 /// (see `conditions::build_ternary_diamond`).
 fn ternary_split_lang(lang: &str) -> bool {
@@ -10734,9 +12980,14 @@ pub(crate) fn build_cfg<'a>(
             *cell.borrow_mut() = collect_python_noreturn_imports(tree.root_node(), code);
         });
     }
+    literals::clear_ruby_scope_bindings();
+    if lang == "rust" {
+        rust_receivers::populate(tree, code);
+    }
     // Receiver-alias frames are scoped to function bodies by guards in
     // `build_sub`; start from an empty stack regardless.
     crate::labels::clear_receiver_aliases();
+    params::clear_go_struct_typed_fields();
 
     // Create the top-level body graph (BodyId(0)).
     let (mut g, entry, exit) = create_body_graph(0, code.len(), None);
@@ -10837,6 +13088,15 @@ pub(crate) fn build_cfg<'a>(
     }
 
     // Insert top-level body at position 0.
+    let top_declared_names = if is_js_ts_lang(lang) {
+        let mut names = Vec::new();
+        collect_js_declared_names(tree.root_node(), code, false, &mut names);
+        names.sort_unstable();
+        names.dedup();
+        names
+    } else {
+        Vec::new()
+    };
     let toplevel = BodyCfg {
         meta: BodyMeta {
             id: BodyId(0),
@@ -10851,6 +13111,7 @@ pub(crate) fn build_cfg<'a>(
             func_key: None,
             auth_decorators: Vec::new(),
             param_route_capture: Vec::new(),
+            declared_names: top_declared_names,
         },
         graph: g,
         entry,
@@ -10864,6 +13125,7 @@ pub(crate) fn build_cfg<'a>(
     // Leading identifiers of URL-building strings (`API + id`) resolve against
     // the file's module-level string constants, now that every body exists.
     module_consts::resolve_prefix_idents(&mut bodies);
+    module_consts::resolve_root_idents(&mut bodies, lang, code);
 
     // Extract import alias bindings for JS/TS files.
     let import_bindings = if matches!(
@@ -10883,6 +13145,10 @@ pub(crate) fn build_cfg<'a>(
     } else {
         HashMap::new()
     };
+
+    if lang == "ruby" {
+        keyword_args::reorder_keyword_args(&mut bodies, &summaries);
+    }
 
     let extra = analysis_rules.map(|r| r.extra_labels.as_slice());
     if !promisify_aliases.is_empty() {
@@ -10905,6 +13171,12 @@ pub(crate) fn build_cfg<'a>(
         python_imports
     };
 
+    retain_sound_const_collections(&mut bodies, tree.root_node(), lang, code);
+    if lang == "go" {
+        mark_shared_map_lookups(&mut bodies);
+        mark_unstable_elem_bases(&mut bodies, tree.root_node(), code);
+    }
+
     // Clear the per-file DFS-index map so it does not leak to the next
     // file built on this thread.
     clear_fn_dfs_indices();
@@ -10913,7 +13185,10 @@ pub(crate) fn build_cfg<'a>(
     TYPE_ALIAS_LC.with(|cell| cell.borrow_mut().clear());
     LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow_mut().clear());
     PYTHON_NORETURN_IMPORTS.with(|cell| cell.borrow_mut().clear());
+    literals::clear_ruby_scope_bindings();
+    rust_receivers::clear();
     crate::labels::clear_receiver_aliases();
+    params::clear_go_struct_typed_fields();
 
     // collect every
     // declared inheritance / impl / implements relationship in the
@@ -10958,6 +13233,147 @@ pub(crate) fn build_cfg<'a>(
         entry_kinds,
         safe_lookup_fields,
         class_constant_scalars,
+    }
+}
+
+/// Set [`MembershipLookup::filled_elsewhere`] on every lookup of a map its own
+/// body does not define when a different body stores a non-literal key into a
+/// map of that name that body does not define either.  Runs once per Go file
+/// and only when both a lookup and such a store exist.
+fn mark_shared_map_lookups(bodies: &mut [BodyCfg]) {
+    let defines = |b: &BodyCfg, name: &str| {
+        b.graph.node_weights().any(|n| {
+            n.taint.defines.as_deref() == Some(name)
+                || n.taint.extra_defines.iter().any(|d| d == name)
+        })
+    };
+    // (body index, map name) for every store with a non-literal key into a
+    // map the storing body does not define.
+    let mut stores: Vec<(usize, String)> = Vec::new();
+    for (i, b) in bodies.iter().enumerate() {
+        for n in b.graph.node_weights() {
+            for ms in &n.map_stores {
+                if !ms.key_idents.is_empty()
+                    && !defines(b, &ms.base)
+                    && !stores.iter().any(|(j, m)| *j == i && *m == ms.base)
+                {
+                    stores.push((i, ms.base.clone()));
+                }
+            }
+        }
+    }
+    if stores.is_empty() {
+        return;
+    }
+    let mut marks: Vec<(usize, petgraph::graph::NodeIndex)> = Vec::new();
+    for (i, b) in bodies.iter().enumerate() {
+        for idx in b.graph.node_indices() {
+            let Some(l) = b.graph[idx].membership_lookup.as_ref() else {
+                continue;
+            };
+            if stores.iter().any(|(j, m)| *j != i && *m == l.base) && !defines(b, &l.base) {
+                marks.push((i, idx));
+            }
+        }
+    }
+    for (i, idx) in marks {
+        if let Some(l) = bodies[i].graph[idx].membership_lookup.as_mut() {
+            l.filled_elsewhere = true;
+        }
+    }
+}
+
+/// Keep `TaintMeta::const_collection` only on file-scope collections that
+/// nothing else in the file can reach.
+///
+/// A literal collection is constant for a loop over it only while it is never
+/// mutated, aliased or handed to other code.  Every identifier in the file
+/// spelled like the collection must be its own declaration or the iterable of
+/// a `for ... of/in` loop; any other mention (a `.push` call, an argument, an
+/// export, a shadowing declaration) clears the flag.  The scan runs once per
+/// file and only when a flagged collection exists.
+fn retain_sound_const_collections(bodies: &mut [BodyCfg], root: Node, lang: &str, code: &[u8]) {
+    if !matches!(lang, "javascript" | "typescript" | "tsx" | "python") {
+        for body in bodies.iter_mut() {
+            for info in body.graph.node_weights_mut() {
+                info.taint.const_collection = false;
+            }
+        }
+        return;
+    }
+    let mut names: HashSet<String> = HashSet::new();
+    for body in bodies.iter() {
+        for info in body.graph.node_weights() {
+            if info.taint.const_collection
+                && let Some(d) = info.taint.defines.as_deref()
+            {
+                names.insert(d.to_string());
+            }
+        }
+    }
+    if names.is_empty() {
+        return;
+    }
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        let mut cursor = n.walk();
+        for child in n.children(&mut cursor) {
+            stack.push(child);
+        }
+        if n.child_count() != 0 || !(n.kind().ends_with("identifier") || n.kind() == "constant") {
+            continue;
+        }
+        let Some(text) = text_of(n, code) else {
+            continue;
+        };
+        if !names.contains(&text) {
+            continue;
+        }
+        let allowed = n.parent().is_some_and(|p| {
+            let field_is = |f: &str| p.child_by_field_name(f).map(|c| c.id()) == Some(n.id());
+            match p.kind() {
+                // `const NAMES = [..]`.  An exported declaration is
+                // importable, and another module may mutate it.
+                "variable_declarator" => {
+                    field_is("name")
+                        && !p
+                            .parent()
+                            .and_then(|d| d.parent())
+                            .is_some_and(|e| e.kind() == "export_statement")
+                }
+                // `NAMES = [..]` (Python).  A public module-level list can be
+                // mutated by any importer; only private names and immutable
+                // tuples are provably constant.
+                "assignment" => {
+                    field_is("left")
+                        && (text.starts_with('_')
+                            || p.child_by_field_name("right")
+                                .is_some_and(|r| r.kind() == "tuple"))
+                }
+                // `for (const x of NAMES)` / `for x in NAMES:`
+                "for_in_statement" | "for_statement" => field_is("right"),
+                _ => false,
+            }
+        });
+        if !allowed {
+            names.remove(&text);
+            if names.is_empty() {
+                break;
+            }
+        }
+    }
+    for body in bodies.iter_mut() {
+        for info in body.graph.node_weights_mut() {
+            if info.taint.const_collection
+                && !info
+                    .taint
+                    .defines
+                    .as_deref()
+                    .is_some_and(|d| names.contains(d))
+            {
+                info.taint.const_collection = false;
+            }
+        }
     }
 }
 
@@ -11440,8 +13856,16 @@ fn apply_gated_label_rules(
                     }
                     reaching = Some(uses);
                 }
+                let nesting = if own_call.is_none() {
+                    call_arg_nesting(node, inner_span)
+                } else {
+                    CalleeNesting::Own
+                };
                 let info = &mut body.graph[idx];
                 info.taint.labels.push(inner.label);
+                if nesting != CalleeNesting::Own {
+                    info.call.callee_nesting = nesting;
+                }
                 if info.call.sink_reaching_uses.is_none() {
                     info.call.sink_reaching_uses = reaching;
                 }
@@ -11486,6 +13910,124 @@ fn chain_head_call(call_node: Node) -> Node {
         cur = next;
     }
     cur
+}
+
+/// Classify how the node spanning `span` sits under `root`: directly in the
+/// `arguments` of some call, through an aggregate literal inside such
+/// arguments, or not in call arguments at all.
+///
+/// One top-down cursor descent from `root` to the smallest node spanning
+/// `span` (the node `descendant_for_byte_range` returns).  The nearest
+/// `arguments` edge above that node decides: an aggregate literal strictly
+/// below it makes the nesting [`CalleeNesting::InAggregateArg`].  Walking up
+/// with `parent()` instead costs a root-to-node descent per step.
+fn call_arg_nesting(root: Node, span: (usize, usize)) -> CalleeNesting {
+    let args_field = root.language().field_id_for_name("arguments");
+    let mut cursor = root.walk();
+    // Depth (in edges below `root`) of the deepest `arguments` child entered,
+    // and of the deepest aggregate literal on the path.
+    let mut args_depth: Option<usize> = None;
+    let mut aggregate_depth: Option<usize> = None;
+    let mut depth = 0usize;
+    while cursor.goto_first_child_for_byte(span.0).is_some() {
+        let child = cursor.node();
+        if child.start_byte() > span.0 || child.end_byte() < span.1 {
+            break;
+        }
+        depth += 1;
+        if args_field.is_some() && cursor.field_id() == args_field {
+            args_depth = Some(depth);
+        }
+        if is_aggregate_literal_kind(child.kind()) {
+            aggregate_depth = Some(depth);
+        }
+    }
+    match args_depth {
+        None => CalleeNesting::Own,
+        Some(a) if aggregate_depth.is_some_and(|g| g > a) => CalleeNesting::InAggregateArg,
+        Some(_) => CalleeNesting::InArg,
+    }
+}
+
+/// The original bottom-up [`call_arg_nesting`], kept as the test oracle.
+#[cfg(test)]
+pub(super) fn call_arg_nesting_reference(root: Node, span: (usize, usize)) -> CalleeNesting {
+    let Some(mut cur) = root.descendant_for_byte_range(span.0, span.1) else {
+        return CalleeNesting::Own;
+    };
+    let mut via_aggregate = false;
+    while cur.id() != root.id() {
+        let Some(parent) = cur.parent() else {
+            return CalleeNesting::Own;
+        };
+        if parent
+            .child_by_field_name("arguments")
+            .is_some_and(|a| a.id() == cur.id())
+        {
+            return if via_aggregate {
+                CalleeNesting::InAggregateArg
+            } else {
+                CalleeNesting::InArg
+            };
+        }
+        if is_aggregate_literal_kind(cur.kind()) {
+            via_aggregate = true;
+        }
+        cur = parent;
+    }
+    CalleeNesting::Own
+}
+
+#[cfg(test)]
+pub(super) fn call_arg_nesting_for_test(root: Node, span: (usize, usize)) -> CalleeNesting {
+    call_arg_nesting(root, span)
+}
+
+/// True when `call`, a descendant of the condition expression `root`, is
+/// evaluated on every run of the condition: it is not the right operand of a
+/// short-circuit operator and not a branch of a conditional expression.
+fn runs_unconditionally(root: Node, call: Node) -> bool {
+    let mut cur = call;
+    while cur.id() != root.id() {
+        let Some(parent) = cur.parent() else {
+            return true;
+        };
+        let mut cursor = parent.walk();
+        let short_circuit = parent
+            .children(&mut cursor)
+            .any(|c| !c.is_named() && matches!(c.kind(), "&&" | "||" | "and" | "or" | "??" | "?"));
+        let left_first = parent
+            .named_child(0)
+            .is_some_and(|first| first.id() == cur.id());
+        if short_circuit && !left_first {
+            return false;
+        }
+        cur = parent;
+    }
+    true
+}
+
+/// Grammar kinds of object / array / map / struct literals.
+fn is_aggregate_literal_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "object"
+            | "array"
+            | "pair"
+            | "dictionary"
+            | "list"
+            | "tuple"
+            | "set"
+            | "hash"
+            | "array_initializer"
+            | "array_creation_expression"
+            | "initializer_list"
+            | "composite_literal"
+            | "literal_value"
+            | "struct_expression"
+            | "array_expression"
+            | "tuple_expression"
+    )
 }
 
 /// Positional index of the argument of `call_node` whose span contains

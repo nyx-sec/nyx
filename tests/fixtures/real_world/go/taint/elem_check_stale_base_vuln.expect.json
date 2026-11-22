@@ -1,0 +1,25 @@
+{
+  "description": "A comma-ok check on parts[0] does not cover a later read after parts is reassigned",
+  "tags": [
+    "taint",
+    "sqli",
+    "go",
+    "positive"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        22,
+        22
+      ],
+      "evidence_contains": [],
+      "notes": "the slice is replaced after the check"
+    }
+  ]
+}

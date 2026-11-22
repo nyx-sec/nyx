@@ -234,6 +234,8 @@ fn type_kind_index(kind: &TypeKind) -> u32 {
         // resolver via `label_prefix()`; no dedicated bitset slot, share
         // the Object index like the other receiver-only TypeKinds.
         TypeKind::ProcessBuilder => 3,
+        // StringBuilder is a receiver-only kind for container store modelling.
+        TypeKind::StringBuilder => 3,
         // Runtime is likewise a type-qualified-resolver-only receiver kind
         // (`Runtime.exec`); no dedicated bitset slot, share the Object index.
         TypeKind::Runtime => 3,

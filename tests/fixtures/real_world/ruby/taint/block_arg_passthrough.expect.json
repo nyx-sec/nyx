@@ -1,0 +1,25 @@
+{
+  "description": "A block argument is not a positional argument, so the call still resolves to the one-parameter helper",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "ruby"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "must_not_match": false,
+      "line_range": [
+        3,
+        13
+      ],
+      "evidence_contains": [],
+      "notes": "params[:dir] reaches File.open through the helper called with &blk"
+    }
+  ]
+}

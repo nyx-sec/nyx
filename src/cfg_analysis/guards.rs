@@ -295,7 +295,7 @@ fn payload_position_absent(lang: Lang, pos: usize, arity: usize) -> bool {
 /// payload): every recorded argument must be a `Some(literal)` — mirroring
 /// `is_all_args_constant` — and there must be at least one recorded argument
 /// (an empty list is unproven → not suppressed).
-fn payload_positions_all_literal(
+pub(crate) fn payload_positions_all_literal(
     payload_args: &Option<Vec<usize>>,
     lits: &[Option<String>],
 ) -> bool {
@@ -859,6 +859,150 @@ fn sink_args_typed_safe(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) 
     type_facts_suppress(&values, sink_caps, type_facts)
 }
 
+/// True when every real operand of the sink call is a number the language
+/// produced by a numeric cast or arithmetic assignment (PHP `$pid = (int)
+/// $raw;`).  The taint engine clears all capabilities at such an assignment
+/// (`NodeInfo::yields_number`), so the structural rule must not keep
+/// treating the variable as source-derived through its earlier definition:
+/// `passthru('kill -9 ' . $pid)` after `$pid = (int) fread(..)`.
+///
+/// Reads the SSA definition chain, so a cast on only one path (a phi with a
+/// non-numeric operand) does not count.
+fn sink_args_numeric_assigned(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+    let Some(facts) = ctx.body_const_facts else {
+        return false;
+    };
+    let Some(&sink_val) = facts.ssa.cfg_node_map.get(&sink) else {
+        return false;
+    };
+    let Some(inst) = find_inst(&facts.ssa, sink_val) else {
+        return false;
+    };
+    let SsaOp::Call { args, receiver, .. } = &inst.op else {
+        return false;
+    };
+    let sink_info = &ctx.cfg[sink];
+    let callee_desc = sink_info.call.callee.as_deref().unwrap_or("");
+    let callee_parts: Vec<&str> = callee_desc
+        .split(['.', ':'])
+        .map(|p| p.split('(').next().unwrap_or(p))
+        .collect();
+    let outer_parts: Vec<&str> = sink_info
+        .call
+        .outer_callee
+        .as_deref()
+        .map(|oc| {
+            oc.split(['.', ':'])
+                .map(|p| p.split('(').next().unwrap_or(p))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    fn numeric(ctx: &AnalysisContext, ssa: &crate::ssa::SsaBody, v: SsaValue, depth: u8) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        let Some(def) = find_inst(ssa, v) else {
+            return false;
+        };
+        match &def.op {
+            SsaOp::Phi(ops) => ops.iter().all(|(_, o)| numeric(ctx, ssa, *o, depth + 1)),
+            SsaOp::Const(_) => true,
+            _ => ctx.cfg[def.cfg_node].yields_number,
+        }
+    }
+
+    let mut saw_cast = false;
+    let mut check = |v: SsaValue| -> bool {
+        let Some(def) = find_inst(&facts.ssa, v) else {
+            return true;
+        };
+        match &def.op {
+            SsaOp::Const(_) => return true,
+            SsaOp::Param { .. } => {
+                let name = def.var_name.as_deref().unwrap_or("");
+                if is_callee_fragment(name, callee_desc, &callee_parts, &outer_parts) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        if numeric(ctx, &facts.ssa, v, 0) {
+            saw_cast = true;
+            true
+        } else {
+            false
+        }
+    };
+    if let Some(r) = receiver
+        && !check(*r)
+    {
+        return false;
+    }
+    for group in args {
+        for v in group.iter() {
+            if !check(*v) {
+                return false;
+            }
+        }
+    }
+    saw_cast
+}
+
+/// Whether the file defines a class deriving from `ActiveRecord::Migration`.
+fn source_declares_rails_migration(src: &[u8]) -> bool {
+    const NEEDLE: &[u8] = b"ActiveRecord::Migration";
+    src.windows(NEEDLE.len()).any(|w| w == NEEDLE)
+}
+
+/// Whether the sink sits in a block, lambda or other anonymous function body.
+fn sink_in_closure(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+    ctx.cfg[sink]
+        .ast
+        .enclosing_func
+        .as_deref()
+        .is_some_and(crate::cfg::is_anon_fn_name)
+        || !ctx.captured_params.is_empty()
+}
+
+/// Whether any identifier the sink reads is a parameter in scope, or a local assigned from an expression that reads one.
+/// Closure over the body's assignments, so `o = [a, opts[:x]]; q.order(o)`
+/// reaches `opts` while `q.order(sort_clause)` does not.
+fn sink_operands_reach_param(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+    let sink_info = &ctx.cfg[sink];
+    let sink_func = sink_info.ast.enclosing_func.as_deref();
+    let mut reach: HashSet<&str> = ctx.scope_param_names().collect();
+    if reach.is_empty() {
+        return false;
+    }
+    loop {
+        let before = reach.len();
+        for idx in ctx.cfg.node_indices() {
+            let info = &ctx.cfg[idx];
+            if info.ast.enclosing_func.as_deref() != sink_func {
+                continue;
+            }
+            if !info.taint.uses.iter().any(|u| reach.contains(u.as_str())) {
+                continue;
+            }
+            if let Some(d) = info.taint.defines.as_deref() {
+                reach.insert(d);
+            }
+            for d in &info.taint.extra_defines {
+                reach.insert(d.as_str());
+            }
+        }
+        if reach.len() == before {
+            break;
+        }
+    }
+    sink_info
+        .taint
+        .uses
+        .iter()
+        .any(|u| reach.contains(u.as_str()))
+}
+
 /// Suppress a Go `cfg-unguarded-sink` reflected-XSS finding on
 /// `fmt.Fprint*` / `io.WriteString` when the writer (positional arg 0) is
 /// provably not an `http.ResponseWriter`: an in-memory `*bytes.Buffer`, an
@@ -905,6 +1049,25 @@ fn go_fprintf_writer_non_response(ctx: &AnalysisContext, sink: NodeIndex, sink_c
     type_facts
         .get_type(first_val)
         .is_some_and(crate::ssa::type_facts::go_writer_is_non_response)
+}
+
+/// True when every cap on the sink is response-only and the call's receiver is
+/// declared as a type that cannot be an HTTP response
+/// ([`crate::cfg::NodeInfo::call`] `receiver_decl_type`).  Mirrors the taint
+/// engine's declared-receiver strip so the structural rule agrees with it.
+fn java_receiver_declared_non_response(
+    ctx: &AnalysisContext,
+    sink: NodeIndex,
+    sink_caps: Cap,
+) -> bool {
+    ctx.cfg[sink]
+        .call
+        .receiver_decl_type
+        .as_ref()
+        .is_some_and(|kind| {
+            crate::taint::ssa_transfer::receiver_incompatible_sink_caps(kind, sink_caps)
+                .contains(sink_caps)
+        })
 }
 
 /// Suppress a `cfg-unguarded-sink` finding when every real argument to the
@@ -3022,6 +3185,75 @@ fn has_leading_slash_partner(cond: NodeIndex, ctx: &AnalysisContext) -> bool {
     })
 }
 
+/// `if (u.host === Y)` where `u` was bound by `new URL(..)` in the same
+/// function and `Y` is not attacker data.  Returns whether the guarded code
+/// sits on the TRUE edge.
+///
+/// `Y` counts as attacker data when any dotted path in it classifies as a
+/// source, or when a variable in it is defined by a source-labelled node.
+fn cond_url_host_guard(info: &crate::cfg::NodeInfo, ctx: &AnalysisContext) -> Option<bool> {
+    let hc = crate::taint::path_state::url_host_compare(info.condition_text.as_deref()?)?;
+    let cond_func = info.ast.enclosing_func.as_deref();
+    let cond_start = info.ast.span.0;
+    let defined_in_func = |n: &crate::cfg::NodeInfo, name: &str| {
+        n.taint.defines.as_deref() == Some(name) && n.ast.enclosing_func.as_deref() == cond_func
+    };
+
+    // The subject's latest definition before the condition must be `new URL(..)`.
+    let mut best: Option<(usize, &str)> = None;
+    for nidx in ctx.cfg.node_indices() {
+        let n = &ctx.cfg[nidx];
+        if n.kind != StmtKind::Call
+            || !defined_in_func(n, &hc.subject)
+            || n.ast.span.0 >= cond_start
+        {
+            continue;
+        }
+        if let Some(callee) = n.call.callee.as_deref()
+            && best.is_none_or(|(s, _)| n.ast.span.0 > s)
+        {
+            best = Some((n.ast.span.0, callee));
+        }
+    }
+    if !matches!(
+        best?.1,
+        "URL" | "new URL" | "window.URL" | "globalThis.URL" | "self.URL" | "URL.parse"
+    ) {
+        return None;
+    }
+
+    let extra = ctx.analysis_rules.map(|r| r.extra_labels.as_slice());
+    let lang = ctx.lang.as_str();
+    for word in hc
+        .rhs
+        .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '.')))
+        .filter(|w| !w.is_empty())
+    {
+        let mut candidate = word;
+        loop {
+            if matches!(
+                crate::labels::classify(lang, candidate, extra),
+                Some(DataLabel::Source(_))
+            ) {
+                return None;
+            }
+            match candidate.rsplit_once('.') {
+                Some((prefix, _)) => candidate = prefix,
+                None => break,
+            }
+        }
+        let root = word.split('.').next().unwrap_or(word);
+        let source_defined = ctx.cfg.node_indices().any(|nidx| {
+            let n = &ctx.cfg[nidx];
+            defined_in_func(n, root) && node_introduces_untrusted_data(n)
+        });
+        if source_defined {
+            return None;
+        }
+    }
+    Some(hc.is_eq != info.condition_negated)
+}
+
 /// Find all nodes in the CFG that are calls to guard functions.
 fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
     let guard_rules = rules::guard_rules(ctx.lang);
@@ -3076,6 +3308,10 @@ fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
                 ) || (kind == PredicateKind::AllowlistCheck && allowlist_has_target)
                 {
                     result.push((idx, Cap::all()));
+                } else if kind == PredicateKind::RedirectValidator {
+                    result.push((idx, Cap::OPEN_REDIRECT));
+                } else if kind == PredicateKind::HostDenylistRejected {
+                    result.push((idx, Cap::SSRF));
                 } else if cond_indirect_validator_callee(info, ctx).is_some() {
                     // Indirect-validator pattern:
                     //   const err = validate(x); if (err) throw …;
@@ -3127,6 +3363,14 @@ fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
                         (kind == PredicateKind::RelativeUrlValidated) != info.condition_negated;
                     if let Some(succ) = sole_successor_on_edge(idx, passes_on_true, ctx) {
                         result.push((succ, Cap::OPEN_REDIRECT));
+                    }
+                } else if let Some(passes_on_true) = cond_url_host_guard(info, ctx) {
+                    // `const u = new URL(x, base); if (u.host === TRUSTED)`:
+                    // on the passing edge the parsed URL, and the string it
+                    // was parsed from, stay on the trusted host.  Mirrors the
+                    // taint layer's `apply_url_host_compare_narrowing`.
+                    if let Some(succ) = sole_successor_on_edge(idx, passes_on_true, ctx) {
+                        result.push((succ, Cap::OPEN_REDIRECT | Cap::SSRF));
                     }
                 } else if matches!(
                     kind,
@@ -3214,6 +3458,123 @@ fn arg_callee_label_sanitizer_caps(ctx: &AnalysisContext, sink: NodeIndex) -> Ca
     caps
 }
 
+/// Whether the receiver of `callee` is known to be an instance of a project
+/// class: `self` / `this` / `cls`, or a local bound to a constructor call of a
+/// class the project defines.  Any other receiver (a parameter, an attribute,
+/// an import) may be a library object such as a DataFrame.
+fn receiver_is_project_object(ctx: &AnalysisContext, callee: &str, leaf: &str) -> bool {
+    let recv = callee[..callee.len() - leaf.len()].trim_end_matches(['.', ':']);
+    if matches!(recv, "self" | "this" | "cls") {
+        return true;
+    }
+    if recv.is_empty() || recv.contains(['.', ':', '(']) {
+        return false;
+    }
+    let is_project_class = |name: &str| {
+        ctx.func_summaries
+            .keys()
+            .any(|k| k.container.rsplit("::").next() == Some(name))
+            || ctx.global_summaries.is_some_and(|g| {
+                g.lookup_same_lang(ctx.lang, "__init__")
+                    .into_iter()
+                    .any(|(k, _)| k.container.rsplit("::").next() == Some(name))
+            })
+    };
+    ctx.cfg.node_weights().any(|info| {
+        info.taint.defines.as_deref() == Some(recv)
+            && info
+                .call
+                .callee
+                .as_deref()
+                .is_some_and(|c| is_project_class(callee_leaf_name(c)))
+    })
+}
+
+/// Whether a receiver-qualified sink call is a name collision with a
+/// project-defined method rather than a call to the library API the sink
+/// label models.
+///
+/// Suffix sink matchers (Python `eval`, which exists for `df.eval` and
+/// `redis.eval`) match any `recv.<name>` call.  When the project defines
+/// methods with that name, the call usually targets one of them.  The call is
+/// treated as such a collision only when every project function of that name
+/// is known not to contain the sink: no sink caps overlapping `sink_caps`, or
+/// the overlap is explained entirely by receiver-qualified calls of the same
+/// name (a wrapper that forwards to another method called `eval`).  Any
+/// unqualified call of the name, or another sink-labelled call, in a
+/// candidate keeps the finding.  Callers apply this only to findings the
+/// taint engine did not confirm.
+fn sink_is_project_method_name_collision(
+    ctx: &AnalysisContext,
+    sink: NodeIndex,
+    sink_caps: Cap,
+) -> bool {
+    let Some(callee) = ctx.cfg[sink].call.callee.as_deref() else {
+        return false;
+    };
+    let leaf = callee_leaf_name(callee);
+    // Only receiver-qualified calls: a bare `eval(x)` is the builtin.
+    if leaf == callee {
+        return false;
+    }
+    if !receiver_is_project_object(ctx, callee, leaf) {
+        return false;
+    }
+    let lang = ctx.lang.as_str();
+    let extra = ctx.analysis_rules.map(|r| r.extra_labels.as_slice());
+    let sink_overlaps = |text: &str| {
+        crate::labels::classify_all(lang, text, extra)
+            .iter()
+            .any(|l| matches!(l, DataLabel::Sink(c) if c.intersects(sink_caps)))
+    };
+    // The label must be name-based: the bare leaf alone already classifies.
+    if !sink_overlaps(leaf) {
+        return false;
+    }
+
+    let candidate_is_clean = |name_caps: Cap, callees: &[crate::summary::CalleeSite]| {
+        if !name_caps.intersects(sink_caps) {
+            return true;
+        }
+        let mut explained = false;
+        for site in callees {
+            let full = match site.receiver.as_deref() {
+                Some(r) if !site.name.contains('.') => format!("{r}.{}", site.name),
+                _ => site.name.clone(),
+            };
+            if !sink_overlaps(&full) {
+                continue;
+            }
+            let qualified = site.receiver.is_some() || site.name.contains('.');
+            if callee_leaf_name(&site.name) == leaf && qualified {
+                explained = true;
+            } else {
+                return false;
+            }
+        }
+        explained
+    };
+
+    let mut any = false;
+    for (k, s) in ctx.func_summaries.iter() {
+        if k.name == leaf {
+            any = true;
+            if !candidate_is_clean(s.sink_caps, &s.callees) {
+                return false;
+            }
+        }
+    }
+    if let Some(g) = ctx.global_summaries {
+        for (_, s) in g.lookup_same_lang(ctx.lang, leaf) {
+            any = true;
+            if !candidate_is_clean(Cap::from_bits_truncate(s.sink_caps), &s.callees) {
+                return false;
+            }
+        }
+    }
+    any
+}
+
 /// Check whether taint analysis confirmed unsanitized flow to this sink node.
 pub(super) fn taint_confirms_sink(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
     ctx.taint_findings.iter().any(|f| f.sink == sink)
@@ -3281,7 +3642,7 @@ fn payload_positions_aligned(lang: Lang, info: &crate::cfg::NodeInfo) -> bool {
 /// Check whether any variable that reaches the sink's payload is directly
 /// derived from a Source node in the same function (via simple def-use
 /// chain).
-fn sink_arg_is_source_derived(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
+fn sink_arg_is_source_derived(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: Cap) -> bool {
     let sink_info = &ctx.cfg[sink];
     let sink_func = sink_info.ast.enclosing_func.as_deref();
 
@@ -3302,6 +3663,18 @@ fn sink_arg_is_source_derived(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
         if !node_introduces_untrusted_data(info) {
             continue;
         }
+        // A source that carries none of the sink's capabilities (the page's
+        // own `window.location.origin` read by a redirect sink) is not data
+        // the sink can be attacked through.
+        if !sink_caps.is_empty()
+            && !info
+                .taint
+                .labels
+                .iter()
+                .any(|l| matches!(l, DataLabel::Source(bits) if bits.intersects(sink_caps)))
+        {
+            continue;
+        }
         // Source node defines a variable that the sink reads → source-derived
         if let Some(def) = &info.taint.defines
             && reaches_payload(def)
@@ -3310,6 +3683,28 @@ fn sink_arg_is_source_derived(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
         }
     }
     false
+}
+
+/// Whether `info` is a loop header that binds its variable from a file-scope
+/// literal collection (`for (const n of NAMES)` with `const NAMES = ["a",
+/// "b"]`), so the variable only ever holds one of those literals.  The
+/// collection name must not be shadowed or taken as a parameter in the body.
+fn loop_binds_literal_collection(
+    ctx: &AnalysisContext,
+    sink_func: Option<&str>,
+    info: &crate::cfg::NodeInfo,
+) -> bool {
+    let (crate::cfg::StmtKind::Loop, [iterable]) = (info.kind, info.taint.uses.as_slice()) else {
+        return false;
+    };
+    ctx.module_constant_collections
+        .is_some_and(|m| m.contains(iterable.as_str()))
+        && !ctx.scope_param_names().any(|p| p == iterable)
+        && !ctx.cfg.node_indices().map(|i| &ctx.cfg[i]).any(|n| {
+            n.ast.enclosing_func.as_deref() == sink_func
+                && (n.taint.defines.as_deref() == Some(iterable.as_str())
+                    || n.taint.extra_defines.iter().any(|d| d == iterable))
+        })
 }
 
 /// Whether `name`, read in the body under analysis, is bound to a literal:
@@ -3326,8 +3721,8 @@ fn ident_bound_to_constant(ctx: &AnalysisContext, sink_func: Option<&str>, name:
     for info in local_defs.by_ref() {
         any_local = true;
         let constant = info.taint.defines.as_deref() == Some(name)
-            && info.taint.uses.is_empty()
-            && !node_introduces_untrusted_data(info);
+            && ((info.taint.uses.is_empty() && !node_introduces_untrusted_data(info))
+                || loop_binds_literal_collection(ctx, sink_func, info));
         if !constant {
             return false;
         }
@@ -3532,11 +3927,48 @@ fn sink_arg_is_parameter_only(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
         }
     }
 
+    // Callback arguments are code, not data: the names read inside a function
+    // literal passed to the sink (`exec(cmd, (error, stdout) => { ... })`)
+    // and the name of a file-level function passed by reference
+    // (`exec(cmd, done)`) never reach the sink's payload.  A name that also
+    // appears in a non-callback argument keeps counting there.
+    let mut callback_only: SmallVec<[&str; 8]> = SmallVec::new();
+    for (pos, callee) in sink_info.arg_callees.iter().enumerate() {
+        if callee.as_deref().is_some_and(crate::cfg::is_anon_fn_name)
+            && let Some(uses) = sink_info.call.arg_uses.get(pos)
+        {
+            for u in uses {
+                let elsewhere = sink_info
+                    .call
+                    .arg_uses
+                    .iter()
+                    .enumerate()
+                    .any(|(i, us)| i != pos && us.contains(u));
+                if !elsewhere && !callback_only.contains(&u.as_str()) {
+                    callback_only.push(u.as_str());
+                }
+            }
+        }
+    }
+    let names_file_function = |u: &str| {
+        !param_names.contains(&u)
+            && ctx.func_summaries.keys().any(|k| k.name == u)
+            && !ctx.cfg.node_indices().any(|i| {
+                let n = &ctx.cfg[i];
+                n.ast.enclosing_func.as_deref() == sink_func
+                    && (n.taint.defines.as_deref() == Some(u)
+                        || n.taint.extra_defines.iter().any(|d| d == u))
+            })
+    };
+
     sink_uses.iter().all(|u| {
         if callee_fragments.contains(&u.as_str()) || u == callee_desc {
             return true;
         }
         if param_names.contains(&u.as_str()) {
+            return true;
+        }
+        if callback_only.contains(&u.as_str()) || names_file_function(u) {
             return true;
         }
         // One-hop transitive local trace: when a sink use names a body
@@ -3884,9 +4316,25 @@ fn url_target_origin_locked(ctx: &AnalysisContext, sink: NodeIndex, sink_caps: C
                 && n.ast.span.0 < info.ast.span.0
         })
         .collect();
-    defs.iter()
+    if defs
+        .iter()
         .all(|&i| ctx.cfg[i].string_prefix.as_deref().is_some_and(locks))
         && defs_cover_every_path(ctx, &defs, sink)
+    {
+        return true;
+    }
+    // The taint engine locks the target from the abstract string facts as
+    // well (`"/" + strings.Trim(p, "/\\")` keeps the origin), which no single
+    // definition's literal prefix shows.
+    ctx.body_const_facts.is_some_and(|facts| {
+        crate::taint::ssa_transfer::url_sink_origin_locked_by_facts(
+            &facts.ssa,
+            ctx.cfg,
+            ctx.lang,
+            sink,
+            node_introduces_untrusted_data,
+        )
+    })
 }
 
 /// Check if the enclosing function qualifies as an entrypoint.
@@ -3897,6 +4345,19 @@ fn sink_in_entrypoint(ctx: &AnalysisContext, sink: NodeIndex) -> bool {
     } else {
         false
     }
+}
+
+/// Whether the sink reads the constant-index element `v` (`parts[0]`) of a
+/// base that is defined once and has no write route besides redefinition, so a guard on that element names the same value the sink reads.
+fn elem_read_pinned(cfg: &crate::cfg::Cfg, sink_info: &crate::cfg::NodeInfo, v: &str) -> bool {
+    if !sink_info.elem_reads.iter().any(|e| &**e == v) {
+        return false;
+    }
+    let Some((base, _)) = v.split_once('[') else {
+        return false;
+    };
+    let defs = crate::cfg::go_base_def_count(cfg, sink_info.ast.enclosing_func.as_deref(), base);
+    !sink_info.elem_base_unstable && defs <= 1
 }
 
 impl CfgAnalysis for UnguardedSink {
@@ -3932,9 +4393,10 @@ impl CfgAnalysis for UnguardedSink {
                     && dominates(&doms, *guard_idx, *sink)
             }) || pinning_guards.iter().any(|(guard_idx, vars)| {
                 ctx.cfg[*guard_idx].ast.enclosing_func.as_deref() == sink_func
-                    && vars
-                        .iter()
-                        .any(|v| sink_info.taint.uses.iter().any(|u| u == v))
+                    && vars.iter().any(|v| {
+                        sink_info.taint.uses.iter().any(|u| u == v)
+                            || elem_read_pinned(ctx.cfg, sink_info, v)
+                    })
                     && dominates(&doms, *guard_idx, *sink)
             });
 
@@ -3989,11 +4451,17 @@ impl CfgAnalysis for UnguardedSink {
             // LOW: wrapper function (param-only, non-entrypoint)
 
             let has_taint = taint_confirms_sink(ctx, *sink);
-            let source_derived = sink_arg_is_source_derived(ctx, *sink);
+            let source_derived = sink_arg_is_source_derived(ctx, *sink, sink_caps);
 
             // If sink args are all constants (including one-hop constant bindings)
             // and taint didn't confirm, this is a false positive, skip it.
             if is_all_args_constant(ctx, *sink) && !has_taint {
+                continue;
+            }
+
+            // Name-based sink label on a call that resolves to project
+            // methods of that name (`cond.eval(data)` on a project class).
+            if !has_taint && sink_is_project_method_name_collision(ctx, *sink, sink_caps) {
                 continue;
             }
 
@@ -4083,12 +4551,25 @@ impl CfgAnalysis for UnguardedSink {
                 continue;
             }
 
+            // Numeric cast / arithmetic assignment (`$pid = (int) $raw`):
+            // the taint engine clears every capability at that assignment.
+            if !has_taint && sink_args_numeric_assigned(ctx, *sink) {
+                continue;
+            }
+
             // Go `fmt.Fprint*` reflected-XSS onto a non-response writer
             // (`*bytes.Buffer`, `*os.File`, `bufio.Writer`, `io.Writer`
             // param): the taint engine strips `HTML_ESCAPE` for the same
             // writer type, so the flow is not confirmed here (`!has_taint`)
             // and the structural finding would be a twin false positive.
             if !has_taint && go_fprintf_writer_non_response(ctx, *sink, sink_caps) {
+                continue;
+            }
+
+            // A response-write sink (`println` / `write`) on a receiver whose
+            // declared type is not an HTTP response (a `PrintStream` field):
+            // the taint engine strips the cap for the same receiver.
+            if !has_taint && java_receiver_declared_non_response(ctx, *sink, sink_caps) {
                 continue;
             }
 
@@ -4235,6 +4716,25 @@ impl CfgAnalysis for UnguardedSink {
                 let has_params = ctx.scope_param_names().next().is_some();
                 if !has_sources && !has_params {
                     continue; // No sources or params in scope → noise
+                }
+                // Rails migration: one-off DDL run by a developer, its block
+                // parameters come from rows the migration just selected.
+                if !has_sources
+                    && ctx.lang == Lang::Ruby
+                    && source_declares_rails_migration(ctx.source_bytes)
+                {
+                    continue;
+                }
+                // Ruby block / lambda body: a closure that merely has
+                // parameters in scope is not a signal.  The sink must read
+                // one of them, directly or through locals
+                // (`lambda { order(configuration[:order]) }` reads none).
+                if !has_sources
+                    && ctx.lang == Lang::Ruby
+                    && sink_in_closure(ctx, *sink)
+                    && !sink_operands_reach_param(ctx, *sink)
+                {
+                    continue;
                 }
                 (Severity::Medium, Confidence::Medium)
             };

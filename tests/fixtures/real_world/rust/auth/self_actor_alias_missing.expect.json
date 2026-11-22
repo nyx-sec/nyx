@@ -1,0 +1,35 @@
+{
+  "description": "A mutation that only receives the viewer, and a view read with no viewer argument, are still unscoped",
+  "tags": [
+    "auth",
+    "positive",
+    "self-actor"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        10,
+        10
+      ],
+      "evidence_contains": [],
+      "notes": "A mutation that only receives the viewer, and a view read with no viewer argument, are still unscoped"
+    },
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        21,
+        21
+      ],
+      "evidence_contains": [],
+      "notes": "A mutation that only receives the viewer, and a view read with no viewer argument, are still unscoped"
+    }
+  ]
+}

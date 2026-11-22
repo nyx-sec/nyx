@@ -460,6 +460,7 @@ pub fn output_param_source_positions(lang: &str, callee: &str) -> Option<&'stati
         "c" => c::OUTPUT_PARAM_SOURCES,
         "cpp" => cpp::OUTPUT_PARAM_SOURCES,
         "go" => go::OUTPUT_PARAM_SOURCES,
+        "rust" | "rs" => rust::OUTPUT_PARAM_SOURCES,
         _ => return None,
     };
     let normalized = callee
@@ -489,9 +490,22 @@ pub fn arg_propagation(lang: &str, callee: &str) -> Option<&'static ArgPropagati
         .rsplit('.')
         .next()
         .unwrap_or(callee);
-    registry
-        .iter()
-        .find(|p| p.callee.eq_ignore_ascii_case(normalized))
+    let find = |name: &str| {
+        registry
+            .iter()
+            .find(|p| p.callee.eq_ignore_ascii_case(name))
+    };
+    find(normalized).or_else(|| {
+        // Arity-suffixed wrapper macros (`SNPRINTF2(dst, n, fmt, a, b)`) keep
+        // the argument layout of the function they wrap.  Tree-sitter does no
+        // preprocessing, so the macro name is all that is visible; only
+        // all-caps names qualify, which keeps `memcpy2` style functions out.
+        let base = normalized.trim_end_matches(|c: char| c.is_ascii_digit());
+        let all_caps = !base.is_empty()
+            && base != normalized
+            && base.bytes().all(|b| b.is_ascii_uppercase() || b == b'_');
+        if all_caps { find(base) } else { None }
+    })
 }
 
 static REGISTRY: Lazy<HashMap<&'static str, &'static [LabelRule]>> = Lazy::new(|| {
@@ -1127,6 +1141,26 @@ pub enum Sensitivity {
     Secret,
 }
 
+impl Cap {
+    /// Capabilities a caught exception value can carry.
+    ///
+    /// An exception's message and stack text can embed attacker input, so
+    /// output, log, header, template and command-style reflection stay live.
+    /// Sinks that need an attacker-chosen key, URL, path, query or code
+    /// (prototype pollution, open redirect, SSRF, file paths, SQL, code
+    /// execution, deserialisation, XXE) have no attacker model for an
+    /// exception object, and are masked out.
+    pub const CAUGHT_EXCEPTION: Cap = Cap::all()
+        .difference(Cap::PROTOTYPE_POLLUTION)
+        .difference(Cap::OPEN_REDIRECT)
+        .difference(Cap::SSRF)
+        .difference(Cap::FILE_IO)
+        .difference(Cap::SQL_QUERY)
+        .difference(Cap::CODE_EXEC)
+        .difference(Cap::DESERIALIZE)
+        .difference(Cap::XXE);
+}
+
 impl SourceKind {
     /// Return the sensitivity tier this source kind belongs to.  Drives the
     /// `Cap::DATA_EXFIL` cap-suppression decision in `ast.rs`.
@@ -1475,10 +1509,34 @@ fn starts_with_cs(haystack: &[u8], needle: &[u8], case_sensitive: bool) -> bool 
     }
 }
 
+/// `~_path` name-suffix matcher: fires on a bare callee (no receiver or
+/// namespace) whose name ends with `tail` (`things_path`), with no word
+/// boundary and a non-empty stem.  It keys on its last byte in the index like
+/// every other suffix matcher.  Only a bare call (`things_path(..)`) is a
+/// route helper: a callee with a receiver (`obj.relative_path`,
+/// `Mod::unescape_path`) is an ordinary method that can return attacker data.
+#[cold]
+fn match_name_suffix(text: &[u8], tail: &[u8], case_sensitive: bool) -> bool {
+    text.len() > tail.len()
+        && ends_with_cs(text, tail, case_sensitive)
+        && !text.contains(&b'.')
+        && !text.contains(&b':')
+}
+
 /// Word-boundary suffix match with configurable case sensitivity.
-#[inline]
+// Always inline: this runs once per candidate matcher of every
+// classification, and an out-of-line call here cost ~15% of the Go sweep
+// bench on x86 once the sigil handling grew the body.
+#[inline(always)]
 fn match_suffix_cs(text: &[u8], matcher: &[u8], case_sensitive: bool) -> bool {
-    let (m, exact_only) = unpack_matcher(matcher);
+    // One first-byte branch decodes both sigils: this is the innermost loop
+    // of every classification.  `=name` is exact-only; `~_path` is a
+    // name-suffix matcher (see [`match_name_suffix`]).
+    let (m, exact_only) = match matcher.first() {
+        Some(b'=') => (&matcher[1..], true),
+        Some(b'~') => return match_name_suffix(text, &matcher[1..], case_sensitive),
+        _ => (matcher, false),
+    };
     if ends_with_cs(text, m, case_sensitive) {
         let start = text.len() - m.len();
         if exact_only {
@@ -1618,7 +1676,15 @@ fn aliased_receiver_text(text: &str) -> Option<String> {
         if root.is_empty() || !root.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
             return None;
         }
+        // `root.field.rest`: a formal's field with a declared receiver type
+        // (`ctx.Req.URL.Path` where `Req` is an `*http.Request` field).
+        let field_end = text[dot + 1..].find('.').map(|i| dot + 1 + i);
         for frame in s.iter().rev() {
+            if let Some(end) = field_end
+                && let Some((_, Some(prefix))) = frame.iter().find(|(name, _)| name == &text[..end])
+            {
+                return Some(format!("{prefix}{}", &text[end..]));
+            }
             if let Some((_, prefix)) = frame.iter().find(|(name, _)| name == root) {
                 return prefix
                     .filter(|p| *p != root)
@@ -2533,12 +2599,7 @@ fn strip_turbofish(text: &str) -> std::borrow::Cow<'_, str> {
 /// `stripped` is `text` with its turbofish removed.
 fn is_polymorphic_decode(text: &str, stripped: &str) -> bool {
     let head = stripped.split('(').next().unwrap_or("").trim();
-    if !matches!(
-        head,
-        "toml::from_str" | "toml::from_slice" | "ron::from_str" | "ron::from_bytes"
-    ) && !head.ends_with("::toml::from_str")
-        && !head.ends_with("::ron::from_str")
-    {
+    if !is_polymorphic_decode_head(head) {
         return false;
     }
     let Some(at) = text.find("::<") else {
@@ -2546,13 +2607,77 @@ fn is_polymorphic_decode(text: &str, stripped: &str) -> bool {
     };
     let generic = &text[at..];
     let generic = generic.split('(').next().unwrap_or(generic);
-    generic
+    rust_decode_target_is_dyn(generic)
+}
+
+/// Whether `head` (a callee path with no turbofish or arguments) is a
+/// `toml` / `ron` decode whose target type picks the concrete type.
+pub(crate) fn is_polymorphic_decode_head(head: &str) -> bool {
+    matches!(
+        head,
+        "toml::from_str" | "toml::from_slice" | "ron::from_str" | "ron::from_bytes"
+    ) || head.ends_with("::toml::from_str")
+        || head.ends_with("::ron::from_str")
+}
+
+/// Whether the value a decode produces is a trait object, given the type
+/// text of an annotation or turbofish (`Box<dyn P>`, `Result<Box<dyn P>, E>`,
+/// `::<Box<dyn P>>`).  `Result` and `Option` are unwrapped to their first
+/// generic argument, so a `dyn` in the error type (`Box<dyn Error>`) does not
+/// count.
+pub(crate) fn rust_decode_target_is_dyn(type_text: &str) -> bool {
+    let mut t = type_text.trim();
+    t = t.strip_prefix("::").unwrap_or(t).trim_start();
+    // A turbofish group: keep only the text up to its closing `>`.
+    let mut ty = t;
+    if let Some(inner) = t.strip_prefix('<') {
+        ty = inner;
+    }
+    loop {
+        let ty_trim = ty.trim_start();
+        let Some(lt) = ty_trim.find('<') else {
+            return rust_target_is_dyn(ty_trim);
+        };
+        let head = ty_trim[..lt].trim();
+        let name = head.rsplit("::").next().unwrap_or(head).trim();
+        if name != "Result" && name != "Option" {
+            return rust_target_is_dyn(ty_trim);
+        }
+        // First generic argument, up to a top-level comma or the closing `>`.
+        let rest = &ty_trim[lt + 1..];
+        let mut depth = 0i32;
+        let mut end = rest.len();
+        for (i, c) in rest.char_indices() {
+            match c {
+                '<' | '(' | '[' => depth += 1,
+                '>' | ')' | ']' => {
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                    depth -= 1;
+                }
+                ',' if depth == 0 => {
+                    end = i;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        ty = &rest[..end];
+    }
+}
+
+/// Whether a Rust type text names a trait object (`Box<dyn Plugin>`), as a
+/// whole `dyn` word.
+pub(crate) fn rust_target_is_dyn(type_text: &str) -> bool {
+    type_text
         .split(|c: char| !(c.is_alphanumeric() || c == '_'))
         .any(|w| w == "dyn")
 }
 
 /// The label of a polymorphic decode ([`is_polymorphic_decode`]).
-const POLYMORPHIC_DECODE: DataLabel = DataLabel::Sink(Cap::DESERIALIZE);
+pub(crate) const POLYMORPHIC_DECODE: DataLabel = DataLabel::Sink(Cap::DESERIALIZE);
 
 /// Whether the path segment ending `before` is reached through a `.`, i.e. is
 /// a method call rather than a `::` path segment.
@@ -2652,7 +2777,7 @@ fn normalize_chained_call(text: &str) -> std::borrow::Cow<'_, str> {
             b'(' => open.push(k),
             b')' => {
                 if let Some(i) = open.pop()
-                    && (k + 1 >= bytes.len() || bytes[k + 1] == b'.')
+                    && (k + 1 >= bytes.len() || chain_dot_at(bytes, k + 1).is_some())
                 {
                     first_collapse = first_collapse.min(i);
                 }
@@ -2679,6 +2804,17 @@ fn normalize_chained_call(text: &str) -> std::borrow::Cow<'_, str> {
     } else {
         std::borrow::Cow::Borrowed(text)
     }
+}
+
+/// Offset of the `.` that continues a call chain at `at`, allowing the
+/// whitespace a formatter leaves when it breaks a chain before `.method`.
+#[inline]
+fn chain_dot_at(bytes: &[u8], at: usize) -> Option<usize> {
+    let mut k = at;
+    while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+        k += 1;
+    }
+    (k < bytes.len() && bytes[k] == b'.').then_some(k)
 }
 
 /// Every `(` at or after `from` with the offset just past its matching `)`
@@ -2727,8 +2863,10 @@ fn normalize_chained_call_owned(text: &str, prefix_end: usize) -> String {
                 let j = paren_opens
                     .binary_search(&i)
                     .map_or(bytes.len(), |o| paren_ends[o]);
-                if j >= bytes.len() || bytes[j] == b'.' {
+                if j >= bytes.len() {
                     i = j;
+                } else if let Some(dot) = chain_dot_at(bytes, j) {
+                    i = dot;
                 } else {
                     result.push('(');
                     i += 1;
@@ -3209,6 +3347,120 @@ pub fn enumerate_builtin_rules() -> Vec<RuleInfo> {
 pub fn custom_rule_id(lang: &str, kind: &str, matchers: &[String]) -> String {
     let refs: Vec<&str> = matchers.iter().map(|s| s.as_str()).collect();
     format!("custom.{}", rule_id(lang, kind, &refs))
+}
+
+/// Final path component of a program name, lower-cased, without a `.exe`
+/// suffix: `/bin/Bash` and `C:\\Windows\\cmd.EXE` become `bash` and `cmd`.
+fn program_leaf(name: &str) -> String {
+    let leaf = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let lower = leaf.to_ascii_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
+}
+
+fn is_shell_program(leaf: &str) -> bool {
+    matches!(
+        leaf,
+        "sh" | "bash"
+            | "zsh"
+            | "dash"
+            | "ksh"
+            | "ash"
+            | "fish"
+            | "csh"
+            | "tcsh"
+            | "cmd"
+            | "powershell"
+            | "pwsh"
+    )
+}
+
+fn is_interpreter_program(leaf: &str) -> bool {
+    [
+        "python", "pypy", "ruby", "perl", "php", "lua", "node", "deno", "bun",
+    ]
+    .iter()
+    .any(|p| leaf.starts_with(p))
+}
+
+fn is_wrapper_program(leaf: &str) -> bool {
+    matches!(
+        leaf,
+        "env"
+            | "sudo"
+            | "doas"
+            | "nice"
+            | "nohup"
+            | "timeout"
+            | "stdbuf"
+            | "setsid"
+            | "xargs"
+            | "busybox"
+            | "command"
+            | "exec"
+            | "time"
+            | "ionice"
+            | "chroot"
+            | "su"
+            | "runuser"
+    )
+}
+
+/// True when running `name` can evaluate a string or script it is handed as
+/// code: a shell, a language interpreter, or a wrapper that runs another
+/// program (`env`, `sudo`, `timeout`).  Used to decide that an argv-form
+/// `system` / `Popen` is not shell-free: the program is chosen literally, but
+/// its arguments are still run as code.
+pub fn is_command_runner_program(name: &str) -> bool {
+    let leaf = program_leaf(name);
+    is_shell_program(&leaf) || is_interpreter_program(&leaf) || is_wrapper_program(&leaf)
+}
+
+/// True when `name` is a wrapper such as `env` or `sudo` that runs the
+/// program named by one of its later arguments.
+pub fn is_wrapper_command(name: &str) -> bool {
+    is_wrapper_program(&program_leaf(name))
+}
+
+/// True when `flag` makes the shell or interpreter `program` run the next
+/// argument as code: `-c` and clustered forms such as `-lc` for POSIX shells,
+/// `/c` and `/k` for cmd, `-Command` for PowerShell, and the eval switch of
+/// the common interpreters (`python -c`, `ruby -e`, `perl -e`, `node -e`,
+/// `php -r`).
+pub fn is_code_flag(program: &str, flag: &str) -> bool {
+    let leaf = program_leaf(program);
+    let lower = flag.to_ascii_lowercase();
+    if leaf == "cmd" {
+        return matches!(lower.as_str(), "/c" | "/k");
+    }
+    if leaf == "powershell" || leaf == "pwsh" {
+        return matches!(
+            lower.as_str(),
+            "-c" | "-command" | "-encodedcommand" | "-ec" | "-e"
+        );
+    }
+    let cluster = |chars: &str| {
+        flag.len() > 1
+            && flag.starts_with('-')
+            && !flag.starts_with("--")
+            && flag[1..].chars().all(|c| c.is_ascii_alphabetic())
+            && flag[1..].chars().any(|c| chars.contains(c))
+    };
+    if is_shell_program(&leaf) {
+        return cluster("c");
+    }
+    if leaf.starts_with("python") || leaf.starts_with("pypy") {
+        return cluster("c");
+    }
+    if leaf.starts_with("ruby") || leaf.starts_with("perl") || leaf == "lua" {
+        return cluster("eE");
+    }
+    if leaf.starts_with("php") {
+        return cluster("r");
+    }
+    if matches!(leaf.as_str(), "node" | "deno" | "bun") {
+        return cluster("ep") || matches!(flag, "--eval" | "--print");
+    }
+    false
 }
 
 #[cfg(test)]
@@ -4448,10 +4700,38 @@ mod tests {
     }
 
     #[test]
-    fn gated_sink_python_popen_no_shell_conservative() {
-        // `Popen(cmd)` uses the single-kwarg / positional gate path: no `shell`
-        // literal available → unknown activation → ALL_ARGS_PAYLOAD sentinel.
+    fn code_flag_covers_clusters_wrappers_and_interpreters() {
+        assert!(is_code_flag("bash", "-c"));
+        assert!(is_code_flag("/bin/sh", "-lc"));
+        assert!(is_code_flag("zsh", "-ic"));
+        assert!(!is_code_flag("bash", "-x"));
+        assert!(!is_code_flag("bash", "--norc"));
+        assert!(is_code_flag("cmd.exe", "/C"));
+        assert!(is_code_flag("python3.11", "-c"));
+        assert!(is_code_flag("ruby", "-e"));
+        assert!(is_code_flag("node", "--eval"));
+        assert!(!is_code_flag("git", "-c"));
+        assert!(is_command_runner_program("C:\\Windows\\System32\\CMD.EXE"));
+        assert!(is_command_runner_program("env"));
+        assert!(is_wrapper_command("/usr/bin/sudo"));
+        assert!(!is_command_runner_program("git"));
+        assert!(!is_command_runner_program("ls"));
+    }
+
+    #[test]
+    fn gated_sink_python_popen_no_shell_suppresses() {
+        // `Popen(cmd)` without a `shell` keyword is argv form, the same as
+        // `subprocess.Popen` and `subprocess.run`: no shell starts, so the gate
+        // does not fire.  The inline shell array `Popen(["sh", "-c", x])` is
+        // recognised from the call's arguments instead.
         let result = classify_gated_sink("python", "Popen", |_| None, |_| None, no_kw_present);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn gated_sink_python_popen_shell_dynamic_conservative() {
+        // `shell=flag` is present but not a literal: cannot be proven safe.
+        let result = classify_gated_sink("python", "Popen", |_| None, |_| None, |kw| kw == "shell");
         assert_eq!(
             result.as_slice(),
             &[GateMatch {
@@ -5182,6 +5462,34 @@ mod tests {
     }
 
     #[test]
+    fn go_struct_field_alias_classifies_through_the_formal() {
+        clear_receiver_aliases();
+        let _frame = push_receiver_aliases(vec![
+            (
+                "ctx.Req".to_string(),
+                go_request_receiver_prefix("*http.Request"),
+            ),
+            ("ctx".to_string(), None),
+        ]);
+        assert_eq!(
+            aliased_receiver_text("ctx.Req.URL.Path").as_deref(),
+            Some("Request.URL.Path")
+        );
+        assert!(
+            classify_all("go", "ctx.Req.URL.Query().Get", None)
+                .contains(&DataLabel::Source(Cap::all()))
+        );
+        // Another field of the struct, and the struct itself, are not aliased.
+        assert_eq!(aliased_receiver_text("ctx.Other.URL.Path"), None);
+        assert_eq!(aliased_receiver_text("ctx.Req"), None);
+        {
+            // An inner formal named `ctx` of another type shadows the field.
+            let _inner = push_receiver_aliases(vec![("ctx".to_string(), None)]);
+            assert_eq!(aliased_receiver_text("ctx.Req.URL.Path"), None);
+        }
+    }
+
+    #[test]
     fn go_request_receiver_prefix_maps_declared_types() {
         assert_eq!(go_request_receiver_prefix("*http.Request"), Some("Request"));
         assert_eq!(go_request_receiver_prefix("http.Request"), Some("Request"));
@@ -5208,6 +5516,20 @@ mod tests {
             Some(&[0usize][..])
         );
         assert_eq!(output_param_source_positions("go", "c.Query"), None);
+    }
+
+    #[test]
+    fn normalize_chained_call_collapses_groups_across_a_line_break() {
+        assert_eq!(
+            normalize_chained_call("db.query_row(&sql, [], |r| r.get(0))\n        .unwrap()"),
+            "db.query_row.unwrap"
+        );
+        assert_eq!(
+            normalize_chained_call("a.b(x)\n    .c(y)\n    .d"),
+            "a.b.c.d"
+        );
+        // A group not followed by a chain dot keeps its text.
+        assert_eq!(normalize_chained_call("f(x) + g"), "f(x) + g");
     }
 
     #[test]

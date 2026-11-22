@@ -284,6 +284,82 @@ fn scan_respects_committed_triage_file_for_cli_output_and_fail_on() {
 }
 
 #[test]
+fn scan_single_file_applies_project_triage_file() {
+    let home = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let src = target.path().join("src");
+    std::fs::create_dir(&src).unwrap();
+    let file = src.join("app.js");
+    std::fs::write(&file, b"const q = req.query.x;\neval(q);\n").unwrap();
+    let canonical_target = target.path().canonicalize().unwrap();
+
+    let scan_args = [
+        "--format",
+        "json",
+        "--quiet",
+        "--index",
+        "off",
+        "--no-verify",
+        "--all",
+        "--parse-timeout-ms",
+        "0",
+    ];
+
+    // Before any triage file exists, a single-file scan must succeed.
+    let (mut first_cmd, _) = scan_cmd(home.path(), &file);
+    first_cmd.args(scan_args);
+    let first = first_cmd.assert().success();
+    let first_json =
+        assert_stdout_is_json_from_byte_zero(&first.get_output().stdout, "nyx scan <file>");
+    let findings = first_json["findings"].as_array().unwrap();
+    assert!(!findings.is_empty(), "fixture should emit a finding");
+
+    // A triage file at the project root, keyed by project-relative paths,
+    // applies to a scan of one file inside the project.
+    let decisions: Vec<Value> = findings
+        .iter()
+        .map(|finding| {
+            let diag: Diag = serde_json::from_value(finding.clone()).unwrap();
+            json!({
+                "fingerprint": nyx_scanner::server::models::compute_portable_fingerprint(
+                    &diag,
+                    &canonical_target,
+                ),
+                "state": "false_positive",
+                "note": "triaged at the project root",
+                "rule_id": diag.id,
+                "path": "src/app.js"
+            })
+        })
+        .collect();
+    let nyx_dir = target.path().join(".nyx");
+    std::fs::create_dir(&nyx_dir).unwrap();
+    std::fs::write(
+        nyx_dir.join("triage.json"),
+        serde_json::to_vec_pretty(&json!({
+            "version": 1,
+            "decisions": decisions,
+            "suppression_rules": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let (mut second_cmd, _) = scan_cmd(home.path(), &file);
+    second_cmd.args(scan_args);
+    let second = second_cmd.assert().success();
+    let second_json = assert_stdout_is_json_from_byte_zero(
+        &second.get_output().stdout,
+        "triaged nyx scan <file>",
+    );
+    assert_eq!(
+        second_json["findings"].as_array().unwrap().len(),
+        0,
+        "project triage decisions should apply to a single-file scan"
+    );
+}
+
+#[test]
 fn scan_sarif_stdout_is_machine_clean_when_tracing_warns() {
     let home = tempfile::tempdir().unwrap();
     let target = prepare_scan_target();

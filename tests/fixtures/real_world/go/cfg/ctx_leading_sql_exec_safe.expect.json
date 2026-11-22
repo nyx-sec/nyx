@@ -1,0 +1,25 @@
+{
+  "description": "db.Exec(ctx, literalSQL, args...) passes the context first; the literal SQL at arg 1 is the payload, so bind values and the context must not make it an unguarded sink.",
+  "tags": [
+    "sqli",
+    "context",
+    "payload-position",
+    "cfg-unguarded"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [
+        1,
+        100000
+      ],
+      "evidence_contains": [],
+      "notes": "safe shape must not fire"
+    }
+  ]
+}

@@ -16,8 +16,8 @@ def trigger_class_eval(klass, code)
 end
 
 # rb.cmdi.backtick
-def trigger_backtick
-  `uname -a`
+def trigger_backtick(flag)
+  `uname #{flag}`
 end
 
 # rb.cmdi.system_interp

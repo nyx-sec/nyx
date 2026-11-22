@@ -635,6 +635,7 @@ fn inject_middleware_auth(
                     args: call.args.clone(),
                     condition_text: None,
                     is_route_level: false,
+                    dominates_body: false,
                 }
             }
             None => continue,
@@ -699,6 +700,7 @@ fn inject_middleware_auth(
                 args: call.args.clone(),
                 condition_text: None,
                 is_route_level: true,
+                dominates_body: false,
             });
             unit.auth_checks.push(AuthCheck {
                 kind: AuthCheckKind::TokenRecipient,
@@ -709,6 +711,7 @@ fn inject_middleware_auth(
                 args: call.args.clone(),
                 condition_text: None,
                 is_route_level: true,
+                dominates_body: false,
             });
         }
     }

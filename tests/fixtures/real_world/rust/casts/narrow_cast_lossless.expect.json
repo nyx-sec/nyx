@@ -1,0 +1,14 @@
+{
+  "description": "Casts that cannot truncate (repr enum variants, in-range literals and consts, masked values, comparisons) do not fire the narrowing cast rule.",
+  "tags": ["rust", "casts", "negative", "pattern"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "rs.memory.narrow_cast",
+      "severity": null,
+      "line_range": [1, 50],
+      "notes": "every cast in this file is provably in range",
+      "must_not_match": true
+    }
+  ]
+}

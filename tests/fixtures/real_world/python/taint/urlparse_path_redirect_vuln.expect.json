@@ -1,0 +1,15 @@
+{
+  "description": "urlparse(x).path can still be a protocol-relative URL such as //evil.com, so redirecting to it is an open redirect",
+  "tags": ["taint", "open-redirect", "urlparse", "positive"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [14, 14],
+      "evidence_contains": [],
+      "notes": "path keeps leading slashes"
+    }
+  ]
+}

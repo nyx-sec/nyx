@@ -58,6 +58,7 @@ mod php;
 mod python;
 mod ruby;
 pub mod rust;
+pub mod rust_cast;
 pub mod typescript;
 
 use crate::evidence::Confidence;

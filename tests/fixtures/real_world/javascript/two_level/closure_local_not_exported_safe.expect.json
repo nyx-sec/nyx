@@ -1,0 +1,23 @@
+{
+  "description": "A local declared in one callback is not exported through the top-level seed into a same-named parameter of a sibling callback.",
+  "tags": [
+    "taint",
+    "two-level",
+    "closure",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [
+        1,
+        14
+      ],
+      "must_not_match": true,
+      "notes": "q in the second callback is its own parameter, not the first callback's local"
+    }
+  ]
+}

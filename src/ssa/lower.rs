@@ -122,6 +122,125 @@ fn try_lower_field_proj_chain(
     Some((current, method))
 }
 
+/// The value copied by the instruction defining `v`, when that instruction
+/// is a plain single-operand copy.
+fn copy_source(v: SsaValue, blocks: &[SsaBlock], value_defs: &[ValueDef]) -> Option<SsaValue> {
+    let vd = value_defs.get(v.0 as usize)?;
+    let block = blocks.get(vd.block.0 as usize)?;
+    let inst = block
+        .phis
+        .iter()
+        .chain(block.body.iter())
+        .find(|i| i.value == v)?;
+    match &inst.op {
+        SsaOp::Assign(uses) if uses.len() == 1 => Some(uses[0]),
+        _ => None,
+    }
+}
+
+/// Give each constant-index element read of a node (see
+/// [`NodeInfo::elem_reads`]) a value named `base[idx]` and point the node's
+/// operands at it instead of at `base`.
+///
+/// The element value is a copy of the current value of `base`, so it carries
+/// exactly the taint `base` does, and it is pushed on the rename stack under
+/// its own name.  Later reads dominated by it reuse it while `base` still has
+/// the value it was copied from; once `base` is redefined (reassigned,
+/// appended to, element-stored) the next read makes a fresh copy, which is
+/// what ends any validation recorded under the element name.
+#[allow(clippy::too_many_arguments)]
+fn project_const_index_reads(
+    op: &mut SsaOp,
+    info: &crate::cfg::NodeInfo,
+    var_stacks: &mut FxHashMap<String, Vec<SsaValue>>,
+    block_idx: usize,
+    block_id: BlockId,
+    next_value: &mut u32,
+    ssa_blocks: &mut [SsaBlock],
+    value_defs: &mut Vec<ValueDef>,
+    node: NodeIndex,
+) {
+    // (base value, element values replacing it), in read order.
+    let mut swaps: Vec<(SsaValue, SmallVec<[SsaValue; 2]>)> = Vec::new();
+    for name in &info.elem_reads {
+        let Some((base, _)) = name.split_once('[') else {
+            continue;
+        };
+        if info.taint.defines.as_deref() == Some(base) {
+            continue;
+        }
+        // A base the array behind it can change through (aliased, passed to a
+        // callee, captured, stored into) keeps its plain taint: no element
+        // value, so no validation can attach to the element.
+        if info.elem_base_unstable {
+            continue;
+        }
+        let Some(rv) = var_stacks.get(base).and_then(|s| s.last().copied()) else {
+            continue;
+        };
+        let reused = var_stacks
+            .get(&**name)
+            .and_then(|s| s.last().copied())
+            .filter(|&pv| copy_source(pv, ssa_blocks, value_defs) == Some(rv));
+        let pv = match reused {
+            Some(pv) => pv,
+            None => {
+                let pv = SsaValue(*next_value);
+                *next_value += 1;
+                ssa_blocks[block_idx].body.push(SsaInst {
+                    value: pv,
+                    op: SsaOp::Assign(SmallVec::from_elem(rv, 1)),
+                    cfg_node: node,
+                    var_name: Some(name.to_string()),
+                    span: info.ast.span,
+                });
+                value_defs.push(ValueDef {
+                    var_name: Some(name.to_string()),
+                    cfg_node: node,
+                    block: block_id,
+                });
+                var_stacks.entry(name.to_string()).or_default().push(pv);
+                pv
+            }
+        };
+        match swaps.iter_mut().find(|(b, _)| *b == rv) {
+            Some((_, pvs)) => pvs.push(pv),
+            None => swaps.push((rv, SmallVec::from_elem(pv, 1))),
+        }
+    }
+    let rewrite = |slots: &mut SmallVec<[SsaValue; 4]>| {
+        let mut out: SmallVec<[SsaValue; 4]> = SmallVec::new();
+        for &v in slots.iter() {
+            match swaps.iter().find(|(b, _)| *b == v) {
+                Some((_, pvs)) => out.extend(pvs.iter().copied()),
+                None => out.push(v),
+            }
+        }
+        *slots = out;
+    };
+    if swaps.is_empty() {
+        return;
+    }
+    match op {
+        SsaOp::Assign(uses) => rewrite(uses),
+        SsaOp::Call { args, receiver, .. } => {
+            // A synthetic `__index_get__` reads one element of its receiver.
+            if let Some(r) = *receiver
+                && let Some((_, pvs)) = swaps.iter().find(|(b, _)| *b == r)
+                && pvs.len() == 1
+            {
+                *receiver = Some(pvs[0]);
+            }
+            for group in args.iter_mut() {
+                let mut tmp: SmallVec<[SsaValue; 4]> = group.iter().copied().collect();
+                rewrite(&mut tmp);
+                *group = tmp.into_iter().collect();
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Remove the *implicit* chain-root argument group that `build_call_args`
 /// appends when decomposing a chained-receiver call (`a.b.m(...)`) into a
 /// FieldProj chain plus a bare-method Call.
@@ -1518,7 +1637,7 @@ fn rename_variables(
             // Determine operation and collect uses
             // Out-of-scope nodes (nop_nodes) become Nop: they preserve graph
             // connectivity but don't participate in taint flow.
-            let op = if nop_nodes.contains(&node) {
+            let mut op = if nop_nodes.contains(&node) {
                 SsaOp::Nop
             } else if info.catch_param {
                 SsaOp::CatchParam
@@ -1764,6 +1883,13 @@ fn rename_variables(
             } else {
                 SsaOp::Nop
             };
+
+            if !info.elem_reads.is_empty() && !nop_nodes.contains(&node) {
+                project_const_index_reads(
+                    &mut op, info, var_stacks, block_idx, block_id, next_value, ssa_blocks,
+                    value_defs, node,
+                );
+            }
 
             // Allocate SSA value
             let v = SsaValue(*next_value);

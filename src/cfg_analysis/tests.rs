@@ -38,6 +38,7 @@ fn parse_and_analyse<A: CfgAnalysis>(
         body_params: &file_cfg.first_body().meta.params,
         captured_params: &[],
         module_constants: None,
+        module_constant_collections: None,
     };
     analysis.run(&ctx)
 }
@@ -71,6 +72,7 @@ fn parse_and_run_all(src: &[u8], lang_str: &str, ts_lang: Language) -> Vec<CfgFi
         body_params: &file_cfg.first_body().meta.params,
         captured_params: &[],
         module_constants: None,
+        module_constant_collections: None,
     };
     run_all(&ctx)
 }
@@ -109,6 +111,7 @@ fn parse_and_run_all_with_taint(
         body_params: &file_cfg.first_body().meta.params,
         captured_params: &[],
         module_constants: None,
+        module_constant_collections: None,
     };
     run_all(&ctx)
 }
@@ -231,6 +234,7 @@ fn parse_and_analyse_with_ssa<A: CfgAnalysis>(
         body_params: &file_cfg.first_body().meta.params,
         captured_params: &[],
         module_constants: None,
+        module_constant_collections: None,
     };
     analysis.run(&ctx)
 }
@@ -366,6 +370,7 @@ fn unguarded_sink_file(
     let file_cfg = build_cfg(&tree, src, lang_str, "test.rs", None);
     let lang = Lang::from_slug(lang_str).unwrap();
     let module_constants = module_constant_names(&file_cfg.bodies);
+    let module_constant_collections = module_constant_collection_names(&file_cfg.bodies);
     let mut out = Vec::new();
     for body in &file_cfg.bodies {
         let facts = build_body_const_facts(body, lang);
@@ -398,6 +403,7 @@ fn unguarded_sink_file(
             body_params: &body.meta.params,
             captured_params: &captured,
             module_constants: Some(&module_constants),
+            module_constant_collections: Some(&module_constant_collections),
         };
         for f in guards::UnguardedSink.run(&ctx) {
             let line = src[..f.span.0].iter().filter(|&&b| b == b'\n').count() + 1;
@@ -2026,6 +2032,7 @@ fn config_sanitizer_suppresses_unguarded_sink() {
         body_params: &file_cfg.first_body().meta.params,
         captured_params: &[],
         module_constants: None,
+        module_constant_collections: None,
     };
     let findings = run_all(&ctx);
 
@@ -2509,6 +2516,7 @@ fn cfg_only_no_taint_produces_low_severity() {
         body_params: &file_cfg.first_body().meta.params,
         captured_params: &[],
         module_constants: None,
+        module_constant_collections: None,
     };
     let findings = guards::UnguardedSink.run(&ctx);
 
@@ -3651,4 +3659,105 @@ fn unguarded_sink_url_builder_base_constant_is_a_lock() {
 }
 ";
     assert_eq!(js_unguarded_sink_lines(src), Vec::<usize>::new());
+}
+
+fn java_unguarded_sink_lines(src: &[u8]) -> Vec<usize> {
+    unguarded_sink_file(src, "java", Language::from(tree_sitter_java::LANGUAGE))
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect()
+}
+
+#[test]
+fn unguarded_sink_println_on_declared_file_stream_is_not_a_response_write() {
+    let src = b"import java.io.*;
+class Copy {
+  void copy(File out, File f) throws Exception {
+    try (PrintStream ps = new PrintStream(new FileOutputStream(out));
+         BufferedReader br = new BufferedReader(new FileReader(f))) {
+      for (String l = br.readLine(); l != null; l = br.readLine()) {
+        ps.println(l);
+      }
+    }
+  }
+}
+";
+    assert!(
+        java_unguarded_sink_lines(src).is_empty(),
+        "{:?}",
+        java_unguarded_sink_lines(src)
+    );
+}
+
+#[test]
+fn unguarded_sink_println_on_response_writer_is_kept() {
+    let src = b"import java.io.*;
+class Echo {
+  void echo(javax.servlet.http.HttpServletRequest req, javax.servlet.http.HttpServletResponse resp) throws Exception {
+    PrintWriter w = resp.getWriter();
+    String q = req.getParameter(\"q\");
+    w.println(q);
+  }
+}
+";
+    assert!(java_unguarded_sink_lines(src).contains(&6));
+}
+
+fn ruby_unguarded_sink_lines(src: &[u8]) -> Vec<usize> {
+    unguarded_sink_file(src, "ruby", Language::from(tree_sitter_ruby::LANGUAGE))
+        .into_iter()
+        .map(|(line, _)| line)
+        .collect()
+}
+
+#[test]
+fn unguarded_sink_ruby_relation_tails_with_inert_arguments_are_safe() {
+    let src = b"class Cleaner
+  def run(from_account, ids)
+    from_account.statuses.where(id: ids).reorder(nil).find_each do |s|
+      s.touch
+    end
+  end
+
+  def sorted
+    CustomEmoji.local.reorder(CustomEmojiCategory.arel_table[:name].asc).order(shortcode: :asc)
+  end
+
+  def exists(domain)
+    Mention
+      .joins(:account)
+      .merge(Account.with_domain(domain))
+      .select(1).arel.exists
+  end
+end
+";
+    assert!(
+        ruby_unguarded_sink_lines(src).is_empty(),
+        "{:?}",
+        ruby_unguarded_sink_lines(src)
+    );
+}
+
+#[test]
+fn unguarded_sink_ruby_reorder_with_interpolation_is_kept() {
+    let src = b"class Search
+  def run(scope)
+    q = params[:q]
+    scope.where(id: 1).reorder(\"#{q} desc\").to_a
+  end
+end
+";
+    assert!(ruby_unguarded_sink_lines(src).contains(&4));
+}
+
+#[test]
+fn unguarded_sink_ruby_joins_with_request_interpolation_is_kept() {
+    let src = b"class Search
+  def run(scope)
+    q = params[:q]
+    scope.joins(\"JOIN #{Issue.table_name} t ON t.k = #{q}\").where(id: 1).to_a
+  end
+end
+";
+    assert!(ruby_unguarded_sink_lines(src).contains(&4));
 }

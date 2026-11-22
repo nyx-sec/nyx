@@ -1,0 +1,25 @@
+{
+  "description": "`server.get` in a file that requires fastify is a real route: the lookup by a client chosen id needs an ownership check",
+  "tags": [
+    "auth",
+    "auth",
+    "positive",
+    "fastify"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        7,
+        7
+      ],
+      "evidence_contains": [],
+      "notes": "`server.get` in a file that requires fastify is a real route: the lookup by a client chosen id needs an ownership check"
+    }
+  ]
+}
