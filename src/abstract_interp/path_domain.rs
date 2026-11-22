@@ -1560,6 +1560,113 @@ fn extract_starts_with_arg(text: &str) -> Option<String> {
     None
 }
 
+/// The path value a `startsWith` guard actually tests, when its receiver is
+/// a chain of path-view methods over a plain variable
+/// (`f.toPath().normalize().toAbsolutePath().startsWith(root)`).
+///
+/// The guard confines the *view*, and every view method returns the same
+/// location as `root`'s variable, so the confinement binds to that
+/// variable.  `resolve`, `getParent` and similar are not views (they build a
+/// different path from new data) and make the receiver unrecognised.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartsWithView {
+    /// The variable at the root of the view chain.
+    pub root: String,
+    /// The chain lexically normalizes or canonicalizes the path, so a passing
+    /// test proves the location has no `..` escaping the locked root.
+    pub normalizes: bool,
+    /// The tested value is a `java.nio.file.Path`, whose `startsWith` compares
+    /// whole name elements.  A `String` view (`getCanonicalPath()`) compares
+    /// characters, so `/base-evil` passes `startsWith("/base")` and the
+    /// guard must not be read as clearing `..`.
+    pub path_valued: bool,
+}
+
+/// Recognise a [`StartsWithView`] in a single (non-compound) guard condition.
+/// Returns `None` for a receiver that is already a bare identifier (the
+/// plain-variable form needs no peeling), for compound conditions, and for
+/// any chain containing a method that is not a view.
+pub fn classify_starts_with_receiver_view(text: &str) -> Option<StartsWithView> {
+    let mut t = strip_outer_parens(text.trim());
+    if let Some(rest) = strip_leading_not(t) {
+        t = strip_outer_parens(rest.trim_start());
+    }
+    if split_top_level_or(t).len() > 1 || split_top_level_and(t).len() > 1 {
+        return None;
+    }
+    let idx = [".startsWith(", ".starts_with("]
+        .iter()
+        .filter_map(|m| t.find(m))
+        .min()?;
+    // Walk back over the receiver expression: identifier chars, dots and
+    // balanced (empty) call parentheses.
+    let bytes = t.as_bytes();
+    let mut start = idx;
+    let mut depth = 0i32;
+    while start > 0 {
+        let b = bytes[start - 1];
+        match b {
+            b')' => depth += 1,
+            b'(' => {
+                if depth == 0 {
+                    break;
+                }
+                depth -= 1;
+            }
+            _ if depth > 0 => {}
+            // A fluent chain may be wrapped across lines.
+            _ if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b.is_ascii_whitespace() => {
+            }
+            _ => break,
+        }
+        start -= 1;
+    }
+    let compact: String = t[start..idx]
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let mut expr = compact.as_str();
+    let mut normalizes = false;
+    let mut outermost: Option<&str> = None;
+    let mut peeled = false;
+    while let Some(head) = expr.strip_suffix("()") {
+        let dot = head.rfind('.')?;
+        let name = &head[dot + 1..];
+        match name {
+            "toPath" | "toAbsolutePath" | "toFile" | "getAbsoluteFile" | "getAbsolutePath" => {}
+            "normalize" | "toRealPath" | "getCanonicalFile" | "getCanonicalPath" => {
+                normalizes = true;
+            }
+            _ => return None,
+        }
+        if !peeled {
+            outermost = Some(name);
+            peeled = true;
+        }
+        expr = &head[..dot];
+    }
+    if !peeled || expr.is_empty() {
+        return None;
+    }
+    let ident = expr.strip_prefix("this.").unwrap_or(expr);
+    if !ident
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        || ident.as_bytes()[0].is_ascii_digit()
+    {
+        return None;
+    }
+    let path_valued = matches!(
+        outermost,
+        Some("toPath" | "normalize" | "toAbsolutePath" | "toRealPath")
+    );
+    Some(StartsWithView {
+        root: ident.to_string(),
+        normalizes,
+        path_valued,
+    })
+}
+
 /// Method spellings of "this path starts with that root".
 /// `is_relative_to` is Python's `pathlib` containment test.
 const STARTS_WITH_METHODS: [&str; 5] = [
@@ -2891,5 +2998,50 @@ mod tests {
         ] {
             assert_eq!(classify_path_assertion(cond), PathAssertion::None, "{cond}");
         }
+    }
+
+    #[test]
+    fn starts_with_view_peels_path_chain() {
+        let v = classify_starts_with_receiver_view(
+            "!langFile.toPath().normalize().toAbsolutePath().startsWith(dir.toPath().normalize())",
+        )
+        .unwrap();
+        assert_eq!(v.root, "langFile");
+        assert!(v.normalizes && v.path_valued);
+    }
+
+    #[test]
+    fn starts_with_view_without_normalize_does_not_normalize() {
+        let v = classify_starts_with_receiver_view("f.toPath().toAbsolutePath().startsWith(root)")
+            .unwrap();
+        assert!(!v.normalizes && v.path_valued);
+    }
+
+    #[test]
+    fn starts_with_view_string_valued_is_not_path_valued() {
+        let v =
+            classify_starts_with_receiver_view("f.getCanonicalPath().startsWith(root)").unwrap();
+        assert!(v.normalizes && !v.path_valued);
+    }
+
+    #[test]
+    fn starts_with_view_rejects_resolve_and_bare_and_compound() {
+        assert!(
+            classify_starts_with_receiver_view("f.toPath().resolve(x).startsWith(r)").is_none()
+        );
+        assert!(classify_starts_with_receiver_view("p.startsWith(r)").is_none());
+        assert!(
+            classify_starts_with_receiver_view("ok && f.toPath().normalize().startsWith(r)")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn starts_with_view_accepts_wrapped_chain() {
+        let v = classify_starts_with_receiver_view(
+            "!f.toPath().normalize().toAbsolutePath()\n                .startsWith(root)",
+        )
+        .unwrap();
+        assert_eq!(v.root, "f");
     }
 }

@@ -64,6 +64,25 @@ impl<'a, 't> NestedOperands<'a, 't> {
         })
     }
 
+    /// The record of a node whose expression is one statement-level call
+    /// chain (`sb.append(a).append(esc(b))`), anchored on the outermost
+    /// call.  Used where the node's own callee text does not identify a
+    /// call of the record, so [`Self::new`] has no anchor.
+    pub(super) fn for_call_chain(
+        info: &'a NodeInfo,
+        transfer: &'a SsaTaintTransfer<'t>,
+    ) -> Option<Self> {
+        let tree = info.call.nested_calls.as_deref()?;
+        let anchor = tree.calls.iter().position(|c| c.parent.is_none())? as u16;
+        Some(Self {
+            tree,
+            anchor,
+            info,
+            transfer,
+            summaries: (0..tree.calls.len()).map(|_| OnceCell::new()).collect(),
+        })
+    }
+
     /// Callee summary of call `c`, when one resolves.
     fn summary(&self, c: u16) -> Option<&ResolvedSummary> {
         self.summaries[c as usize]
@@ -230,7 +249,7 @@ impl<'a, 't> NestedOperands<'a, 't> {
 
     /// Caps `v` carries past the calls wrapping it.  `None` when the value
     /// has no recorded occurrence in the node.
-    fn value_caps(
+    pub(super) fn value_caps(
         &self,
         v: SsaValue,
         caps: Cap,

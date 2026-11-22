@@ -1311,15 +1311,20 @@ struct PathBranchClass {
     rejection_axes: SmallVec<[crate::abstract_interp::path_domain::PathRejection; 3]>,
     assertion: crate::abstract_interp::path_domain::PathAssertion,
     rejection_pre_negated: bool,
+    /// Path-view chain on the receiver of the `startsWith` guard, when the
+    /// confinement binds to the chain's root variable.
+    view: Option<crate::abstract_interp::path_domain::StartsWithView>,
 }
 
 /// Classify a branch condition's text against the PathFact rejection /
 /// assertion idioms.  Pure function of `cond_text`.
 fn classify_path_branch(cond_text: &str) -> PathBranchClass {
     use crate::abstract_interp::path_domain::{
-        classify_path_assertion, classify_path_rejection_axes, cond_has_pre_negated_islocal_clause,
+        classify_path_assertion, classify_path_rejection_axes, classify_starts_with_receiver_view,
+        cond_has_pre_negated_islocal_clause,
     };
     PathBranchClass {
+        view: classify_starts_with_receiver_view(cond_text),
         rejection_axes: classify_path_rejection_axes(cond_text),
         assertion: classify_path_assertion(cond_text),
         rejection_pre_negated: cond_has_pre_negated_islocal_clause(cond_text),
@@ -3486,6 +3491,22 @@ fn apply_path_fact_branch_narrowing_with_aliases(
         }
     };
 
+    // The confinement of a path-view receiver binds to the chain's root
+    // variable alone; the other variables of the condition (the root being
+    // compared against) are not narrowed.
+    let view_clears_dotdot = class
+        .view
+        .as_ref()
+        .is_some_and(|v| v.normalizes && v.path_valued);
+    let assertion_targets: smallvec::SmallVec<[SsaValue; 2]> = match class.view.as_ref() {
+        Some(view) if effective_vars.iter().any(|v| *v == view.root) => {
+            reaching_def_at_block_end(&view.root, ssa, block)
+                .into_iter()
+                .collect()
+        }
+        _ => targets.clone(),
+    };
+
     // Apply assertion (positive): the branch where it holds narrows
     // prefix_lock.
     let narrow_assertion = |fact: &mut PathFact| {
@@ -3495,6 +3516,13 @@ fn apply_path_fact_branch_narrowing_with_aliases(
             // components, and a path that starts with a root that is not
             // itself `..` has none.
             if updated.normalized == crate::abstract_interp::Tri::Yes && !root.starts_with("..") {
+                updated.dotdot = crate::abstract_interp::Tri::No;
+            }
+            // `f.toPath().normalize().startsWith(root)`: the guard tested the
+            // normalized view of this variable, whose `..` components are
+            // all leading, so passing it proves the location stays under the
+            // root.  Only a `Path` view qualifies (component-wise compare).
+            if view_clears_dotdot && !root.starts_with("..") {
                 updated.dotdot = crate::abstract_interp::Tri::No;
             }
             *fact = updated;
@@ -3543,7 +3571,7 @@ fn apply_path_fact_branch_narrowing_with_aliases(
     } else {
         &mut *false_state
     };
-    for v in &targets {
+    for v in &assertion_targets {
         if let Some(ref mut abs) = assertion_state.abstract_state {
             let mut av = abs.get(*v);
             narrow_assertion(&mut av.path);
@@ -10966,6 +10994,67 @@ fn is_java_class_receiver(ssa: &SsaBody, v: SsaValue) -> bool {
         && leaf.chars().any(|c| c.is_ascii_lowercase())
 }
 
+/// Java `sb.append(x)` / `sb.insert(i, x)` on a receiver known to be a
+/// `StringBuilder` / `StringBuffer`: the argument is written into the
+/// builder.  The receiver type comes from the SSA type facts, the path
+/// environment, or the declared type of the receiver, so an unrelated user
+/// class with an `append` method keeps the default call propagation.
+///
+/// A chained statement `sb.append(a).append(b);` is one call node on the
+/// root builder; the inner calls' arguments sit in a trailing implicit
+/// argument group.  Every argument group is therefore written into the
+/// builder, not only the first.
+fn java_builder_store_op(
+    info: &NodeInfo,
+    args: &[SmallVec<[SsaValue; 2]>],
+    receiver: &Option<SsaValue>,
+    transfer: &SsaTaintTransfer,
+    callee: &str,
+    state: &SsaTaintState,
+) -> Option<crate::ssa::pointsto::ContainerOp> {
+    use crate::ssa::pointsto::ContainerOp;
+    use crate::ssa::type_facts::TypeKind;
+    if transfer.lang != Lang::Java {
+        return None;
+    }
+    crate::ssa::pointsto::classify_java_builder_op(crate::labels::bare_method_name(callee))?;
+    let rv = (*receiver)?;
+    let kind = transfer
+        .type_facts
+        .and_then(|tf| tf.get_type(rv))
+        .cloned()
+        .or_else(|| {
+            state
+                .path_env
+                .as_ref()
+                .and_then(|env| env.get(rv).types.as_singleton())
+        })
+        .filter(|k| !matches!(k, TypeKind::Unknown))
+        .or_else(|| info.call.receiver_decl_type.clone());
+    if !matches!(kind, Some(TypeKind::StringBuilder)) {
+        return None;
+    }
+    Some(ContainerOp::Store {
+        value_args: (0..args.len()).collect(),
+        index_arg: None,
+    })
+}
+
+/// Taint a value brings into a builder append, after the calls wrapping its
+/// occurrences in the node (`sb.append(escapeHtml4(x))` keeps nothing of
+/// `x`).  A value with no recorded occurrence keeps its full taint.
+fn builder_operand_caps(
+    nested: Option<&operands::NestedOperands>,
+    v: SsaValue,
+    caps: Cap,
+    ssa: &SsaBody,
+    state: &SsaTaintState,
+) -> Cap {
+    nested
+        .and_then(|ops| ops.value_caps(v, caps, ssa, state))
+        .unwrap_or(caps)
+}
+
 /// Handle container operations: propagate taint between receiver and arguments.
 ///
 /// **Store** operations (push, append, set, add, insert, etc.):
@@ -10989,9 +11078,16 @@ fn try_container_propagation(
     let lang = transfer.lang;
     use crate::ssa::pointsto::{ContainerOp, classify_container_op};
 
+    let mut is_builder_store = false;
     let op = match classify_container_op(callee, lang) {
         Some(op) => op,
-        None => return false,
+        None => match java_builder_store_op(info, args, receiver, transfer, callee, state) {
+            Some(op) => {
+                is_builder_store = true;
+                op
+            }
+            None => return false,
+        },
     };
 
     // A static call on a Java class (`Paths.get(p)`) is not a container
@@ -11061,7 +11157,12 @@ fn try_container_propagation(
                 transfer,
             );
 
-            // Collect taint from value argument(s)
+            // Collect taint from value argument(s).  A builder append is one
+            // node for the whole chain, so each value is narrowed by the
+            // calls that wrap it there.
+            let builder_nested = is_builder_store
+                .then(|| operands::NestedOperands::for_call_chain(info, transfer))
+                .flatten();
             let mut val_caps = Cap::empty();
             let mut val_origins: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
             for &arg_idx in &value_args {
@@ -11069,7 +11170,21 @@ fn try_container_propagation(
                 if let Some(arg_vals) = args.get(effective_idx) {
                     for &v in arg_vals {
                         if let Some(taint) = state.get(v) {
-                            val_caps |= taint.caps;
+                            let caps = if is_builder_store {
+                                builder_operand_caps(
+                                    builder_nested.as_ref(),
+                                    v,
+                                    taint.caps,
+                                    ssa,
+                                    state,
+                                )
+                            } else {
+                                taint.caps
+                            };
+                            if caps.is_empty() {
+                                continue;
+                            }
+                            val_caps |= caps;
                             for orig in &taint.origins {
                                 push_origin_bounded(&mut val_origins, *orig);
                             }

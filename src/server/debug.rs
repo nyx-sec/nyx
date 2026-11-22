@@ -1197,6 +1197,7 @@ fn type_kind_tag(k: &TypeKind) -> String {
         TypeKind::SqlxDb => "SqlxDb".into(),
         TypeKind::HibernateSession => "HibernateSession".into(),
         TypeKind::ProcessBuilder => "ProcessBuilder".into(),
+        TypeKind::StringBuilder => "StringBuilder".into(),
         TypeKind::Runtime => "Runtime".into(),
         TypeKind::JdbcTemplate => "JdbcTemplate".into(),
     }

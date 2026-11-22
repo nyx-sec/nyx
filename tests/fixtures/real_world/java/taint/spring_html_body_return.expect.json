@@ -1,0 +1,32 @@
+{
+  "description": "A Spring @RestController handler that declares `produces = \"text/html\"` returns its String as the HTML response body, so a tainted value in it is reflected XSS.",
+  "tags": [
+    "taint",
+    "xss",
+    "spring",
+    "response-body"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "notes": "concatenated HTML returned as the body"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        20,
+        20
+      ],
+      "notes": "builder appended with the request title"
+    }
+  ]
+}

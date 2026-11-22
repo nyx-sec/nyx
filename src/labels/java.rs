@@ -56,7 +56,13 @@ pub static RULES: &[LabelRule] = &[
     },
     // ───────── Sanitizers ──────────
     LabelRule {
-        matchers: &["HtmlUtils.htmlEscape", "StringEscapeUtils.escapeHtml4"],
+        // The bare spellings cover `import static ...StringEscapeUtils.escapeHtml4;`.
+        matchers: &[
+            "HtmlUtils.htmlEscape",
+            "StringEscapeUtils.escapeHtml4",
+            "escapeHtml4",
+            "escapeHtml3",
+        ],
         label: DataLabel::Sanitizer(Cap::HTML_ESCAPE),
         case_sensitive: false,
     },
@@ -219,6 +225,12 @@ pub static RULES: &[LabelRule] = &[
             "FileReader",
             "FileWriter",
             "RandomAccessFile",
+            // Netty file-serving constructors: `new DefaultFileRegion(file,
+            // pos, count)` and the chunked-write handlers open the file they
+            // are given, so a request-chosen file is a path traversal.
+            "DefaultFileRegion",
+            "ChunkedFile",
+            "ChunkedNioFile",
         ],
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: true,
@@ -812,6 +824,50 @@ pub static GATED_SINKS: &[SinkGate] = &[
     },
     SinkGate {
         callee_matcher: "Files.writeString",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    // Netty file constructors take the file first; the offset, length and
+    // chunk size that follow do not choose which file is opened.
+    SinkGate {
+        callee_matcher: "DefaultFileRegion",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "ChunkedFile",
+        arg_index: 0,
+        dangerous_values: &[],
+        dangerous_prefixes: &[],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        case_sensitive: true,
+        payload_args: &[0],
+        keyword_name: None,
+        dangerous_kwargs: &[],
+        activation: GateActivation::Destination {
+            object_destination_fields: &[],
+        },
+    },
+    SinkGate {
+        callee_matcher: "ChunkedNioFile",
         arg_index: 0,
         dangerous_values: &[],
         dangerous_prefixes: &[],
@@ -1487,7 +1543,14 @@ mod tests {
     #[test]
     fn file_reader_and_writer_constructors_are_file_sinks() {
         use crate::labels::{Cap, classify_all};
-        for callee in ["FileReader", "FileWriter", "java.io.FileWriter"] {
+        for callee in [
+            "FileReader",
+            "FileWriter",
+            "java.io.FileWriter",
+            "DefaultFileRegion",
+            "io.netty.handler.stream.ChunkedFile",
+            "ChunkedNioFile",
+        ] {
             let labels = classify_all("java", callee, None);
             assert!(has_sink(&labels, Cap::FILE_IO), "{callee}: {labels:?}");
         }

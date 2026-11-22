@@ -1,0 +1,31 @@
+{
+  "description": "Netty `DefaultFileRegion` and `ChunkedFile` open the file they are given.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "netty"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        16,
+        16
+      ],
+      "notes": "DefaultFileRegion"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        17,
+        17
+      ],
+      "notes": "ChunkedFile"
+    }
+  ]
+}

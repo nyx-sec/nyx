@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 973
+    "corpus_size": 985
   },
   "cases": [
     {
@@ -30961,6 +30961,388 @@
       ],
       "disabled": false,
       "notes": "File.basename keeps only the final component."
+    },
+    {
+      "case_id": "java-xss-stringbuilder-statement-001",
+      "file": "java/xss/XssStringBuilderStatement.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "stringbuilder",
+        "container",
+        "reflected"
+      ],
+      "disabled": false,
+      "notes": "Statement-form sb.append(tainted) writes the argument into the builder; the later write(sb.toString()) is reflected XSS."
+    },
+    {
+      "case_id": "java-safe-stringbuilder-escaped-append-001",
+      "file": "java/safe/SafeStringBuilderEscapedAppend.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "stringbuilder",
+        "container",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "The request value is HTML-escaped before it is appended to the builder."
+    },
+    {
+      "case_id": "java-path_traversal-path-view-no-normalize-001",
+      "file": "java/path_traversal/PathViewStartsWithNoNormalize.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          18,
+          18
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "path-view"
+      ],
+      "disabled": false,
+      "notes": "toAbsolutePath() keeps `..` segments, so a startsWith guard on the view chain does not confine the file."
+    },
+    {
+      "case_id": "java-safe-path-view-normalize-startswith-001",
+      "file": "java/safe/SafePathViewNormalizeStartsWith.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "pathfact",
+        "path-view",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "The startsWith guard tests the normalized absolute view of the file against the normalized absolute view of its directory; the confinement binds to the file variable."
+    },
+    {
+      "case_id": "java-path_traversal-netty-file-region-001",
+      "file": "java/path_traversal/PathTraversalNettyFileRegion.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "tags": [
+        "netty",
+        "file-region"
+      ],
+      "disabled": false,
+      "notes": "Netty DefaultFileRegion opens the request-chosen file."
+    },
+    {
+      "case_id": "java-safe-netty-file-region-fixed-file-001",
+      "file": "java/safe/SafeNettyFileRegionFixedFile.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "netty",
+        "file-region",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "The request chooses only the byte count; the file is fixed, so position and length are not path payloads."
+    },
+    {
+      "case_id": "cve-java-2024-49760-vulnerable",
+      "file": "cve_corpus/java/CVE-2024-49760/vulnerable.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          82,
+          82
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          64,
+          64
+        ]
+      ],
+      "tags": [
+        "cve",
+        "openrefine",
+        "path_traversal",
+        "interproc"
+      ],
+      "disabled": false,
+      "notes": "CVE-2024-49760: OpenRefine LoadLanguageCommand built the translation file path from the request `lang` parameter with no containment check, so a crafted language read arbitrary files. Reported at the call site through the loadLanguage summary. BSD-3-Clause"
+    },
+    {
+      "case_id": "cve-java-2024-49760-patched",
+      "file": "cve_corpus/java/CVE-2024-49760/patched.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "openrefine",
+        "patched",
+        "negative",
+        "path-view"
+      ],
+      "disabled": false,
+      "notes": "CVE-2024-49760 patched: langFile.toPath().normalize().toAbsolutePath().startsWith(langsDir.toPath().normalize().toAbsolutePath()) confines the file; the guard receiver is a path-view chain that must bind to the langFile variable. BSD-3-Clause"
+    },
+    {
+      "case_id": "cve-java-2024-23819-vulnerable",
+      "file": "cve_corpus/java/CVE-2024-23819/vulnerable.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          100,
+          100
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          46,
+          48
+        ]
+      ],
+      "tags": [
+        "cve",
+        "geoserver",
+        "xss",
+        "spring",
+        "stringbuilder"
+      ],
+      "disabled": false,
+      "notes": "CVE-2024-23819: GeoServer MapML controller built an HTML page with a StringBuilder from unescaped layer, style and layer label values and returned it as a text/html response body. Needs statement-form builder append plus the Spring text/html return sink. GPL-2.0"
+    },
+    {
+      "case_id": "cve-java-2024-23819-patched",
+      "file": "cve_corpus/java/CVE-2024-23819/patched.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "geoserver",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2024-23819 patched: layer, layer label and style are passed through escapeHtml4 (statically imported) before they are appended. GPL-2.0"
+    },
+    {
+      "case_id": "java-xss-spring-html-body-return-001",
+      "file": "java/xss/XssSpringHtmlBodyReturn.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          8
+        ]
+      ],
+      "tags": [
+        "spring",
+        "response-body",
+        "reflected"
+      ],
+      "disabled": false,
+      "notes": "A @RestController handler declaring produces=text/html returns a String built from the path variable: the returned string is the HTML response body."
+    },
+    {
+      "case_id": "java-safe-spring-html-body-return-001",
+      "file": "java/safe/SafeSpringHtmlBodyReturn.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "spring",
+        "response-body",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "The HTML body escapes the value, and a handler without an HTML content type returns plain text."
     }
   ]
 }
