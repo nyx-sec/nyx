@@ -16,6 +16,7 @@ use super::{
     SsaTaintEvent, SsaTaintTransfer, detect_variant_inner_fact, op_for_value, run_ssa_taint_full,
     transfer_block, transfer_inst,
 };
+use crate::taint::path_state::is_open_redirect_validator_name;
 
 use crate::cfg::{BodyId, Cfg, FuncSummaries};
 use crate::labels::{Cap, SourceKind};
@@ -1150,28 +1151,6 @@ fn detect_open_redirect_normalizer(
     }
 
     false
-}
-
-/// Recognise a canonical open-redirect URL-safety validator callee by name.
-///
-/// These are the ecosystem-standard boolean guards that pin a redirect target
-/// to the current host / a relative URL before it is used: Django's
-/// `url_has_allowed_host_and_scheme` (and its legacy `is_safe_url` alias),
-/// Flask / Flask-AppBuilder's `is_safe_redirect_url`, and app-local helpers
-/// named `*safe*redirect*` / `*safe*url*` / `*valid*redirect*`.  Their bodies
-/// are frequently library-internal (Django's live in `django.utils.http`), so
-/// name recognition is the only available signal.  Conservative: the name must
-/// carry an explicit redirect/URL-safety token, so a generic `is_valid_email`
-/// does not match.
-fn is_open_redirect_validator_name(name: &str) -> bool {
-    let leaf = name.rsplit(['.', ':']).next().unwrap_or(name);
-    let l = leaf.to_ascii_lowercase();
-    l == "url_has_allowed_host_and_scheme"
-        || l == "is_safe_url"
-        || l == "url_is_safe"
-        || (l.contains("safe") && l.contains("redirect"))
-        || (l.contains("safe") && l.contains("url"))
-        || (l.contains("valid") && l.contains("redirect"))
 }
 
 /// True when a branch `condition_text` invokes an open-redirect URL-safety

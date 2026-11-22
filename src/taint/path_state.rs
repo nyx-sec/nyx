@@ -83,6 +83,22 @@ pub enum PredicateKind {
     /// CVE-2020-5221 (uftpd), whose fix moved the check from the unresolved
     /// `dir` onto the `realpath()`-resolved `rpath`.
     PathPrefixConfined,
+    /// A boolean predicate whose name states that a URL is safe to redirect
+    /// to (`safe_for_redirect(x)`, `is_safe_redirect_url(x)`).  The TRUE
+    /// branch is the validated path.  Cap-aware: clears
+    /// [`crate::labels::Cap::OPEN_REDIRECT`] only, so a `*_url` guard never
+    /// vouches for SQL, shell or file sinks.  Only recognised as a plain
+    /// call that is a conjunct of the condition, since a disjunction does
+    /// not hold the predicate on its true edge.
+    RedirectValidator,
+    /// A boolean predicate whose name states that a host or address is
+    /// internal or blocked (`IsHostnameInternal(host)`, `is_private_ip(ip)`).
+    /// Inverted polarity: the TRUE branch is the reject path and the FALSE
+    /// branch is the validated one.  Cap-aware: clears
+    /// [`crate::labels::Cap::SSRF`] only.  Only recognised as a plain call
+    /// that is a disjunct of the condition, since a conjunction does not
+    /// hold the predicate false on its false edge.
+    HostDenylistRejected,
     /// Bounded-length rejection: `x.len() > N` / `x.length < N` with N >= 2.
     ///
     /// Commonly paired with `ShellMetaValidated` in OR-chain rejection
@@ -1479,6 +1495,11 @@ pub fn classify_condition(text: &str) -> PredicateKind {
             return PredicateKind::ValidationCall;
         }
 
+        // Cap-scoped predicates named for what they establish.
+        if let Some((kind, _)) = scoped_predicate_call(text) {
+            return kind;
+        }
+
         // Regex / pattern allowlist `<X>.test(value)` / `<X>.match(value)` calls
         // where the receiver name carries a regex or pattern marker.  The
         // standard JS / TS / Python / Java / Ruby / Go regex APIs all expose a
@@ -1610,6 +1631,199 @@ pub fn predicate_bit_negative_form(kind: PredicateKind, text: &str) -> Option<bo
     }
 }
 
+/// Recognise a canonical open-redirect URL-safety validator callee by name.
+///
+/// These are the ecosystem-standard boolean guards that pin a redirect target
+/// to the current host / a relative URL before it is used: Django's
+/// `url_has_allowed_host_and_scheme` (and its legacy `is_safe_url` alias),
+/// Flask / Flask-AppBuilder's `is_safe_redirect_url`, and app-local helpers
+/// named `*safe*redirect*` / `*safe*url*` / `*valid*redirect*`.  Their bodies
+/// are frequently library-internal (Django's live in `django.utils.http`), so
+/// name recognition is the only available signal.  Conservative: the name must
+/// carry an explicit redirect/URL-safety token, so a generic `is_valid_email`
+/// does not match.
+pub(crate) fn is_open_redirect_validator_name(name: &str) -> bool {
+    let leaf = name.rsplit(['.', ':']).next().unwrap_or(name);
+    let l = leaf.to_ascii_lowercase();
+    l == "url_has_allowed_host_and_scheme"
+        || l == "is_safe_url"
+        || l == "url_is_safe"
+        || (l.contains("safe") && l.contains("redirect"))
+        || (l.contains("safe") && l.contains("url"))
+        || (l.contains("valid") && l.contains("redirect"))
+}
+
+/// Leading verbs of functions that return a value rather than a boolean, so
+/// a `safe`/`url` token in the rest of the name does not make them guards.
+const VALUE_PRODUCING_PREFIXES: [&str; 14] = [
+    "get_",
+    "make_",
+    "build_",
+    "create_",
+    "generate_",
+    "sanitize_",
+    "sanitise_",
+    "clean_",
+    "escape_",
+    "fix_",
+    "normalize_",
+    "normalise_",
+    "resolve_",
+    "parse_",
+];
+
+/// A boolean predicate whose name states that a redirect target is safe
+/// (`safe_for_redirect`, `is_safe_redirect_url`,
+/// `url_has_allowed_host_and_scheme`).  Narrower than
+/// [`is_open_redirect_validator_name`], which also admits helpers that return
+/// the confined URL.
+fn is_redirect_safety_predicate_name(leaf: &str) -> bool {
+    let snake = to_snake_lower(leaf);
+    !VALUE_PRODUCING_PREFIXES
+        .iter()
+        .any(|p| snake.starts_with(p))
+        && !snake.contains("unsafe")
+        && !snake.contains("not_safe")
+        && is_open_redirect_validator_name(&snake)
+}
+
+/// Subject nouns of a host / address denylist predicate.
+const DENYLIST_SUBJECTS: [&str; 12] = [
+    "host", "hostname", "ip", "addr", "address", "url", "uri", "domain", "remote", "target",
+    "endpoint", "server",
+];
+
+/// Property words of a host / address denylist predicate.
+const DENYLIST_PROPERTIES: [&str; 11] = [
+    "internal",
+    "private",
+    "loopback",
+    "local",
+    "reserved",
+    "blocked",
+    "blacklisted",
+    "denied",
+    "disallowed",
+    "forbidden",
+    "unsafe",
+];
+
+/// A boolean predicate whose name states that a host or address is internal
+/// or blocked: `is_` followed only by subject and property words, at least
+/// one of each (`IsHostnameInternal`, `is_private_ip`, `isInternalURL`).
+/// `is_local_file`, `isInternalUser` and `is_blocked_user` do not match: a
+/// word outside both sets means the predicate is about something else.
+fn is_host_denylist_predicate_name(leaf: &str) -> bool {
+    let snake = to_snake_lower(leaf);
+    let Some(rest) = snake.strip_prefix("is_") else {
+        return false;
+    };
+    let mut has_subject = false;
+    let mut has_property = false;
+    for word in rest.split('_') {
+        if DENYLIST_SUBJECTS.contains(&word) {
+            has_subject = true;
+        } else if DENYLIST_PROPERTIES.contains(&word) {
+            has_property = true;
+        } else if word != "link" {
+            return false;
+        }
+    }
+    has_subject && has_property
+}
+
+/// If `clause` is exactly a call `name(args)` (no leading `!` / `not`, nothing
+/// after the closing paren) whose leaf name passes `name_ok`, return the
+/// clause when its first argument is a bare identifier.
+fn plain_predicate_call(clause: &str, name_ok: fn(&str) -> bool) -> Option<String> {
+    let clause = crate::abstract_interp::path_domain::strip_outer_parens(clause.trim());
+    if !clause.ends_with(')') {
+        return None;
+    }
+    let open = clause.find('(')?;
+    let callee = clause[..open].trim();
+    if callee.is_empty()
+        || !callee
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | ':' | '$'))
+    {
+        return None;
+    }
+    let leaf = callee.rsplit(['.', ':']).next().unwrap_or(callee);
+    if !name_ok(leaf) {
+        return None;
+    }
+    // The parenthesis opened after the callee must be the one the clause ends
+    // with, so `f(a) || g(b)` is not read as one call.
+    let mut depth = 0i32;
+    for (i, b) in clause.bytes().enumerate().skip(open) {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 && i + 1 != clause.len() {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    let first = first_call_arg(&clause[open + 1..])?;
+    let first = first.strip_prefix('&').unwrap_or(first).trim();
+    // Keyword form `url=next` names the argument after `=`.
+    let first = match first.split_once('=') {
+        Some((kw, value)) if is_identifier(kw.trim()) && !value.starts_with('=') => value.trim(),
+        _ => first,
+    };
+    let first = first.strip_prefix('$').unwrap_or(first);
+    (is_identifier(first) && !first.contains('.')).then(|| first.to_string())
+}
+
+/// Recognise a scope-limited predicate call in `text`, returning its kind and
+/// the identifier it tests.
+///
+/// The call must stand alone as a clause on the edge that carries its
+/// meaning: a redirect-safety predicate as a conjunct (true edge), a host
+/// denylist predicate as a disjunct (false edge).  The one wrapper allowed
+/// around a lone call is the leading negation the CFG reports as
+/// `condition_negated`.
+fn scoped_predicate_call(text: &str) -> Option<(PredicateKind, String)> {
+    use crate::abstract_interp::path_domain::{
+        split_top_level_and, split_top_level_or, strip_leading_not, strip_outer_parens,
+    };
+    let mut t = strip_outer_parens(text.trim());
+    if !has_boolean_connective(t) {
+        while let Some(rest) = strip_leading_not(t) {
+            t = strip_outer_parens(rest.trim_start());
+        }
+    } else if let Some(rest) = strip_leading_not(t)
+        && rest.trim_start().starts_with('(')
+        && strip_outer_parens(rest.trim_start()).len() < rest.trim_start().len()
+    {
+        // `!(a || f(x))`: the whole-condition negation is the caller's.
+        t = strip_outer_parens(rest.trim_start());
+    }
+    let disjuncts = split_top_level_or(t);
+    if disjuncts.len() == 1 {
+        for clause in split_top_level_and(t) {
+            if let Some(arg) = plain_predicate_call(clause, is_redirect_safety_predicate_name) {
+                return Some((PredicateKind::RedirectValidator, arg));
+            }
+        }
+    }
+    if !crate::abstract_interp::path_domain::has_top_level_and(t) {
+        for clause in disjuncts {
+            // One argument only: with several, which one is the host is a guess.
+            if count_call_args(strip_outer_parens(clause.trim())) == Some(1)
+                && let Some(arg) = plain_predicate_call(clause, is_host_denylist_predicate_name)
+            {
+                return Some((PredicateKind::HostDenylistRejected, arg));
+            }
+        }
+    }
+    None
+}
+
 /// Classify a condition AND extract the specific validated variable target.
 ///
 /// For `ValidationCall`/`SanitizerCall`, tries to extract the first argument
@@ -1675,6 +1889,10 @@ pub fn classify_condition_with_target(text: &str) -> (PredicateKind, Option<Stri
             // Argument of the parse call: `new URL(x).host` → `x`,
             // `urlparse(x).netloc` → `x`.
             let target = extract_host_allowlist_target(text);
+            (kind, target)
+        }
+        PredicateKind::RedirectValidator | PredicateKind::HostDenylistRejected => {
+            let target = scoped_predicate_call(text).map(|(_, arg)| arg);
             (kind, target)
         }
         PredicateKind::PathPrefixConfined => {
@@ -2293,7 +2511,6 @@ fn extract_type_check_target(text: &str) -> Option<String> {
 
     None
 }
-
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -3843,6 +4060,74 @@ mod ghsa_h8cj_hpmg_636v_tests {
         ];
         for (text, want) in cases {
             assert_eq!(sentinel_comparison_polarity(text), want, "{text}");
+        }
+    }
+    // ── RedirectValidator / HostDenylistRejected ─────────────────────────
+
+    #[test]
+    fn redirect_safety_predicate_is_a_scoped_kind() {
+        for (text, arg) in [
+            ("safe_for_redirect(redirect_url)", "redirect_url"),
+            (
+                "redirect_url and safe_for_redirect(redirect_url)",
+                "redirect_url",
+            ),
+            ("next && safeForRedirect(next)", "next"),
+            ("not safe_for_redirect(u)", "u"),
+        ] {
+            let (kind, target) = classify_condition_with_target(text);
+            assert_eq!(kind, PredicateKind::RedirectValidator, "{text}");
+            assert_eq!(target.as_deref(), Some(arg), "{text}");
+        }
+        // Names that do not state redirect safety, helpers that return a
+        // value, and a predicate that is only one arm of a disjunction.
+        for text in [
+            "is_valid_email(x)",
+            "get_safe_redirect_url(x)",
+            "make_safe_url(x)",
+            "x or safe_for_redirect(x)",
+            "safe_for_redirect(x) || other",
+            "safe_for_redirect(a.b)",
+            "is_unsafe_redirect(x)",
+        ] {
+            assert_ne!(
+                classify_condition(text),
+                PredicateKind::RedirectValidator,
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_denylist_predicate_is_a_scoped_kind() {
+        for (text, arg) in [
+            ("IsHostnameInternal(host)", "host"),
+            ("(IsHostnameInternal(host))", "host"),
+            ("!IsHostnameInternal(host)", "host"),
+            ("is_private_ip(ip)", "ip"),
+            ("isInternalURL(u)", "u"),
+            ("blocked || IsHostnameInternal(host)", "host"),
+            ("utils.IsHostnameInternal(host)", "host"),
+        ] {
+            let (kind, target) = classify_condition_with_target(text);
+            assert_eq!(kind, PredicateKind::HostDenylistRejected, "{text}");
+            assert_eq!(target.as_deref(), Some(arg), "{text}");
+        }
+        for text in [
+            "is_local_file(path)",
+            "isInternalUser(u)",
+            "is_blocked_user(u)",
+            "IsHostnameInternal(a, b)",
+            "ok && IsHostnameInternal(host)",
+            "IsHostnameInternal(host) && ok",
+            "isPrivate(x)",
+            "IsHostnameInternal(a.b)",
+        ] {
+            assert_ne!(
+                classify_condition(text),
+                PredicateKind::HostDenylistRejected,
+                "{text}"
+            );
         }
     }
 }

@@ -617,7 +617,7 @@ fn matching_close_paren(text: &str) -> Option<usize> {
 
 /// True when `text` has a conjunction (`&&`, or the Python / Ruby / PHP
 /// keyword `and`) outside parens and string literals.
-fn has_top_level_and(text: &str) -> bool {
+pub(crate) fn has_top_level_and(text: &str) -> bool {
     let bytes = text.as_bytes();
     let mut depth: i32 = 0;
     let mut in_quote: Option<u8> = None;
@@ -660,7 +660,7 @@ fn has_top_level_and(text: &str) -> bool {
 
 /// Split `text` on top-level conjunctions (`&&`, or the keyword `and`),
 /// the same operators [`has_top_level_and`] detects.
-fn split_top_level_and(text: &str) -> smallvec::SmallVec<[&str; 4]> {
+pub(crate) fn split_top_level_and(text: &str) -> smallvec::SmallVec<[&str; 4]> {
     let mut out: smallvec::SmallVec<[&str; 4]> = smallvec::SmallVec::new();
     let bytes = text.as_bytes();
     let mut depth: i32 = 0;
@@ -868,7 +868,7 @@ fn has_python_dotdot_in(clause: &str) -> bool {
 /// inside string literals or nested parentheses.  Also recognises Python's
 /// keyword form ` or ` (whitespace-bounded) at top level so OR-chain
 /// rejection idioms are decomposed identically across languages.
-fn split_top_level_or(text: &str) -> smallvec::SmallVec<[&str; 4]> {
+pub(crate) fn split_top_level_or(text: &str) -> smallvec::SmallVec<[&str; 4]> {
     let mut out: smallvec::SmallVec<[&str; 4]> = smallvec::SmallVec::new();
     let bytes = text.as_bytes();
     let mut depth: i32 = 0;

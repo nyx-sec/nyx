@@ -3076,6 +3076,10 @@ fn find_guard_nodes(ctx: &AnalysisContext) -> Vec<(NodeIndex, Cap)> {
                 ) || (kind == PredicateKind::AllowlistCheck && allowlist_has_target)
                 {
                     result.push((idx, Cap::all()));
+                } else if kind == PredicateKind::RedirectValidator {
+                    result.push((idx, Cap::OPEN_REDIRECT));
+                } else if kind == PredicateKind::HostDenylistRejected {
+                    result.push((idx, Cap::SSRF));
                 } else if cond_indirect_validator_callee(info, ctx).is_some() {
                     // Indirect-validator pattern:
                     //   const err = validate(x); if (err) throw …;

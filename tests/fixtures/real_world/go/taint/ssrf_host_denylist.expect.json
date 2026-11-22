@@ -1,0 +1,68 @@
+{
+  "description": "A host denylist predicate (IsHostnameInternal) clears SSRF on the edge where it is false, only for SSRF, and only when its name states the property.",
+  "tags": [
+    "taint",
+    "ssrf",
+    "host-denylist",
+    "polarity"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        24,
+        24
+      ],
+      "notes": "internal hosts were rejected"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        31,
+        31
+      ],
+      "notes": "internal hosts were rejected"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        39,
+        39
+      ],
+      "notes": "runs only for internal hosts"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        49,
+        49
+      ],
+      "notes": "no host check"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        58,
+        58
+      ],
+      "notes": "denylist does not stop shell injection"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": true,
+      "line_range": [
+        64,
+        64
+      ],
+      "notes": ""
+    }
+  ]
+}

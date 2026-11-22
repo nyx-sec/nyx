@@ -1466,6 +1466,8 @@ fn classify_branch_cond(cond_text: &str) -> BranchCondClass {
             | PredicateKind::LeadingSlashCheck
             | PredicateKind::ProtocolRelativeCheck
             | PredicateKind::ShellMetaValidated
+            | PredicateKind::RedirectValidator
+            | PredicateKind::HostDenylistRejected
     );
     let sentinel = if predicate_kind || kind == PredicateKind::Comparison {
         sentinel_comparison_polarity(cond_text)
@@ -2068,6 +2070,24 @@ fn apply_branch_predicates(
     if kind == PredicateKind::HostAllowlistValidated && polarity {
         for var in condition_vars {
             clear_cap_alias_aware(state, var, Cap::OPEN_REDIRECT, ssa, base_aliases);
+        }
+    }
+
+    // RedirectValidator: TRUE branch is the validated path.  Clears
+    // `Cap::OPEN_REDIRECT` only, like the URL arms above.
+    if kind == PredicateKind::RedirectValidator && polarity {
+        for var in condition_vars {
+            clear_cap_alias_aware(state, var, Cap::OPEN_REDIRECT, ssa, base_aliases);
+        }
+    }
+
+    // HostDenylistRejected: inverted polarity.  The TRUE branch is the reject
+    // path (the host is internal), so the FALSE branch is the one that
+    // continues.  Clears `Cap::SSRF` only; a denylist says nothing about SQL,
+    // shell or file sinks.
+    if kind == PredicateKind::HostDenylistRejected && !polarity {
+        for var in condition_vars {
+            clear_cap_alias_aware(state, var, Cap::SSRF, ssa, base_aliases);
         }
     }
 

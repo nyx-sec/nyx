@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 983
+    "corpus_size": 987
   },
   "cases": [
     {
@@ -11941,8 +11941,7 @@
         "patched",
         "negative"
       ],
-      "disabled": true,
-      "disabled_reason": "Precision (patched) deferred: the fix rejects internal hosts with an `IsHostnameInternal(fediverseServer)` early return and turns off redirects, then calls `client.Get(requestURL.String())` on a local `&http.Client{...}`. The case used to pass only because a user-built *http.Client was not an SSRF sink at all; with the client typed from its composite literal the call is a sink, and the URL still carries the user-chosen host (passed through a host denylist, which is not recognised as a guard) and the user-chosen `account` in its query. Recognising this needs SSRF host-denylist guard recognition. The vulnerable counterpart (recall) is active and detects.",
+      "disabled": false,
       "notes": "CVE-2023-3188 patched counterpart: `IsHostnameInternal` early-return + redirect-blocked `*http.Client`. DISABLED (precision deferred): the local client is now an SSRF sink and the host denylist is not recognised as a guard. See disabled_reason."
     },
     {
@@ -31305,6 +31304,140 @@
       ],
       "disabled": false,
       "notes": "A String prefix test against a root that ends with '/' rejects sibling directories."
+    },
+    {
+      "case_id": "go-ssrf-host-denylist-reject-edge-001",
+      "file": "go/ssrf/ssrf_host_denylist_reject_edge.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "ssrf",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          17,
+          17
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          15,
+          15
+        ]
+      ],
+      "tags": [
+        "ssrf",
+        "host-denylist",
+        "polarity",
+        "regression"
+      ],
+      "disabled": false,
+      "notes": "The request runs on the edge where IsHostnameInternal(host) is true, so the denylist guards nothing. Only the false edge of a host denylist predicate clears SSRF. Safe twin: go-safe-ssrf-host-denylist-early-return-001."
+    },
+    {
+      "case_id": "go-safe-ssrf-host-denylist-early-return-001",
+      "file": "go/safe/safe_ssrf_host_denylist_early_return.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-918",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "ssrf",
+        "host-denylist",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "`if IsHostnameInternal(host) { return }` rejects internal hosts before the request is built (owncast CVE-2023-3188 shape)."
+    },
+    {
+      "case_id": "py-open_redirect-helper-guard-wrong-edge-001",
+      "file": "python/open_redirect/redirect_helper_guard_wrong_edge.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "safe-redirect-helper",
+        "polarity",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "The redirect runs on the edge where `safe_for_redirect(url)` returned false, so the helper vouches for nothing. Only the true edge of a redirect-safety predicate clears OPEN_REDIRECT. Safe twin: py-safe-redirect-helper-guard-001."
+    },
+    {
+      "case_id": "py-safe-redirect-helper-guard-001",
+      "file": "python/safe/safe_redirect_helper_guard.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-open-redirect",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "safe-redirect-helper",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A boolean helper named for redirect safety (`safe_for_redirect`) guards the redirect target; the else branch replaces it with a constant route."
     }
   ]
 }
