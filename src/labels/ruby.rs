@@ -58,7 +58,16 @@ pub static RULES: &[LabelRule] = &[
         case_sensitive: false,
     },
     LabelRule {
-        matchers: &["Shellwords.escape", "Shellwords.shellescape"],
+        matchers: &[
+            "Shellwords.escape",
+            "Shellwords.shellescape",
+            "Shellwords.join",
+            "Shellwords.shelljoin",
+            // The `String#shellescape` / `Array#shelljoin` core extensions
+            // from `require 'shellwords'`: `src.shellescape`.
+            "shellescape",
+            "shelljoin",
+        ],
         label: DataLabel::Sanitizer(Cap::SHELL_ESCAPE),
         case_sensitive: false,
     },

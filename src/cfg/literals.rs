@@ -3195,6 +3195,31 @@ pub(super) fn extract_arg_raw_string_mask(call_node: Node) -> u64 {
 /// is itself a call expression (e.g. `sanitize(x)` in `os.system(sanitize(x))`).
 /// Returns a `Vec<Option<String>>` parallel to `extract_arg_uses` output.
 pub(super) fn extract_arg_callees(call_node: Node, lang: &str, code: &[u8]) -> Vec<Option<String>> {
+    // Ruby backticks: one entry per interpolation, parallel to the
+    // `subshell` branch of `extract_arg_uses`, so a `#{x.shellescape}`
+    // interpolation resolves to its sanitizer callee.
+    if call_node.kind() == "subshell" {
+        let mut result = Vec::new();
+        let mut cursor = call_node.walk();
+        for child in call_node.named_children(&mut cursor) {
+            if child.kind() != "interpolation" {
+                continue;
+            }
+            let mut idents = Vec::new();
+            let mut paths = Vec::new();
+            collect_idents_with_paths(child, code, &mut idents, &mut paths);
+            if idents.is_empty() && paths.is_empty() {
+                continue;
+            }
+            let mut inner = child.walk();
+            let callee = child
+                .named_children(&mut inner)
+                .next()
+                .and_then(|e| call_ident_of(e, lang, code));
+            result.push(callee);
+        }
+        return result;
+    }
     let Some(args_node) = call_node.child_by_field_name("arguments") else {
         return Vec::new();
     };

@@ -1,0 +1,14 @@
+{
+  "description": "A value cast with (int) on its own assignment reaches passthru as a number: neither the taint engine nor the structural rule reports it.",
+  "tags": ["cfg", "php", "negative", "cmdi", "numeric-cast"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "cfg-unguarded-sink",
+      "severity": null,
+      "line_range": [1, 6],
+      "notes": "numeric cast clears the structural finding",
+      "must_not_match": true
+    }
+  ]
+}
