@@ -1096,7 +1096,7 @@ pub struct AstMeta {
 /// copies a whole handle.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RhsShape {
-    /// An identifier, a cast of one, or any shape not listed below: the new
+    /// An identifier, or any shape not listed below: the new
     /// name may hold the handle.
     #[default]
     Whole,
@@ -1111,6 +1111,10 @@ pub enum RhsShape {
     /// A field, element or dereference read (`cur = cur->next`): the value
     /// is another object reached from the handle.
     Projection,
+    /// A cast of a plain name (`lp = (T **)src`): a second view of the same
+    /// object.  The original name keeps the handle, and releasing either
+    /// name releases it.
+    CastView,
 }
 
 /// The call a condition header evaluates; see [`NodeInfo::cond_call`].
@@ -3133,6 +3137,9 @@ fn rhs_shape_of(ast: Node) -> RhsShape {
         rhs = inner;
     }
     let v = strip_parens_and_casts(rhs);
+    if v.kind() == "identifier" && unwrap_parens(rhs).kind() == "cast_expression" {
+        return RhsShape::CastView;
+    }
     match v.kind() {
         "initializer_list" | "compound_literal_expression" => RhsShape::Aggregate,
         "binary_expression" | "unary_expression" | "sizeof_expression" | "update_expression" => {
@@ -5429,11 +5436,23 @@ pub(super) fn push_node<'a>(
         header_call_propagates = true;
     }
 
-    let callee = if kind == StmtKind::Call || !labels.is_empty() || header_call_propagates {
+    let mut callee = if kind == StmtKind::Call || !labels.is_empty() || header_call_propagates {
         Some(text.clone())
     } else {
         None
     };
+    // C / C++ `cmp(a, b)` where `cmp` is a function-pointer variable or
+    // parameter of the enclosing function.  The name stands for whatever the
+    // pointer holds, so it must not resolve to an unrelated function that
+    // happens to share the name in this or another file.
+    if labels.is_empty()
+        && matches!(lang, "c" | "cpp")
+        && let Some(c) = callee.as_deref()
+        && let Some(cn) = call_ast
+        && helpers::c_callee_is_local_pointer(cn, c, code)
+    {
+        callee = Some(format!("(*{c})"));
+    }
 
     // Call nesting for statement-level nodes that lower to an SSA `Call`.
     // The anchor is the call `text` was taken from: the classified inner

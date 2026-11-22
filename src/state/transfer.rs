@@ -885,7 +885,13 @@ impl DefaultTransfer<'_> {
             if summary.method_name != callee {
                 continue;
             }
-            if let Some([arg]) = info.call.arg_uses.get(k).map(Vec::as_slice)
+            // The caller's argument must be exactly the handle (not `&h`),
+            // and the call must not rebind that same variable
+            // (`fd = wrapper(fd)`): the result replaces the handle.
+            if k < 64
+                && info.call.arg_bare_names & (1u64 << k) != 0
+                && let Some([arg]) = info.call.arg_uses.get(k).map(Vec::as_slice)
+                && info.taint.defines.as_deref() != Some(arg.as_str())
                 && let Some(sym) = self.get_sym(info, arg)
                 && state.resource.get(sym).contains(ResourceLifecycle::OPEN)
             {
@@ -1482,7 +1488,7 @@ impl DefaultTransfer<'_> {
             // another object; rebinding the walker to it drops the name's
             // claim on the handle it held.
             match info.rhs_shape {
-                RhsShape::SubObject => {
+                RhsShape::SubObject | RhsShape::CastView => {
                     // `s = sh + n`, `b = &it->base`: `s` points into the
                     // handle's storage.  The handle keeps its state, `s`
                     // is remembered as a way to release or hand it on.

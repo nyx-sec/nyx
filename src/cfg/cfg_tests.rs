@@ -9074,6 +9074,26 @@ fn c_condition_assignment_target_is_not_a_read() {
     assert_eq!(g[n].taint.uses, vec!["safe".to_string()]);
 }
 
+#[test]
+fn c_call_through_a_local_function_pointer_has_no_function_callee() {
+    // `cmp` is a variable here, so the call must not resolve to a function
+    // that shares the name in this or another file.
+    let callees_of = |src: &[u8]| -> Vec<String> {
+        let ts_lang = Language::from(tree_sitter_c::LANGUAGE);
+        let (g, _entry) = parse_and_build(src, "c", ts_lang);
+        g.node_indices()
+            .filter_map(|i| g[i].call.callee.clone())
+            .collect()
+    };
+    let local = callees_of(
+        b"int f(int (*pick)(const char *, const char *), const char *s) {\n int (*cmp)(const char *, const char *) = pick;\n int a = cmp(s, s);\n int b = pick(s, s);\n return a + b;\n}\n",
+    );
+    assert!(local.iter().any(|c| c == "(*cmp)"), "{local:?}");
+    assert!(local.iter().any(|c| c == "(*pick)"), "{local:?}");
+    let global = callees_of(b"int g(const char *s) { return cmp(s, s); }\n");
+    assert!(global.iter().any(|c| c == "cmp"), "{global:?}");
+}
+
 fn ruby_call_node(file_cfg: &FileCfg, body: usize, callee_suffix: &str) -> NodeInfo {
     file_cfg.bodies[body]
         .graph

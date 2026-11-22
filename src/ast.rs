@@ -139,6 +139,39 @@ fn maybe_inject_test_panic(path: &Path) {
 }
 
 /// Convenience alias for node indices.
+/// Reliability rules that stay silent inside a C / C++ preprocessor group.
+fn is_preproc_silenced_rule(id: &str) -> bool {
+    matches!(
+        id,
+        "state-resource-leak"
+            | "state-resource-leak-possible"
+            | "state-double-close"
+            | "state-use-after-close"
+            | "cfg-resource-leak"
+            | "cfg-error-fallthrough"
+    ) || id.starts_with("cfg-unreachable-")
+}
+
+/// 1-based inclusive line ranges of every preprocessor conditional group
+/// (`#if`, `#ifdef`, `#elif`, `#else`) in a C / C++ tree.
+fn preproc_group_line_ranges(tree: &tree_sitter::Tree) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut stack = vec![tree.root_node()];
+    while let Some(n) = stack.pop() {
+        if matches!(
+            n.kind(),
+            "preproc_if" | "preproc_ifdef" | "preproc_elif" | "preproc_elifdef" | "preproc_else"
+        ) {
+            out.push((n.start_position().row + 1, n.end_position().row + 1));
+        }
+        let mut c = n.walk();
+        for ch in n.children(&mut c) {
+            stack.push(ch);
+        }
+    }
+    out
+}
+
 fn byte_offset_to_point(tree: &tree_sitter::Tree, byte: usize) -> tree_sitter::Point {
     tree.root_node()
         .descendant_for_byte_range(byte, byte)
@@ -2607,6 +2640,23 @@ impl<'a> ParsedFile<'a> {
                 out.retain(|d| {
                     !((d.id == "cfg-resource-leak" || d.id == "cfg-auth-gap")
                         && state_lines.contains(&d.line))
+                });
+            }
+        }
+
+        // C / C++ preprocessor groups are lowered as branch-and-merge so
+        // taint can follow their contents, but the lowering cannot tell which
+        // arm is compiled.  Resource-lifecycle and structural reliability
+        // rules need a faithful path structure (a `#if` that wraps only an
+        // `if` head, a free in one arm, a whole file wrapped in a guard), so
+        // they stay silent inside a group, as they were before groups were
+        // lowered.
+        if matches!(self.source.lang_slug, "c" | "cpp") {
+            let ranges = preproc_group_line_ranges(&self.source.tree);
+            if !ranges.is_empty() {
+                out.retain(|d| {
+                    !(is_preproc_silenced_rule(&d.id)
+                        && ranges.iter().any(|&(a, b)| d.line >= a && d.line <= b))
                 });
             }
         }

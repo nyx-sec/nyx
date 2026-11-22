@@ -2928,3 +2928,56 @@ pub(crate) fn php_output_value_uses(operand: Node, code: &[u8], out: &mut Vec<St
         }
     }
 }
+
+thread_local! {
+    /// Declared (non-function) names of the C / C++ function last asked
+    /// about, keyed by its source buffer and byte range.
+    static C_DECLARED_NAMES: std::cell::RefCell<Option<((usize, usize, usize), std::collections::HashSet<String>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether a C / C++ call `name(..)` goes through a variable or parameter
+/// named `name` declared in the enclosing function (a function pointer),
+/// rather than naming a function.
+pub(super) fn c_callee_is_local_pointer(call: Node<'_>, name: &str, code: &[u8]) -> bool {
+    if call.kind() != "call_expression" {
+        return false;
+    }
+    let Some(f) = call.child_by_field_name("function") else {
+        return false;
+    };
+    if f.kind() != "identifier" {
+        return false;
+    }
+    let mut func = call;
+    while func.kind() != "function_definition" {
+        match func.parent() {
+            Some(p) => func = p,
+            None => return false,
+        }
+    }
+    let key = (code.as_ptr() as usize, func.start_byte(), func.end_byte());
+    C_DECLARED_NAMES.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.as_ref().is_none_or(|(k, _)| *k != key) {
+            let mut names = std::collections::HashSet::new();
+            let mut stack = vec![func];
+            while let Some(n) = stack.pop() {
+                if n.kind() == "identifier"
+                    && let Some(p) = n.parent()
+                    && p.kind().ends_with("declarator")
+                    && p.kind() != "function_declarator"
+                    && let Ok(t) = n.utf8_text(code)
+                {
+                    names.insert(t.to_string());
+                }
+                let mut c = n.walk();
+                for ch in n.children(&mut c) {
+                    stack.push(ch);
+                }
+            }
+            *slot = Some((key, names));
+        }
+        slot.as_ref().is_some_and(|(_, names)| names.contains(name))
+    })
+}
