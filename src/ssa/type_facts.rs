@@ -1110,6 +1110,20 @@ pub(crate) fn constructor_type(lang: Lang, callee: &str) -> Option<TypeKind> {
                 // the bare `exec` matcher (which is Kernel#exec — a shell sink).
                 // Motivated by CVE-2026-42087 (OpenC3 COSMOS QuestDB SQLi).
                 Some(TypeKind::DatabaseConnection)
+            } else if matches!(suffix, "connection" | "lease_connection")
+                && callee
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_uppercase())
+            {
+                // ActiveRecord adapter handle: `ActiveRecord::Base.connection`,
+                // `Model.connection`, `Model.lease_connection`.  Its
+                // `execute(sql)` runs the string as written, so a local bound to
+                // it (`c = ActiveRecord::Base.connection; c.execute(q)`)
+                // resolves to the type-qualified `DatabaseConnection.execute`
+                // sink.  Only class-qualified receivers qualify: a bare
+                // `connection` helper has no known type.
+                Some(TypeKind::DatabaseConnection)
             } else if after_colons.starts_with("File.") && matches!(suffix, "open" | "new") {
                 Some(TypeKind::FileHandle)
             } else if callee.contains("Net::LDAP") && matches!(suffix, "new" | "open") {
@@ -3188,6 +3202,17 @@ mod tests {
         );
         // A plain method named `new` on an unrelated receiver is not a DB conn.
         assert_eq!(constructor_type(Lang::Ruby, "Widget.new"), None);
+        // ActiveRecord adapter handles, class-qualified only.
+        assert_eq!(
+            constructor_type(Lang::Ruby, "ActiveRecord::Base.connection"),
+            Some(TypeKind::DatabaseConnection)
+        );
+        assert_eq!(
+            constructor_type(Lang::Ruby, "User.lease_connection"),
+            Some(TypeKind::DatabaseConnection)
+        );
+        assert_eq!(constructor_type(Lang::Ruby, "connection"), None);
+        assert_eq!(constructor_type(Lang::Ruby, "client.connection"), None);
     }
 
     #[test]

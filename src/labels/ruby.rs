@@ -80,6 +80,23 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sanitizer(Cap::SQL_QUERY),
         case_sensitive: false,
     },
+    // The adapter's own quoting.  The callee text keeps the `connection`
+    // segment of `ActiveRecord::Base.connection.quote(x)`, so these anchor on
+    // it and a bare `quote` on an unrelated receiver does not match.
+    LabelRule {
+        matchers: &[
+            "connection.quote",
+            "connection.quote_string",
+            "connection.quote_table_name",
+            "connection.quote_column_name",
+            "lease_connection.quote",
+            "lease_connection.quote_string",
+            "lease_connection.quote_table_name",
+            "lease_connection.quote_column_name",
+        ],
+        label: DataLabel::Sanitizer(Cap::SQL_QUERY),
+        case_sensitive: false,
+    },
     LabelRule {
         matchers: &["URI.encode_www_form_component"],
         label: DataLabel::Sanitizer(Cap::URL_ENCODE),
@@ -273,6 +290,7 @@ pub static RULES: &[LabelRule] = &[
         matchers: &[
             "find_by_sql",
             "connection.execute",
+            "lease_connection.execute",
             "select_all",
             "exec_query",
             "select_value",
@@ -311,6 +329,7 @@ pub static RULES: &[LabelRule] = &[
     LabelRule {
         matchers: &[
             "DatabaseConnection.exec",
+            "DatabaseConnection.execute",
             "DatabaseConnection.async_exec",
             "DatabaseConnection.exec_query",
             "DatabaseConnection.query",

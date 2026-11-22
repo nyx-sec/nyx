@@ -8579,3 +8579,189 @@ fn rust_dyn_let_annotation_makes_toml_decode_a_sink() {
         "a dyn annotation that is not the decode target must not label it"
     );
 }
+
+/// Whether any node of the Ruby snippet carries a sink label with `cap`.
+fn ruby_has_sink(src: &[u8], cap: Cap) -> bool {
+    let file_cfg = parse_to_file_cfg(src, "ruby", Language::from(tree_sitter_ruby::LANGUAGE));
+    file_cfg.bodies.iter().any(|b| {
+        b.graph.node_indices().any(|n| {
+            b.graph[n]
+                .taint
+                .labels
+                .iter()
+                .any(|l| matches!(l, DataLabel::Sink(c) if c.contains(cap)))
+        })
+    })
+}
+
+#[test]
+fn ruby_connection_chain_keeps_the_connection_segment() {
+    for src in [
+        &b"def f(q)\n  ActiveRecord::Base.connection.execute(q)\nend"[..],
+        b"def f(q)\n  Report.connection.execute(\n    \"S\" + q\n  )\nend",
+        b"def f(q)\n  Report.lease_connection.execute(q)\nend",
+    ] {
+        assert!(
+            ruby_has_sink(src, Cap::SQL_QUERY),
+            "{}",
+            String::from_utf8_lossy(src)
+        );
+    }
+    assert!(!ruby_has_sink(
+        b"def f(q)\n  Report.execute(q)\nend",
+        Cap::SQL_QUERY
+    ));
+    assert!(!ruby_has_sink(
+        b"def f(q)\n  Report.connection.reload(q)\nend",
+        Cap::SQL_QUERY
+    ));
+}
+
+/// Declared receiver type recorded on the Rust call nodes of a snippet, keyed
+/// by callee text.
+fn rust_receiver_decl_types(src: &[u8]) -> Vec<(String, Option<crate::ssa::type_facts::TypeKind>)> {
+    let file_cfg = parse_to_file_cfg(src, "rust", Language::from(tree_sitter_rust::LANGUAGE));
+    file_cfg
+        .bodies
+        .iter()
+        .flat_map(|b| {
+            b.graph
+                .node_indices()
+                .filter_map(|n| {
+                    let callee = b.graph[n].call.callee.clone()?;
+                    Some((callee, b.graph[n].call.receiver_decl_type.clone()))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+#[test]
+fn rust_receiver_decl_type_follows_the_declaration() {
+    use crate::ssa::type_facts::TypeKind;
+    let src = br#"
+use rusqlite::Connection;
+use std::sync::{Arc, Mutex};
+struct Store { conn: Connection, pool: Arc<Mutex<Connection>>, log: Vec<String>, other: Other }
+struct Other { n: u32 }
+impl Store {
+    fn field(&self) { self.conn.execute("a", []); }
+    fn field_chain(&self) { self.conn.execute("b", []).unwrap(); }
+    fn locked(&self) { let c = self.pool.lock().unwrap(); c.execute("c", []); }
+    fn not_conn(&self) { self.log.push(1); self.other.touch(); }
+    fn no_self() { self.conn.execute("d", []); }
+    fn shadowed(&self) { let c = self.pool.lock().unwrap(); let c = make(); c.run_it(); }
+    fn closure_shadow(&self) { let c = self.pool.lock().unwrap(); items.iter().for_each(|c| c.visit_it()); }
+}
+fn annotated() { let c: Connection = open_db(); c.execute("e", []); }
+fn formal(pool: &Arc<Mutex<Connection>>) { let g = pool.lock().unwrap(); g.execute("f", []); }
+fn pool_formal(pool: &Pool) { let g = pool.get().unwrap(); g.execute("g", []); }
+fn plain_formal(conn: &Connection) { conn.execute("h", []); }
+"#;
+    let types = rust_receiver_decl_types(src);
+    let kind_of = |callee_part: &str| {
+        types
+            .iter()
+            .find(|(c, _)| c.contains(callee_part))
+            .unwrap_or_else(|| panic!("no call node for {callee_part}: {types:?}"))
+            .1
+            .clone()
+    };
+    let conn = Some(TypeKind::DatabaseConnection);
+    assert_eq!(kind_of("self.conn.execute"), conn, "{types:?}");
+    assert_eq!(kind_of("c.execute"), conn);
+    assert_eq!(kind_of("g.execute"), conn);
+    assert_eq!(kind_of("self.log.push"), None);
+    assert_eq!(kind_of("self.other.touch"), None);
+    assert_eq!(kind_of("c.run_it"), None, "a later let shadows the guard");
+    assert_eq!(
+        kind_of("c.visit_it"),
+        None,
+        "a closure formal shadows the guard"
+    );
+    let no_self: Vec<_> = types
+        .iter()
+        .filter(|(c, _)| c.contains("self.conn.execute(\"d\""))
+        .collect();
+    assert!(no_self.iter().all(|(_, k)| k.is_none()), "{no_self:?}");
+    let pool_get: Vec<_> = types
+        .iter()
+        .filter(|(c, _)| c.starts_with("g.execute(\"g\""))
+        .collect();
+    assert!(pool_get.iter().all(|(_, k)| k.is_none()), "{pool_get:?}");
+}
+
+/// Callee texts of the nested-call tree of the Ruby call node `callee`.
+fn ruby_nested_callees(src: &[u8], callee: &str) -> Option<Vec<String>> {
+    let file_cfg = parse_to_file_cfg(src, "ruby", Language::from(tree_sitter_ruby::LANGUAGE));
+    for b in &file_cfg.bodies {
+        for n in b.graph.node_indices() {
+            let info = &b.graph[n];
+            if info.call.callee.as_deref() == Some(callee) {
+                return Some(
+                    info.call
+                        .nested_calls
+                        .as_deref()
+                        .map(|t| t.calls.iter().map(|c| c.callee.clone()).collect())
+                        .unwrap_or_default(),
+                );
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn ruby_bare_identifier_argument_is_an_implicit_call_unless_bound() {
+    let calls = |body: &str| {
+        let src = format!("class C\n  def a(formal)\n{body}\n  end\nend\n");
+        ruby_nested_callees(src.as_bytes(), "redirect_to")
+            .unwrap_or_else(|| panic!("no redirect_to node in {src}"))
+    };
+    assert_eq!(calls("    redirect_to helper"), ["redirect_to", "helper"]);
+    assert_eq!(calls("    redirect_to helper()"), ["redirect_to", "helper"]);
+    // Locals, formals and block parameters are variables.
+    assert!(
+        calls("    helper = 1\n    redirect_to helper")
+            .iter()
+            .all(|c| c != "helper")
+    );
+    assert!(
+        calls("    redirect_to formal")
+            .iter()
+            .all(|c| c != "formal")
+    );
+    assert!(
+        calls("    [1].each { |helper| redirect_to helper }")
+            .iter()
+            .all(|c| c != "helper")
+    );
+    assert!(
+        calls("    a, helper = pair\n    redirect_to helper")
+            .iter()
+            .all(|c| c != "helper")
+    );
+    assert!(
+        calls("    for helper in list\n      redirect_to helper\n    end")
+            .iter()
+            .all(|c| c != "helper")
+    );
+    assert!(
+        calls("    begin\n      go\n    rescue => helper\n      redirect_to helper\n    end")
+            .iter()
+            .all(|c| c != "helper")
+    );
+    // A name bound later in the method is still a variable: nothing is
+    // guessed about control flow.
+    assert!(
+        calls("    redirect_to helper\n    helper = 1")
+            .iter()
+            .all(|c| c != "helper")
+    );
+    // A name that carries a label keeps its label handling.
+    assert!(
+        calls("    redirect_to params")
+            .iter()
+            .all(|c| c != "params")
+    );
+}

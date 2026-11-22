@@ -1,0 +1,15 @@
+{
+  "description": "A local, formal and block parameter named like a source helper stay variables",
+  "tags": ["taint", "open-redirect", "ruby", "negative"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_not_match": true,
+      "line_range": [1, 22],
+      "evidence_contains": [],
+      "notes": "No implicit call when the name is bound"
+    }
+  ]
+}

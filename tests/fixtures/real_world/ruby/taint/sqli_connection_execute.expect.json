@@ -1,0 +1,15 @@
+{
+  "description": "Model.connection.execute with an interpolated table name from params",
+  "tags": ["taint", "sqli", "ruby", "activerecord"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [3, 5],
+      "evidence_contains": [],
+      "notes": "The callee text keeps the connection segment so connection.execute matches"
+    }
+  ]
+}

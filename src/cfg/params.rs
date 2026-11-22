@@ -1124,8 +1124,10 @@ fn classify_param_type_rust<'a>(param: Node<'a>, code: &'a [u8]) -> Option<TypeK
 /// is a [`TypeKind::DatabaseConnection`], the same type `Connection::open(..)`
 /// produces for a local, so `conn.execute(sql, params)` resolves to the
 /// type-qualified SQL gate whichever way the handle arrived.  Only the exact
-/// type name qualifies: wrappers (`Arc<Mutex<Connection>>`), pools and
-/// unrelated `*Connection` types stay untyped.
+/// type name qualifies: pools and unrelated `*Connection` types stay untyped.
+/// A connection behind `Arc<Mutex<..>>` is not the receiver of its methods
+/// (the lock guard is), so it is typed through the declaration instead
+/// ([`super::rust_receivers`]).
 fn rust_db_connection_type(t: &str) -> Option<TypeKind> {
     matches!(
         strip_rust_ref_markers(t),
@@ -1170,6 +1172,31 @@ pub(super) fn rust_receiver_alias_frame(
         frame.push((name, prefix));
     }
     frame
+}
+
+/// A Rust type with its reference markers and smart-pointer / lock wrappers
+/// (`Arc`, `Rc`, `Mutex`, `RwLock`, `RefCell`, `Box`, `Option`) peeled:
+/// `&Arc<Mutex<Connection>>` is `Connection`.  Any other generic type is
+/// returned as is.
+pub(super) fn rust_peel_wrappers(t: &str) -> &str {
+    let mut s = strip_rust_ref_markers(t);
+    loop {
+        let Some(lt) = s.find('<') else {
+            return s;
+        };
+        if !s.ends_with('>') {
+            return s;
+        }
+        let head = s[..lt].trim();
+        let leaf = head.rsplit("::").next().unwrap_or(head);
+        if !matches!(
+            leaf,
+            "Arc" | "Rc" | "Mutex" | "RwLock" | "RefCell" | "Box" | "Option"
+        ) {
+            return s;
+        }
+        s = strip_rust_ref_markers(&s[lt + 1..s.len() - 1]);
+    }
 }
 
 /// Strip Rust reference markers, lifetimes, and `mut` from the head of

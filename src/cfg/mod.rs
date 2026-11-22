@@ -42,6 +42,7 @@ mod module_consts;
 mod nested_calls;
 mod params;
 pub(crate) mod python_shapes;
+mod rust_receivers;
 pub mod safe_fields;
 use blocks::{build_begin_rescue, build_switch, build_try, in_duplicate_finally_copy};
 use helpers::{
@@ -5205,12 +5206,19 @@ pub(super) fn push_node<'a>(
     // Java receivers typed only by a declaration (injected fields, formals,
     // locals bound to an untyped call).  Skipped when the node already has a
     // sink: type-qualified resolution only runs on calls with none.
-    let receiver_decl_type =
-        if lang == "java" && !labels.iter().any(|l| matches!(l, DataLabel::Sink(_))) {
-            call_ast.and_then(|cn| java_call_receiver_decl_type(cn, code))
-        } else {
-            None
-        };
+    let receiver_decl_type = if matches!(lang, "java" | "rust")
+        && !labels.iter().any(|l| matches!(l, DataLabel::Sink(_)))
+    {
+        call_ast.and_then(|cn| {
+            if lang == "java" {
+                java_call_receiver_decl_type(cn, code)
+            } else {
+                rust_receivers::call_receiver_decl_type(cn, code)
+            }
+        })
+    } else {
+        None
+    };
 
     let return_escapes = if kind == StmtKind::Return {
         helpers::collect_return_escapes(ast, lang, code)
@@ -6030,7 +6038,10 @@ fn rust_let_decodes_into_dyn(ast: Node, code: &[u8]) -> bool {
         ast
     } else {
         let mut cursor = ast.walk();
-        match ast.children(&mut cursor).find(|c| c.kind() == "let_declaration") {
+        match ast
+            .children(&mut cursor)
+            .find(|c| c.kind() == "let_declaration")
+        {
             Some(d) => d,
             None => return false,
         }
@@ -10774,6 +10785,10 @@ pub(crate) fn build_cfg<'a>(
             *cell.borrow_mut() = collect_python_noreturn_imports(tree.root_node(), code);
         });
     }
+    literals::clear_ruby_scope_bindings();
+    if lang == "rust" {
+        rust_receivers::populate(tree, code);
+    }
     // Receiver-alias frames are scoped to function bodies by guards in
     // `build_sub`; start from an empty stack regardless.
     crate::labels::clear_receiver_aliases();
@@ -10953,6 +10968,8 @@ pub(crate) fn build_cfg<'a>(
     TYPE_ALIAS_LC.with(|cell| cell.borrow_mut().clear());
     LOCAL_RECEIVER_TYPES.with(|cell| cell.borrow_mut().clear());
     PYTHON_NORETURN_IMPORTS.with(|cell| cell.borrow_mut().clear());
+    literals::clear_ruby_scope_bindings();
+    rust_receivers::clear();
     crate::labels::clear_receiver_aliases();
 
     // collect every

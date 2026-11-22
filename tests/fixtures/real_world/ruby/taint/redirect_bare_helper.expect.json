@@ -1,0 +1,15 @@
+{
+  "description": "redirect_to a receiver-less helper that returns request.referrer",
+  "tags": ["taint", "open-redirect", "ruby"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [2, 4],
+      "evidence_contains": [],
+      "notes": "Bare zero-arity helper call as the sink argument"
+    }
+  ]
+}
