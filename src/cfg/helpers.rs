@@ -2894,7 +2894,7 @@ pub(crate) fn php_direct_operand_sources<'a>(
             {
                 out.push((
                     lbl,
-                    first_member_text(operand, code),
+                    first_member_text(operand, code, true),
                     (operand.start_byte(), operand.end_byte()),
                 ));
             }
