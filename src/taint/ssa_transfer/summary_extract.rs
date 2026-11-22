@@ -16,7 +16,7 @@ use super::{
     SsaTaintEvent, SsaTaintTransfer, detect_variant_inner_fact, op_for_value, run_ssa_taint_full,
     transfer_block, transfer_inst,
 };
-use crate::taint::path_state::is_open_redirect_validator_name;
+use crate::taint::path_state::is_redirect_safety_predicate_name;
 
 use crate::cfg::{BodyId, Cfg, FuncSummaries};
 use crate::labels::{Cap, SourceKind};
@@ -1173,7 +1173,7 @@ fn condition_calls_open_redirect_validator(text: &str) -> bool {
                 break;
             }
         }
-        if j < i && is_open_redirect_validator_name(&text[j..i]) {
+        if j < i && is_redirect_safety_predicate_name(&text[j..i]) {
             return true;
         }
     }

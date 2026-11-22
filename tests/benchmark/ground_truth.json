@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 987
+    "corpus_size": 991
   },
   "cases": [
     {
@@ -31438,6 +31438,134 @@
       ],
       "disabled": false,
       "notes": "A boolean helper named for redirect safety (`safe_for_redirect`) guards the redirect target; the else branch replaces it with a constant route."
+    },
+    {
+      "case_id": "py-open_redirect-value-returning-safe-url-001",
+      "file": "python/open_redirect/redirect_value_returning_safe_url.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow",
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ],
+        [
+          16,
+          16
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "safe-redirect-helper",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "`safe_url` and `url_safe_quote` return a value that is truthy for any input, so testing them does not validate the redirect target. Safe twin: py-safe-redirect-is-safe-url-guard-001."
+    },
+    {
+      "case_id": "py-safe-redirect-is-safe-url-guard-001",
+      "file": "python/safe/safe_redirect_is_safe_url_guard.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-open-redirect",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "safe-redirect-helper",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "`is_safe_url` is a named boolean predicate and guards the redirect."
+    },
+    {
+      "case_id": "py-path-startswith-bare-literal-001",
+      "file": "python/path_traversal/path_startswith_bare_literal.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "sibling-prefix",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "Bare literal root without a trailing separator admits a sibling directory (twin of the literal-plus-sep safe case). Safe twin: py-safe-startswith-literal-plus-sep-001."
+    },
+    {
+      "case_id": "py-safe-startswith-literal-plus-sep-001",
+      "file": "python/safe/safe_startswith_literal_plus_sep.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "path-guard",
+        "separator-terminated-root",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "The root is a literal plus os.sep, a directory prefix; only the first literal must not be read as the whole root."
     }
   ]
 }

@@ -1592,7 +1592,7 @@ fn extract_contains_arg(text: &str) -> Option<String> {
 fn extract_starts_with_arg(text: &str) -> Option<String> {
     for method in STARTS_WITH_METHODS {
         if let Some(idx) = text.find(method)
-            && let Some(s) = extract_first_string_literal(&text[idx + method.len()..])
+            && let Some(s) = extract_sole_string_literal(&text[idx + method.len()..])
         {
             return Some(s);
         }
@@ -1604,7 +1604,7 @@ fn extract_starts_with_arg(text: &str) -> Option<String> {
             let inner = &text[idx + func.len()..];
             if let Some(comma_idx) = top_level_comma(inner) {
                 let after_comma = &inner[comma_idx + 1..];
-                if let Some(s) = extract_first_string_literal(after_comma) {
+                if let Some(s) = extract_sole_string_literal(after_comma) {
                     return Some(s);
                 }
             }
@@ -1759,6 +1759,29 @@ fn top_level_comma(text: &str) -> Option<usize> {
         }
     }
     None
+}
+
+/// Like [`extract_first_string_literal`], but only when the literal is the
+/// whole argument (followed by `)` or `,`).  A literal joined to more text
+/// (`"/srv/data" + os.sep`) is not the root's full value.
+fn extract_sole_string_literal(after_open: &str) -> Option<String> {
+    let lit = extract_first_string_literal(after_open)?;
+    let t = after_open.trim_start();
+    let quote = t.as_bytes()[0];
+    let bytes = t.as_bytes();
+    let mut i = 1;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == quote {
+            break;
+        }
+        i += 1;
+    }
+    let rest = t.get(i + 1..)?.trim_start();
+    matches!(rest.as_bytes().first(), Some(b')' | b',')).then_some(lit)
 }
 
 /// Parse a `"..."` / `'...'` literal at the start of a slice (after an
@@ -2862,6 +2885,26 @@ mod tests {
         assert!(axes.contains(&PathRejection::LeadingDotDot));
         assert!(axes.contains(&PathRejection::AbsoluteSlash));
         assert!(!axes.contains(&PathRejection::DotDot));
+    }
+
+    #[test]
+    fn literal_joined_to_more_text_is_not_the_whole_root() {
+        let lock = |r: &str| PathAssertion::PrefixLock(r.to_string());
+        assert_eq!(
+            classify_path_assertion("p.startswith('/srv/data/')"),
+            lock("/srv/data/")
+        );
+        // The literal is only a fragment of the root, so the lock is opaque.
+        for cond in [
+            "p.startswith('/srv/data' + os.sep)",
+            "p.startswith(\"/srv/data\" + sep)",
+        ] {
+            assert_eq!(
+                classify_path_assertion(cond),
+                lock(OPAQUE_PREFIX_LOCK),
+                "{cond}"
+            );
+        }
     }
 
     #[test]

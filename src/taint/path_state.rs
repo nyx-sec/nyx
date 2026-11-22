@@ -1677,15 +1677,40 @@ const VALUE_PRODUCING_PREFIXES: [&str; 14] = [
 /// `url_has_allowed_host_and_scheme`).  Narrower than
 /// [`is_open_redirect_validator_name`], which also admits helpers that return
 /// the confined URL.
-fn is_redirect_safety_predicate_name(leaf: &str) -> bool {
+pub(crate) fn is_redirect_safety_predicate_name(leaf: &str) -> bool {
     let snake = to_snake_lower(leaf);
-    !VALUE_PRODUCING_PREFIXES
+    if VALUE_PRODUCING_PREFIXES
         .iter()
         .any(|p| snake.starts_with(p))
-        && !snake.contains("unsafe")
-        && !snake.contains("not_safe")
-        && is_open_redirect_validator_name(&snake)
+        || snake.contains("unsafe")
+        || snake.contains("not_safe")
+        || !is_open_redirect_validator_name(&snake)
+    {
+        return false;
+    }
+    // A bare `safe_url(x)` / `url_safe_quote(x)` is as likely to return an
+    // escaped or confined value (truthy for any input) as to answer a
+    // question.  Accept the known boolean names, or a name that carries a
+    // predicate verb or states the redirect target is safe.
+    matches!(
+        snake.as_str(),
+        "url_has_allowed_host_and_scheme" | "is_safe_url" | "url_is_safe"
+    ) || BOOLEAN_PREFIXES.iter().any(|p| snake.starts_with(p))
+        || snake.contains("safe_for_redirect")
+        || snake.ends_with("_is_safe")
 }
+
+/// Leading verbs that mark a function as answering a yes/no question.
+const BOOLEAN_PREFIXES: [&str; 8] = [
+    "is_",
+    "has_",
+    "check_",
+    "validate_",
+    "verify_",
+    "can_",
+    "should_",
+    "allow",
+];
 
 /// Subject nouns of a host / address denylist predicate.
 const DENYLIST_SUBJECTS: [&str; 12] = [
@@ -4089,6 +4114,8 @@ mod ghsa_h8cj_hpmg_636v_tests {
             "safe_for_redirect(x) || other",
             "safe_for_redirect(a.b)",
             "is_unsafe_redirect(x)",
+            "safe_url(x)",
+            "url_safe_quote(x)",
         ] {
             assert_ne!(
                 classify_condition(text),
