@@ -237,7 +237,7 @@ fn c_release_behind_short_circuit_still_leaks() {
 }
 
 #[test]
-fn c_subobject_and_aggregate_reads_do_not_move_the_handle() {
+fn c_subobject_aggregate_and_conditional_reads_do_not_move_the_handle() {
     let file = "c_alias_subobject_clean.c";
     assert_no_state_findings(file);
 }

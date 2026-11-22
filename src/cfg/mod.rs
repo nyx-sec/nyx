@@ -1053,6 +1053,23 @@ pub struct AstMeta {
     pub enclosing_func: Option<String>,
 }
 
+/// What a C / C++ assignment's value is, for the resource passes: whether it
+/// copies a whole handle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RhsShape {
+    /// An identifier, a cast of one, or any shape not listed below: the new
+    /// name may hold the handle.
+    #[default]
+    Whole,
+    /// The address of a sub-object (`c = &ac->c`), an aggregate initializer
+    /// (`cc = {.names = names}`) or arithmetic (`q = p + 1`): a different
+    /// value that a tracked handle read by it does not move into.
+    SubObject,
+    /// A field, element or dereference read (`cur = cur->next`): the value
+    /// is another object reached from the handle.
+    Projection,
+}
+
 /// The call a condition header evaluates; see [`NodeInfo::cond_call`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CondCall {
@@ -1116,13 +1133,9 @@ pub struct NodeInfo {
     /// resource that must be released before the function returns.
     #[serde(default)]
     pub escaping_store: bool,
-    /// True when this C / C++ assignment's value is not a copy of a whole
-    /// handle: the address of a sub-object (`c = &ac->c`), an aggregate
-    /// initializer (`cc = {.names = names}`), or arithmetic (`q = p + 1`).
-    /// The resource passes leave a tracked handle read by such a value where
-    /// it is instead of moving it to the new name.
+    /// Shape of this C / C++ assignment's value; see [`RhsShape`].
     #[serde(default)]
-    pub rhs_not_whole_handle: bool,
+    pub rhs_shape: RhsShape,
     /// For If / conditional (ternary) nodes: the condition as a pure
     /// integer-arithmetic + comparison expression tree, when the whole
     /// condition is built only from integer literals, identifiers, arithmetic
@@ -2939,27 +2952,70 @@ fn assignment_rhs_or_self(ast: Node) -> Node {
         .unwrap_or(ast)
 }
 
-/// See [`NodeInfo::rhs_not_whole_handle`].
-fn rhs_is_not_whole_handle(ast: Node) -> bool {
-    let rhs = assignment_rhs_or_self(ast);
+/// See [`RhsShape`].
+fn rhs_shape_of(ast: Node) -> RhsShape {
+    let mut rhs = assignment_rhs_or_self(ast);
     if rhs.id() == ast.id() {
-        return false;
+        // `expression_statement > assignment_expression`
+        let mut cursor = ast.walk();
+        let Some(inner) = ast
+            .named_children(&mut cursor)
+            .find(|c| c.kind() == "assignment_expression")
+            .and_then(|a| a.child_by_field_name("right"))
+        else {
+            return RhsShape::Whole;
+        };
+        rhs = inner;
     }
-    let mut v = unwrap_parens(rhs);
-    // `(char *)p` still copies the handle; look through casts.
+    let v = strip_parens_and_casts(rhs);
+    match v.kind() {
+        "initializer_list"
+        | "compound_literal_expression"
+        | "binary_expression"
+        | "unary_expression"
+        | "sizeof_expression"
+        | "update_expression" => RhsShape::SubObject,
+        "pointer_expression" => {
+            if v.child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == "&")
+            {
+                RhsShape::SubObject
+            } else {
+                RhsShape::Projection
+            }
+        }
+        "field_expression" | "subscript_expression" => RhsShape::Projection,
+        // `c ? a : b` copies a handle only when a branch is one itself.
+        "conditional_expression" => {
+            let copies = ["consequence", "alternative"].iter().any(|f| {
+                v.child_by_field_name(f).is_some_and(|n| {
+                    matches!(
+                        strip_parens_and_casts(n).kind(),
+                        "identifier" | "this" | "conditional_expression"
+                    )
+                })
+            });
+            if copies {
+                RhsShape::Whole
+            } else {
+                RhsShape::SubObject
+            }
+        }
+        _ => RhsShape::Whole,
+    }
+}
+
+/// `v` without enclosing parentheses and C-style casts (`(char *)p`), which
+/// still copy the handle.
+fn strip_parens_and_casts(mut v: Node) -> Node {
+    v = unwrap_parens(v);
     while v.kind() == "cast_expression" {
         let Some(inner) = v.child_by_field_name("value") else {
             break;
         };
         v = unwrap_parens(inner);
     }
-    match v.kind() {
-        "initializer_list" | "compound_literal_expression" | "binary_expression" => true,
-        "pointer_expression" | "unary_expression" => v
-            .child_by_field_name("operator")
-            .is_some_and(|op| op.kind() == "&"),
-        _ => false,
-    }
+    v
 }
 
 fn extract_member_field_name(node: Node, code: &[u8]) -> Option<String> {
@@ -5365,7 +5421,11 @@ pub(super) fn push_node<'a>(
         returned_call_callees: return_escapes.call_callees,
         implicit_return: false,
         escaping_store: assignment_target_is_indirect(ast, lang),
-        rhs_not_whole_handle: matches!(lang, "c" | "cpp") && rhs_is_not_whole_handle(ast),
+        rhs_shape: if matches!(lang, "c" | "cpp") {
+            rhs_shape_of(ast)
+        } else {
+            RhsShape::Whole
+        },
         cond_arith,
         all_args_literal,
         catch_param: false,

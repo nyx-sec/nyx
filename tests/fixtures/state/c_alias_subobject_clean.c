@@ -28,3 +28,15 @@ void sub_pointer(void) {
     *end = 0;
     free(buf);
 }
+
+struct opts { const char *a; const char *b; };
+struct node { int kind; };
+
+const char *pick_by_kind(struct opts *opt) {
+    struct node *n = malloc(sizeof(*n));
+    const char *name;
+    n->kind = 1;
+    name = (n->kind == 2) ? opt->a : opt->b;
+    free(n);
+    return name;
+}

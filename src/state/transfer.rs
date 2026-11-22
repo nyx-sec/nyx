@@ -7,7 +7,7 @@
 use super::domain::{AuthLevel, ChainProxyState, ProductState, ResourceLifecycle};
 use super::engine::Transfer;
 use super::symbol::{SymbolId, SymbolInterner};
-use crate::cfg::{CalleeNesting, EdgeKind, NodeInfo, StmtKind};
+use crate::cfg::{CalleeNesting, EdgeKind, NodeInfo, RhsShape, StmtKind};
 use crate::cfg_analysis::rules::{self, ResourcePair};
 use crate::symbol::Lang;
 use petgraph::graph::NodeIndex;
@@ -1364,9 +1364,23 @@ impl DefaultTransfer<'_> {
             }
             // The address of a sub-object (`c = &ac->c`), an aggregate
             // initializer or arithmetic on a handle is not the handle: it
-            // stays with its own name.
-            if info.rhs_not_whole_handle {
-                return;
+            // stays with its own name.  A projection (`cur = cur->next`) is
+            // another object; rebinding the walker to it drops the name's
+            // claim on the handle it held.
+            match info.rhs_shape {
+                RhsShape::SubObject => return,
+                RhsShape::Projection => {
+                    if info.taint.uses.iter().any(|u| u == def)
+                        && state
+                            .resource
+                            .get(def_sym)
+                            .contains(ResourceLifecycle::OPEN)
+                    {
+                        state.resource.set(def_sym, ResourceLifecycle::MOVED);
+                    }
+                    return;
+                }
+                RhsShape::Whole => {}
             }
             // Reading a field of a handle (`desc = cursor.description`,
             // `n = node->next`) yields a different value; the handle itself
