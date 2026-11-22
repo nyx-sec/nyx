@@ -1004,14 +1004,28 @@ pub fn join_seed_maps(
 /// sibling's surviving bindings conceptually belong to the top-level
 /// scope they all write into.  Every other writer in the pipeline
 /// preserves the owner's id.
+///
+/// `exporter_declared` is the sorted list of names the exporting body
+/// binds itself (formals and locals, see `BodyMeta::declared_names`).
+/// Such a binding is private to the exporter and can never be the
+/// top-level variable of the same name, so it is not exported.  An
+/// empty slice disables the check.
 pub fn filter_seed_to_toplevel(
     seed: &HashMap<BindingKey, VarTaint>,
     toplevel: &HashSet<BindingKey>,
+    exporter_declared: &[String],
 ) -> HashMap<BindingKey, VarTaint> {
     let toplevel_names: HashSet<&str> = toplevel.iter().map(|k| k.name.as_str()).collect();
     let mut out: HashMap<BindingKey, VarTaint> = HashMap::new();
     for (key, taint) in seed.iter() {
         if !toplevel_names.contains(key.name.as_str()) {
+            continue;
+        }
+        let root = key.name.split('.').next().unwrap_or(key.name.as_str());
+        if exporter_declared
+            .binary_search_by(|d| d.as_str().cmp(root))
+            .is_ok()
+        {
             continue;
         }
         let rekeyed = BindingKey::new(key.name.clone(), BodyId(0));

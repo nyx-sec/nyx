@@ -1695,9 +1695,14 @@ fn analyse_multi_body(
                 if let Some(ref d) = info.taint.defines {
                     keys.insert(ssa_transfer::BindingKey::new(d.as_str(), BodyId(0)));
                 }
-                for u in &info.taint.uses {
-                    keys.insert(ssa_transfer::BindingKey::new(u.as_str(), BodyId(0)));
-                }
+            }
+            // Names declared at module scope.  Uses are deliberately not
+            // collected: a top-level node that holds a callback
+            // (`it('x', () => { ... })`) lists every name the nested
+            // closures read, and those belong to the closures, not to the
+            // top level.
+            for d in &top.meta.declared_names {
+                keys.insert(ssa_transfer::BindingKey::new(d.as_str(), BodyId(0)));
             }
             keys
         };
@@ -1769,7 +1774,11 @@ fn analyse_multi_body(
                     continue; // skip top-level itself
                 }
                 if let Some(es) = body_exit_states.get(&body.meta.id) {
-                    let filtered = ssa_transfer::filter_seed_to_toplevel(es, &toplevel_keys);
+                    let filtered = ssa_transfer::filter_seed_to_toplevel(
+                        es,
+                        &toplevel_keys,
+                        &body.meta.declared_names,
+                    );
                     combined_exit = ssa_transfer::join_seed_maps(&combined_exit, &filtered);
                 }
             }
@@ -1885,7 +1894,11 @@ fn analyse_multi_body(
                     // in this same round sees the updated seed via
                     // its `global_seed` ancestor lookup.
                     if use_gauss_seidel {
-                        let filtered = ssa_transfer::filter_seed_to_toplevel(&es, &toplevel_keys);
+                        let filtered = ssa_transfer::filter_seed_to_toplevel(
+                            &es,
+                            &toplevel_keys,
+                            &body.meta.declared_names,
+                        );
                         current_seed = ssa_transfer::join_seed_maps(&current_seed, &filtered);
                         body_exit_states.insert(BodyId(0), current_seed.clone());
                     }

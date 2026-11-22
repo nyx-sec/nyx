@@ -1,0 +1,32 @@
+{
+  "description": "A module-level variable written in one handler and read in another keeps its taint, and a captured local of an enclosing handler still reaches the nested callback.",
+  "tags": [
+    "taint",
+    "two-level",
+    "global",
+    "closure"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [
+        13,
+        13
+      ],
+      "must_match": true,
+      "notes": "shared is a module-level variable written by /set"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [
+        19,
+        19
+      ],
+      "must_match": true,
+      "notes": "v is a captured local of the enclosing handler"
+    }
+  ]
+}

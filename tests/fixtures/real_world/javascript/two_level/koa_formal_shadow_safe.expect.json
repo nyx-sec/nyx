@@ -1,0 +1,24 @@
+{
+  "description": "The ctx formal of one handler does not seed the ctx formal of a sibling handler.",
+  "tags": [
+    "taint",
+    "two-level",
+    "koa",
+    "open-redirect",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "line_range": [
+        1,
+        20
+      ],
+      "must_not_match": true,
+      "notes": "redirect target is built from a server constant"
+    }
+  ]
+}

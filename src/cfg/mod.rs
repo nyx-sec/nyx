@@ -1448,6 +1448,15 @@ pub struct BodyMeta {
     /// input, and the JS/TS handler-param auto-seed paints the decorated
     /// TypeScript formals. Empty for top-level bodies.
     pub param_route_capture: Vec<bool>,
+    /// JS/TS only: names this body binds itself, namely its formals plus
+    /// every `var` / `let` / `const` / destructured binding, function or
+    /// class declaration, `catch` parameter and `for-in` / `for-of` loop
+    /// variable in its own scope (nested functions excluded, their bindings
+    /// belong to them).  The two-level JS/TS solve consults it to keep a
+    /// body's locals out of the top-level seed: only writes to names the
+    /// body does not bind (module-level or captured variables) leave the
+    /// body.  Sorted and deduplicated; empty for other languages.
+    pub declared_names: Vec<String>,
 }
 
 /// A single executable body's CFG plus metadata.
@@ -8775,6 +8784,90 @@ impl PendingStores {
     }
 }
 
+fn is_js_ts_lang(lang: &str) -> bool {
+    matches!(lang, "javascript" | "typescript" | "tsx")
+}
+
+/// Collect the names a JS/TS scope binds itself into `out` (see
+/// [`BodyMeta::declared_names`]).  `root` is the function node (`is_fn`) or
+/// the program root; nested function and class bodies are not entered.
+fn collect_js_declared_names(root: Node, code: &[u8], is_fn: bool, out: &mut Vec<String>) {
+    fn pattern_names(n: Node, code: &[u8], out: &mut Vec<String>) {
+        match n.kind() {
+            "identifier" | "shorthand_property_identifier_pattern" => {
+                if let Some(t) = node_str(n, code) {
+                    out.push(t.to_string());
+                }
+            }
+            "pair_pattern" => {
+                if let Some(v) = n.child_by_field_name("value") {
+                    pattern_names(v, code, out);
+                }
+            }
+            "assignment_pattern" | "object_assignment_pattern" => {
+                if let Some(l) = n.child_by_field_name("left") {
+                    pattern_names(l, code, out);
+                }
+            }
+            "object_pattern" | "array_pattern" | "rest_pattern" => {
+                let mut cursor = n.walk();
+                for c in n.named_children(&mut cursor) {
+                    pattern_names(c, code, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn walk(n: Node, code: &[u8], out: &mut Vec<String>) {
+        match n.kind() {
+            "variable_declarator" => {
+                if let Some(name) = n.child_by_field_name("name") {
+                    pattern_names(name, code, out);
+                }
+            }
+            "catch_clause" => {
+                if let Some(p) = n.child_by_field_name("parameter") {
+                    pattern_names(p, code, out);
+                }
+            }
+            "for_in_statement" => {
+                // Only a declaring loop (`for (const x of ..)`) binds `x`.
+                if n.child_by_field_name("kind").is_some()
+                    && let Some(l) = n.child_by_field_name("left")
+                {
+                    pattern_names(l, code, out);
+                }
+            }
+            "function_declaration" | "generator_function_declaration" | "class_declaration" => {
+                if let Some(name) = n.child_by_field_name("name") {
+                    pattern_names(name, code, out);
+                }
+                return;
+            }
+            "function_expression"
+            | "function"
+            | "generator_function"
+            | "arrow_function"
+            | "method_definition"
+            | "class"
+            | "class_expression" => return,
+            _ => {}
+        }
+        let mut cursor = n.walk();
+        for c in n.children(&mut cursor) {
+            walk(c, code, out);
+        }
+    }
+    if is_fn {
+        let mut cursor = root.walk();
+        for c in root.children(&mut cursor) {
+            walk(c, code, out);
+        }
+    } else {
+        walk(root, code, out);
+    }
+}
+
 /// Flag nodes of a C / C++ / Go / Java body that assign a name the function
 /// never declares (a global, package variable or unqualified field).  See
 /// [`NodeInfo::escaping_store`].
@@ -10163,6 +10256,18 @@ pub(super) fn build_sub<'a>(
             mark_nonlocal_defines(&mut fn_graph, ast, lang, code, &param_names);
 
             // ── 6) Push BodyCfg ───────────────────────────────────────────────
+            let declared_names = if is_js_ts_lang(lang) {
+                let mut names = param_names.clone();
+                for fields in &param_destructured_fields {
+                    names.extend(fields.iter().cloned());
+                }
+                collect_js_declared_names(ast, code, true, &mut names);
+                names.sort_unstable();
+                names.dedup();
+                names
+            } else {
+                Vec::new()
+            };
             let auth_decorators = extract_auth_decorators(ast, lang, code);
             let route_captures = extract_route_path_captures(ast, lang, code);
             let param_route_capture: Vec<bool> = if lang == "java" {
@@ -10196,6 +10301,7 @@ pub(super) fn build_sub<'a>(
                     func_key: Some(body_func_key),
                     auth_decorators,
                     param_route_capture,
+                    declared_names,
                 },
                 graph: fn_graph,
                 entry: fn_entry,
@@ -10837,6 +10943,15 @@ pub(crate) fn build_cfg<'a>(
     }
 
     // Insert top-level body at position 0.
+    let top_declared_names = if is_js_ts_lang(lang) {
+        let mut names = Vec::new();
+        collect_js_declared_names(tree.root_node(), code, false, &mut names);
+        names.sort_unstable();
+        names.dedup();
+        names
+    } else {
+        Vec::new()
+    };
     let toplevel = BodyCfg {
         meta: BodyMeta {
             id: BodyId(0),
@@ -10851,6 +10966,7 @@ pub(crate) fn build_cfg<'a>(
             func_key: None,
             auth_decorators: Vec::new(),
             param_route_capture: Vec::new(),
+            declared_names: top_declared_names,
         },
         graph: g,
         entry,

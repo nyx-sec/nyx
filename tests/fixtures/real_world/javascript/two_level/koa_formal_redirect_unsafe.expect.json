@@ -1,0 +1,23 @@
+{
+  "description": "A real request-derived redirect target still fires with sibling handlers present.",
+  "tags": [
+    "taint",
+    "two-level",
+    "koa",
+    "open-redirect"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "line_range": [
+        11,
+        11
+      ],
+      "must_match": true,
+      "notes": "ctx.query.next reaches ctx.redirect"
+    }
+  ]
+}

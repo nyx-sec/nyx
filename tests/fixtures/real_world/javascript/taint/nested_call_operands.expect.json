@@ -7,7 +7,7 @@
       "rule_id": "taint-unsanitised-flow",
       "must_match": true,
       "line_range": [13, 13],
-      "notes": "escapeHtml wraps req.query.name only; req.query.bio is concatenated raw"
+      "notes": "escapeHtml wraps req.query.name only; bio (read from req.query.bio) is concatenated raw"
     },
     {
       "rule_id": "taint-unsanitised-flow",
