@@ -811,6 +811,16 @@ pub(crate) fn push_origin_bounded(
     target: &mut SmallVec<[TaintOrigin; 2]>,
     new: TaintOrigin,
 ) -> bool {
+    push_origin_bounded_with_cap(target, new, effective_max_origins())
+}
+
+/// [`push_origin_bounded`] with the cap already resolved, so loops that
+/// push many origins read it once instead of once per push.
+fn push_origin_bounded_with_cap(
+    target: &mut SmallVec<[TaintOrigin; 2]>,
+    new: TaintOrigin,
+    cap: usize,
+) -> bool {
     // Identity check: same node counts as the same origin.  We keep
     // node-only dedup to match [`ssa_vars_leq`], which compares origin
     // sets by node membership, widening dedup here without tightening
@@ -819,7 +829,6 @@ pub(crate) fn push_origin_bounded(
         return true;
     }
 
-    let cap = effective_max_origins();
     let new_key = origin_sort_key(&new);
 
     if target.len() < cap {
@@ -868,17 +877,35 @@ pub(super) fn merge_origins(
     a: &SmallVec<[TaintOrigin; 2]>,
     b: &SmallVec<[TaintOrigin; 2]>,
 ) -> SmallVec<[TaintOrigin; 2]> {
+    let cap = effective_max_origins();
+
+    // Steady-state fast path: a converged worklist join mostly merges a
+    // set with one of its own subsets.  When `a` is already a strictly
+    // sorted, node-unique list within the cap and every node of `b` is in
+    // `a`, folding both through `push_origin_bounded` would rebuild `a`
+    // unchanged with no drops, so hand `a` back directly.
+    if a.len() <= cap
+        && b.iter().all(|o| a.iter().any(|x| x.node == o.node))
+        && a.windows(2)
+            .all(|w| origin_sort_key(&w[0]) < origin_sort_key(&w[1]))
+        && a.iter()
+            .enumerate()
+            .all(|(i, x)| a[..i].iter().all(|y| y.node != x.node))
+    {
+        return a.clone();
+    }
+
     // Seed the result with `a`, but re-sort defensively in case the
     // caller constructed `a` through non-bounded paths.  Historically
     // every write goes through `push_origin_bounded` (or `merge_origins`
     // itself), so this resort is a no-op on the steady state but costs
-    // nothing at cap sizes ≤ 32.
+    // nothing at cap sizes <= 32.
     let mut merged: SmallVec<[TaintOrigin; 2]> = SmallVec::new();
     for o in a.iter().copied() {
-        push_origin_bounded(&mut merged, o);
+        push_origin_bounded_with_cap(&mut merged, o, cap);
     }
     for o in b.iter().copied() {
-        push_origin_bounded(&mut merged, o);
+        push_origin_bounded_with_cap(&mut merged, o, cap);
     }
     merged
 }
