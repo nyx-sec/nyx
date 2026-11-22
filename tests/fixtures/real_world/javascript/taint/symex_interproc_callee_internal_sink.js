@@ -9,5 +9,5 @@ function processAndStore(input) {
 
 app.get('/log', function(req, res) {
     var count = processAndStore(req.query.msg);
-    res.json({ count: count });
+    res.send(String(count));
 });

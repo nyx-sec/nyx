@@ -1,0 +1,23 @@
+{
+  "description": "Express res.json sends application/json, so it is not a direct XSS sink.",
+  "tags": [
+    "taint",
+    "xss",
+    "express",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": false,
+      "line_range": [
+        6,
+        13
+      ],
+      "notes": "res.json is not modelled as an XSS sink"
+    }
+  ]
+}

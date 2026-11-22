@@ -1,0 +1,23 @@
+{
+  "description": "Koa serialises an object or array ctx.body as application/json, so it is not a direct XSS sink.",
+  "tags": [
+    "taint",
+    "xss",
+    "koa",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_match": false,
+      "line_range": [
+        6,
+        14
+      ],
+      "notes": "object and array literal bodies are JSON responses"
+    }
+  ]
+}

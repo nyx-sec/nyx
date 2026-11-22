@@ -10988,7 +10988,7 @@ fn sql_result_flow_caps(
 }
 
 /// The rows a parameterised query returns do not carry the bound value's
-/// taint, so reaching `res.json` is clean (JS, pg-style gate).
+/// taint, so reaching `res.send` is clean (JS, pg-style gate).
 #[test]
 fn js_sql_bind_param_result_is_clean() {
     let src = br#"const { Pool } = require('pg');
@@ -10996,7 +10996,7 @@ const pool = new Pool();
 async function handler(req, res) {
   const id = req.query.id;
   const r = await pool.query('SELECT * FROM users WHERE id = $1', [id]);
-  res.json(r.rows);
+  res.send(r.rows);
 }
 "#;
     let ts = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);
@@ -11016,7 +11016,7 @@ const pool = new Pool();
 async function handler(req, res) {
   const id = req.query.id;
   const r = await pool.query('SELECT * FROM users WHERE id = ' + id);
-  res.json(r.rows);
+  res.send(r.rows);
 }
 "#;
     let ts = tree_sitter::Language::from(tree_sitter_javascript::LANGUAGE);

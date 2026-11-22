@@ -8,5 +8,5 @@ const previewService = require("./previewService");
 function handlePreview(req, res) {
     const url = req.query.url;
     const result = previewService.fetchUrl(url);
-    res.json(result);
+    res.send(result);
 }

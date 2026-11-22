@@ -3772,6 +3772,7 @@ pub(super) fn push_node<'a>(
         if let Some(assign) = assign_node
             && let Some(lhs) = assign.child_by_field_name("left")
             && let Some(l) = classify_assignment_lhs(lhs, lang, code, extra)
+            && !is_koa_json_body_assignment(assign, lhs, lang, code, &l)
             && (!rhs_source_only || matches!(l, DataLabel::Sink(_)))
         {
             if rhs_source_only {
@@ -3821,6 +3822,7 @@ pub(super) fn push_node<'a>(
             ) && !rhs_is_function_literal(ast, lang)))
         && let Some(found) = first_member_label(ast, lang, code, extra)
         && (!is_bare_return || matches!(found, DataLabel::Source(_)))
+        && !is_koa_json_body_node(ast, lang, code, &found)
     {
         let hoisted_is_sink = matches!(found, DataLabel::Sink(_));
         labels.push(found);
@@ -7574,6 +7576,55 @@ fn pp_extract_eq_compare(expr: Node, code: &[u8]) -> Option<(String, String)> {
     None
 }
 
+/// `is_koa_json_body_assignment` for a statement node that is, or wraps, the
+/// assignment.  Only reached after a Sink label was found, so the lookups
+/// stay off the common path.
+fn is_koa_json_body_node(ast: Node, lang: &str, code: &[u8], label: &DataLabel) -> bool {
+    if !matches!(lang, "javascript" | "typescript" | "tsx")
+        || !matches!(label, DataLabel::Sink(c) if *c == Cap::HTML_ESCAPE)
+    {
+        return false;
+    }
+    let assign = if matches!(lookup(lang, ast.kind()), Kind::Assignment) {
+        Some(ast)
+    } else {
+        let mut cursor = ast.walk();
+        ast.children(&mut cursor)
+            .find(|c| matches!(lookup(lang, c.kind()), Kind::Assignment))
+    };
+    assign
+        .and_then(|a| a.child_by_field_name("left").map(|l| (a, l)))
+        .is_some_and(|(a, l)| is_koa_json_body_assignment(a, l, lang, code, label))
+}
+
+/// Koa serialises an object or array `ctx.body` as JSON with
+/// `Content-Type: application/json`, so assigning a literal of that shape is
+/// not a direct XSS sink.  A string, template, identifier or call value keeps
+/// the sink because Koa may send it as `text/html`.
+fn is_koa_json_body_assignment(
+    assign: Node,
+    lhs: Node,
+    lang: &str,
+    code: &[u8],
+    label: &DataLabel,
+) -> bool {
+    if !matches!(lang, "javascript" | "typescript" | "tsx")
+        || !matches!(label, DataLabel::Sink(c) if *c == Cap::HTML_ESCAPE)
+        || lhs.kind() != "member_expression"
+    {
+        return false;
+    }
+    let Some(rhs) = assign.child_by_field_name("right") else {
+        return false;
+    };
+    if !matches!(rhs.kind(), "object" | "array") {
+        return false;
+    }
+    member_expr_text(lhs, code).is_some_and(|t| {
+        t.eq_ignore_ascii_case("ctx.body") || t.eq_ignore_ascii_case("ctx.response.body")
+    })
+}
+
 /// Label of an assignment target (`el.innerHTML`, `location.href`,
 /// `res.headers['X']`).  The full member path is tried first (`location.href`,
 /// more specific and avoids false positives on `a.href`), then the property
@@ -7668,10 +7719,11 @@ fn pre_emit_sink_assignment_sources(
             Some(r.extra_labels.as_slice())
         }
     });
-    if !matches!(
-        classify_assignment_lhs(lhs, lang, code, extra),
-        Some(DataLabel::Sink(_))
-    ) {
+    let Some(target_label @ DataLabel::Sink(_)) = classify_assignment_lhs(lhs, lang, code, extra)
+    else {
+        return (effective_preds, names);
+    };
+    if is_koa_json_body_assignment(assign, lhs, lang, code, &target_label) {
         return (effective_preds, names);
     }
     let mut found: Vec<(Node, Cap, String)> = Vec::new();

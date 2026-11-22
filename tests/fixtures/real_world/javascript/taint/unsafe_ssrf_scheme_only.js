@@ -1,10 +1,9 @@
 var express = require('express');
 var app = express();
 
-app.get('/proxy', function(req, res) {
+app.get('/proxy', async function(req, res) {
     var target = req.query.host;
     var url = 'https://' + target;
-    fetch(url).then(function(response) {
-        res.json(response);
-    });
+    var response = await fetch(url);
+    res.send('done');
 });

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 973
+    "corpus_size": 979
   },
   "cases": [
     {
@@ -30961,6 +30961,174 @@
       ],
       "disabled": false,
       "notes": "File.basename keeps only the final component."
+    },
+    {
+      "case_id": "js-xss-koa-ctx-body-string-001",
+      "file": "javascript/xss/xss_koa_ctx_body_string.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "koa",
+        "ctx.body"
+      ],
+      "disabled": false,
+      "notes": "Koa ctx.body assigned a string built from request data can be served as text/html"
+    },
+    {
+      "case_id": "js-safe-koa-ctx-body-json-literal-001",
+      "file": "javascript/safe/safe_koa_ctx_body_json_literal.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "koa",
+        "json"
+      ],
+      "disabled": false,
+      "notes": "Koa ctx.body object and array literals are sent as application/json, not modelled as XSS sinks"
+    },
+    {
+      "case_id": "js-safe-express-res-json-001",
+      "file": "javascript/safe/safe_express_res_json.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "express",
+        "json"
+      ],
+      "disabled": false,
+      "notes": "Express res.json sends application/json, not modelled as an XSS sink"
+    },
+    {
+      "case_id": "ts-xss-koa-ctx-body-string-001",
+      "file": "typescript/xss/xss_koa_ctx_body_string.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "koa",
+        "ctx.body"
+      ],
+      "disabled": false,
+      "notes": "Koa ctx.body assigned a template string built from request data can be served as text/html"
+    },
+    {
+      "case_id": "ts-safe-koa-ctx-body-json-literal-001",
+      "file": "typescript/safe/safe_koa_ctx_body_json_literal.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "koa",
+        "json"
+      ],
+      "disabled": false,
+      "notes": "Koa ctx.body object and array literals are sent as application/json, not modelled as XSS sinks"
+    },
+    {
+      "case_id": "ts-safe-express-res-json-001",
+      "file": "typescript/safe/safe_express_res_json.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "express",
+        "json"
+      ],
+      "disabled": false,
+      "notes": "Express res.json sends application/json, not modelled as an XSS sink"
     }
   ]
 }
