@@ -8572,6 +8572,12 @@ fn rust_dyn_let_annotation_makes_toml_decode_a_sink() {
     assert!(!rust_has_deserialize_sink(
         b"fn f(s: &str) { let v: Box<Config> = toml::from_str(s).unwrap(); }"
     ));
+    assert!(!rust_has_deserialize_sink(
+        b"fn f(s: &str) { let v: Result<Config, Box<dyn Error>> = toml::from_str(s); }"
+    ));
+    assert!(rust_has_deserialize_sink(
+        b"fn f(s: &str) { let v: Result<Box<dyn P>, E> = toml::from_str(s); }"
+    ));
     assert!(
         !rust_has_deserialize_sink(
             b"fn f(s: &str) { let (a, b): (Box<dyn P>, X) = (build(), toml::from_str(s)?); }"

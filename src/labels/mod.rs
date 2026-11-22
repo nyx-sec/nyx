@@ -2541,7 +2541,7 @@ fn is_polymorphic_decode(text: &str, stripped: &str) -> bool {
     };
     let generic = &text[at..];
     let generic = generic.split('(').next().unwrap_or(generic);
-    rust_target_is_dyn(generic)
+    rust_decode_target_is_dyn(generic)
 }
 
 /// Whether `head` (a callee path with no turbofish or arguments) is a
@@ -2552,6 +2552,54 @@ pub(crate) fn is_polymorphic_decode_head(head: &str) -> bool {
         "toml::from_str" | "toml::from_slice" | "ron::from_str" | "ron::from_bytes"
     ) || head.ends_with("::toml::from_str")
         || head.ends_with("::ron::from_str")
+}
+
+/// Whether the value a decode produces is a trait object, given the type
+/// text of an annotation or turbofish (`Box<dyn P>`, `Result<Box<dyn P>, E>`,
+/// `::<Box<dyn P>>`).  `Result` and `Option` are unwrapped to their first
+/// generic argument, so a `dyn` in the error type (`Box<dyn Error>`) does not
+/// count.
+pub(crate) fn rust_decode_target_is_dyn(type_text: &str) -> bool {
+    let mut t = type_text.trim();
+    t = t.strip_prefix("::").unwrap_or(t).trim_start();
+    // A turbofish group: keep only the text up to its closing `>`.
+    let mut ty = t;
+    if let Some(inner) = t.strip_prefix('<') {
+        ty = inner;
+    }
+    loop {
+        let ty_trim = ty.trim_start();
+        let Some(lt) = ty_trim.find('<') else {
+            return rust_target_is_dyn(ty_trim);
+        };
+        let head = ty_trim[..lt].trim();
+        let name = head.rsplit("::").next().unwrap_or(head).trim();
+        if name != "Result" && name != "Option" {
+            return rust_target_is_dyn(ty_trim);
+        }
+        // First generic argument, up to a top-level comma or the closing `>`.
+        let rest = &ty_trim[lt + 1..];
+        let mut depth = 0i32;
+        let mut end = rest.len();
+        for (i, c) in rest.char_indices() {
+            match c {
+                '<' | '(' | '[' => depth += 1,
+                '>' | ')' | ']' => {
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                    depth -= 1;
+                }
+                ',' if depth == 0 => {
+                    end = i;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        ty = &rest[..end];
+    }
 }
 
 /// Whether a Rust type text names a trait object (`Box<dyn Plugin>`), as a

@@ -1,0 +1,24 @@
+{
+  "description": "env::var flows to toml::from_str whose Result annotation holds a trait object value",
+  "tags": [
+    "taint",
+    "deserialization",
+    "dyn"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        9,
+        9
+      ],
+      "evidence_contains": [],
+      "notes": "dyn is the Ok type of the Result"
+    }
+  ]
+}

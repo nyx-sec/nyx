@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 999
+    "corpus_size": 1001
   },
   "cases": [
     {
@@ -31743,6 +31743,68 @@
       ],
       "disabled": false,
       "notes": "A local, formal and block parameter named like a source helper stay variables"
+    },
+    {
+      "case_id": "rs-deser-toml-result-dyn-value",
+      "file": "rust/deser/deser_toml_result_dyn_value.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "deser",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "toml",
+        "dyn",
+        "let-annotation"
+      ],
+      "disabled": false,
+      "notes": "Result<Box<dyn P>, E> annotation: the decoded value is a trait object"
+    },
+    {
+      "case_id": "rs-safe-toml-result-dyn-error",
+      "file": "rust/safe/safe_toml_result_dyn_error.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "CWE-502",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": null,
+      "expected_sink_lines": null,
+      "expected_source_lines": null,
+      "tags": [
+        "toml",
+        "let-annotation",
+        "config"
+      ],
+      "disabled": false,
+      "notes": "dyn appears only in the Result error type; the decoded value is a concrete Config"
     }
   ]
 }

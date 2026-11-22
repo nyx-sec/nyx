@@ -6055,7 +6055,7 @@ fn rust_let_decodes_into_dyn(ast: Node, code: &[u8]) -> bool {
     let (Some(ty_text), Some(value_text)) = (text_of(ty, code), text_of(value, code)) else {
         return false;
     };
-    crate::labels::rust_target_is_dyn(&ty_text)
+    crate::labels::rust_decode_target_is_dyn(&ty_text)
         && crate::labels::is_polymorphic_decode_head(
             value_text.split('(').next().unwrap_or("").trim(),
         )
