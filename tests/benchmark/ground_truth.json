@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 1253
+    "corpus_size": 1259
   },
   "cases": [
     {
@@ -40214,6 +40214,195 @@
       ],
       "disabled": false,
       "notes": "Safe twin of go-redirect-trim-aliased-001: the closure only reads the trimmed value, so the origin lock stands."
+    },
+    {
+      "case_id": "js-auth-r2-001",
+      "file": "javascript/auth/mongoose_update_doc_owner_missing.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ],
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "mongoose-update-doc"
+      ],
+      "disabled": false,
+      "notes": "An actor id inside the update document is a value being written, not a scope: the filter holds only the request id"
+    },
+    {
+      "case_id": "js-auth-r2-002",
+      "file": "javascript/auth/mongoose_filter_owner_safe.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "mongoose-update-doc"
+      ],
+      "disabled": false,
+      "notes": "An actor pin inside the filter (first argument) scopes the update to the caller"
+    },
+    {
+      "case_id": "rs-auth-r2-001",
+      "file": "rust/auth/transitive_row_check_safe.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "derived-row"
+      ],
+      "disabled": false,
+      "notes": "The community is fetched through the tag row's own foreign key and then checked, which authorises the tag id too"
+    },
+    {
+      "case_id": "rs-auth-r2-002",
+      "file": "rust/auth/transitive_row_check_missing.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          8,
+          8
+        ],
+        [
+          10,
+          10
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "derived-row"
+      ],
+      "disabled": false,
+      "notes": "Both rows are fetched but no check runs on either, so the tag update by request id is unauthorised"
+    },
+    {
+      "case_id": "rs-auth-r2-003",
+      "file": "rust/auth/owner_compare_guard_safe.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "owner-compare"
+      ],
+      "disabled": false,
+      "notes": "`if local_user_view.person.id != orig.creator_id { return Err }` after the fetch is an ownership check on the row"
+    },
+    {
+      "case_id": "rs-auth-r2-004",
+      "file": "rust/auth/owner_compare_guard_missing.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ],
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "owner-compare"
+      ],
+      "disabled": false,
+      "notes": "The row is fetched and updated by request id without comparing its creator to the caller"
     }
   ]
 }

@@ -460,6 +460,72 @@ module.exports = router;
     }
 
     #[test]
+    fn mongoose_update_document_owner_is_a_write_not_a_scope() {
+        let src = "\
+const express = require('express');
+const router = express.Router();
+router.post('/a/:id', requireLogin, async (req, res) => {
+  await Note.findOneAndUpdate({ _id: req.params.id }, { owner: req.user.id });
+  await Note.findByIdAndUpdate(req.params.id, { owner: req.user.id });
+  await Note.updateOne({ _id: req.params.id }, { $set: { owner: req.user.id } });
+  await Note.updateMany({ _id: req.params.id }, { $set: { owner: req.user.id } });
+  res.json({ ok: true });
+});
+router.post('/b/:id', requireLogin, async (req, res) => {
+  await Note.findOneAndUpdate({ _id: req.params.id, owner: req.user.id }, { title: req.body.title });
+  await Note.updateOne({ _id: req.params.id, owner: req.user.id }, { $set: { title: req.body.title } });
+  res.json({ ok: true });
+});
+module.exports = router;
+";
+        let found = rules("javascript", "routes.js", src);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![4, 5, 6, 7],
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn rust_owner_compare_guard_and_derived_row_check_cover_the_request_id() {
+        let src = "\
+pub async fn edit(Json(data): Json<Edit>, context: Data<Ctx>, local_user_view: LocalUserView) -> R {
+  let orig = Message::read(&mut context.pool(), data.message_id).await?;
+  if local_user_view.person.id != orig.creator_id {
+    return Err(Denied.into());
+  }
+  Message::update(&mut context.pool(), data.message_id, &data.content).await?;
+  Ok(Json(()))
+}
+pub async fn edit_bad(Json(data): Json<Edit>, context: Data<Ctx>, local_user_view: LocalUserView) -> R {
+  let orig = Message::read(&mut context.pool(), data.message_id).await?;
+  Message::update(&mut context.pool(), data.message_id, &data.content).await?;
+  Ok(Json(()))
+}
+pub async fn tag(Json(data): Json<Del>, context: Data<Ctx>, local_user_view: LocalUserView) -> R {
+  let tag = Tag::read(&mut context.pool(), data.tag_id).await?;
+  let community = Community::read(&mut context.pool(), tag.community_id).await?;
+  check_community_mod_action(&local_user_view, &community, false, &mut context.pool()).await?;
+  Tag::update(&mut context.pool(), data.tag_id, &data.form).await?;
+  Ok(Json(()))
+}
+pub async fn tag_bad(Json(data): Json<Del>, context: Data<Ctx>, local_user_view: LocalUserView) -> R {
+  let tag = Tag::read(&mut context.pool(), data.tag_id).await?;
+  let community = Community::read(&mut context.pool(), data.other_id).await?;
+  check_community_mod_action(&local_user_view, &community, false, &mut context.pool()).await?;
+  Tag::update(&mut context.pool(), data.tag_id, &data.form).await?;
+  Ok(Json(()))
+}
+";
+        let found = rules("rust", "api.rs", src);
+        assert_eq!(
+            lines(&found, "missing_ownership_check"),
+            vec![10, 11, 19, 21, 22, 23],
+            "{found:?}"
+        );
+    }
+
+    #[test]
     fn route_parameter_named_owner_id_is_not_the_caller() {
         let src = "\
 from fastapi import FastAPI

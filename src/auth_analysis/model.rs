@@ -199,6 +199,12 @@ pub struct SensitiveOperation {
     /// `Note.objects.filter(owner=request.user).update(..)`); the rest are the
     /// call's own arguments.
     pub receiver_subjects: usize,
+    /// For filter-then-update calls (`Model.findOneAndUpdate(filter, update)`,
+    /// `updateOne`, `replaceOne`, ..): the index in `subjects` where the
+    /// written documents start.  Everything from here on is a value being
+    /// stored, never a selector, so an actor id there does not scope the
+    /// query.  `None` for every other call.
+    pub payload_subjects_start: Option<usize>,
     pub span: (usize, usize),
     pub line: usize,
     pub text: String,
