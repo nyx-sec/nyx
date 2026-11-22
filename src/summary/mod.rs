@@ -2024,7 +2024,7 @@ impl GlobalSummaries {
 
         let mut widened = false;
         let (mut arity_n, mut arity_first) = tally(all, |k| arity_ok(q, k, widened));
-        if arity_n == 0 && q.arity.is_some() {
+        if arity_n == 0 && q.arity.is_some() && q.caller_lang.allows_under_application() {
             // Exact-arity match found nothing. Tolerate under-application:
             // `FuncKey::arity` is the *total* parameter count, so a call
             // supplying `a` arguments to a function declared with more
