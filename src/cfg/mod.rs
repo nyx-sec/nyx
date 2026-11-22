@@ -5785,9 +5785,10 @@ pub(crate) fn java_declared_receiver_kind(
         // Output streams and writers that sit on a file or memory buffer.
         // `PrintStream` / `DataOutputStream` / `ObjectOutputStream` are left
         // out too: they wrap any stream, including the servlet response
-        // (`new PrintStream(resp.getOutputStream())`).  `PrintWriter` / `Writer` / `OutputStream` /
-        // `ServletOutputStream` / `BufferedWriter` are left out because
-        // servlet code declares the response writer with those types.
+        // (`new PrintStream(resp.getOutputStream())`).  `PrintWriter` /
+        // `Writer` / `OutputStream` / `ServletOutputStream` /
+        // `BufferedWriter` are left out because servlet code declares the
+        // response writer with those types.
         "FileOutputStream" | "FileWriter" | "ByteArrayOutputStream" | "StringWriter" => {
             Some(TypeKind::FileHandle)
         }

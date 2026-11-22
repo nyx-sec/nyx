@@ -7563,12 +7563,17 @@ class T {
 fn java_response_write_sink_keeps_declared_stream_type() {
     use crate::ssa::type_facts::TypeKind;
     let src = br#"
+import java.io.FileWriter;
 import java.io.PrintStream;
 import java.io.PrintWriter;
+import java.io.StringWriter;
 class T {
+    FileWriter log;
     PrintStream err;
     PrintWriter out;
-    void f(String m, java.io.DataOutputStream peer) throws Exception {
+    void f(String m, java.io.DataOutputStream peer, StringWriter buf) throws Exception {
+        log.write(m);
+        buf.write(m);
         err.println(m);
         out.println(m);
         peer.write(m.getBytes());
@@ -7584,8 +7589,14 @@ class T {
             .1
             .clone()
     };
-    assert_eq!(kind_of("err.println"), Some(TypeKind::FileHandle));
-    assert_eq!(kind_of("peer.write"), Some(TypeKind::FileHandle));
+    // File and memory writers can never be the servlet response.
+    assert_eq!(kind_of("log.write"), Some(TypeKind::FileHandle));
+    assert_eq!(kind_of("buf.write"), Some(TypeKind::FileHandle));
+    // Wrapping streams can sit on the response
+    // (`new PrintStream(resp.getOutputStream())`), and a PrintWriter is the
+    // servlet response writer type, so none of them drops the sink.
+    assert_eq!(kind_of("err.println"), None);
+    assert_eq!(kind_of("peer.write"), None);
     assert_eq!(
         kind_of("out.println"),
         None,
