@@ -19,16 +19,14 @@ use smallvec::SmallVec;
 use tree_sitter::Node;
 
 /// PHP expressions that wrap a call without hiding it: `!unlink($p)`,
-/// `@unlink($p)`, `(unlink($p))` and `(bool) unlink($p)`. They are searched
-/// through like `await`, so `$ok = !unlink($p)` still exposes its call.
+/// `@unlink($p)` and `(unlink($p))`. They are searched through like `await`,
+/// so `$ok = !unlink($p)` still exposes its call. Casts are left opaque: a
+/// numeric cast of a call is handled as a number (see `yields_number`).
 fn is_php_value_wrapper(lang: &str, n: Node) -> bool {
     lang == "php"
         && matches!(
             n.kind(),
-            "unary_op_expression"
-                | "parenthesized_expression"
-                | "error_suppression_expression"
-                | "cast_expression"
+            "unary_op_expression" | "parenthesized_expression" | "error_suppression_expression"
         )
 }
 

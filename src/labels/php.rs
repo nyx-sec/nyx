@@ -59,10 +59,17 @@ pub static RULES: &[LabelRule] = &[
             "headers.get",
             "cookies.get",
             "files.get",
-            "server.get",
         ],
         label: DataLabel::Source(Cap::all()),
         case_sensitive: false,
+    },
+    // The `$_SERVER` bag of a request (`$request->server->get('X')`).  Case
+    // sensitive: Nextcloud's `\OCP\Server::get(Foo::class)` is a service
+    // locator lookup, not request data.
+    LabelRule {
+        matchers: &["server.get"],
+        label: DataLabel::Source(Cap::all()),
+        case_sensitive: true,
     },
     // ───────── Sanitizers ──────────
     LabelRule {

@@ -1,0 +1,23 @@
+{
+  "description": "Server::get(Foo::class) is a service locator lookup, not a request bag read, so values derived from it must not be treated as attacker input.",
+  "tags": [
+    "taint",
+    "source",
+    "service-locator",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        1,
+        8
+      ],
+      "notes": "No source in this file."
+    }
+  ]
+}
