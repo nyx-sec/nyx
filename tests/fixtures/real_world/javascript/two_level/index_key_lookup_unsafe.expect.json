@@ -1,0 +1,30 @@
+{
+  "description": "Element reads keep the container taint, and an echoed key stays tainted.",
+  "tags": [
+    "taint",
+    "index-read"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [
+        8,
+        8
+      ],
+      "must_match": true,
+      "notes": "name is echoed into HTML"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [
+        15,
+        15
+      ],
+      "must_match": true,
+      "notes": "item is read out of a tainted container"
+    }
+  ]
+}

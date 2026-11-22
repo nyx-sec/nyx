@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 973
+    "corpus_size": 981
   },
   "cases": [
     {
@@ -30961,6 +30961,250 @@
       ],
       "disabled": false,
       "notes": "File.basename keeps only the final component."
+    },
+    {
+      "case_id": "js-safe-closure-local-sibling-001",
+      "file": "javascript/safe/safe_closure_local_sibling.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "two-level",
+        "closure",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A local in one callback must not taint a same-named parameter of a sibling callback."
+    },
+    {
+      "case_id": "js-interproc-module-global-handlers-001",
+      "file": "javascript/interprocedural/module_global_across_handlers.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          13,
+          13
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "two-level",
+        "module-global"
+      ],
+      "disabled": false,
+      "notes": "Module-level variable written in one handler and read in another must keep its taint."
+    },
+    {
+      "case_id": "ts-safe-koa-formal-shadow-001",
+      "file": "typescript/safe/safe_koa_formal_shadow.ts",
+      "language": "typescript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "two-level",
+        "koa",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "ctx formals of sibling handlers are distinct bindings."
+    },
+    {
+      "case_id": "ts-open_redirect-koa-sibling-001",
+      "file": "typescript/open_redirect/redirect_koa_sibling_handlers.ts",
+      "language": "typescript",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "tags": [
+        "two-level",
+        "koa"
+      ],
+      "disabled": false,
+      "notes": "Request-derived redirect target still fires next to sibling handlers."
+    },
+    {
+      "case_id": "js-safe-index-key-lookup-001",
+      "file": "javascript/safe/safe_index_key_lookup.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "index-read",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A request-supplied key into a server-side table selects an element; the element is not request data."
+    },
+    {
+      "case_id": "js-interproc-index-read-tainted-container-001",
+      "file": "javascript/interprocedural/index_read_tainted_container.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "index-read"
+      ],
+      "disabled": false,
+      "notes": "An element read from a tainted container keeps the container's taint."
+    },
+    {
+      "case_id": "js-interproc-implicit-global-handlers-001",
+      "file": "javascript/interprocedural/implicit_global_across_handlers.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          12,
+          12
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "two-level",
+        "implicit-global"
+      ],
+      "disabled": false,
+      "notes": "Undeclared global written in one handler and read in another must keep its taint."
+    },
+    {
+      "case_id": "js-safe-implicit-global-per-handler-001",
+      "file": "javascript/safe/safe_implicit_global_per_handler.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "two-level",
+        "implicit-global",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "Per-handler declarations of the same name share no taint."
     }
   ]
 }

@@ -540,7 +540,7 @@ mod binding_key_tests {
 
         let mut toplevel = HashSet::new();
         toplevel.insert(BindingKey::new("x", BodyId(0)));
-        let filtered = filter_seed_to_toplevel(&seed, &toplevel);
+        let filtered = filter_seed_to_toplevel(&seed, &toplevel, &[]);
         assert_eq!(filtered.len(), 1);
         // Every surviving entry is re-keyed onto BodyId(0).
         assert!(filtered.contains_key(&BindingKey::new("x", BodyId(0))));
@@ -557,7 +557,7 @@ mod binding_key_tests {
 
         let mut toplevel = HashSet::new();
         toplevel.insert(BindingKey::new("x", BodyId(0)));
-        let filtered = filter_seed_to_toplevel(&seed, &toplevel);
+        let filtered = filter_seed_to_toplevel(&seed, &toplevel, &[]);
         assert_eq!(filtered.len(), 1);
         assert!(filtered.contains_key(&BindingKey::new("x", BodyId(0))));
     }
@@ -572,7 +572,7 @@ mod binding_key_tests {
         seed.insert(BindingKey::new("x", BodyId(2)), taint(0b0010));
         let mut toplevel = HashSet::new();
         toplevel.insert(BindingKey::new("x", BodyId(0)));
-        let filtered = filter_seed_to_toplevel(&seed, &toplevel);
+        let filtered = filter_seed_to_toplevel(&seed, &toplevel, &[]);
         assert_eq!(filtered.len(), 1);
         let merged = filtered.get(&BindingKey::new("x", BodyId(0))).unwrap();
         assert_eq!(merged.caps, Cap::from_bits_truncate(0b0011));

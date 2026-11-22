@@ -1004,14 +1004,28 @@ pub fn join_seed_maps(
 /// sibling's surviving bindings conceptually belong to the top-level
 /// scope they all write into.  Every other writer in the pipeline
 /// preserves the owner's id.
+///
+/// `exporter_declared` is the sorted list of names the exporting body
+/// binds itself (formals and locals, see `BodyMeta::declared_names`).
+/// Such a binding is private to the exporter and can never be the
+/// top-level variable of the same name, so it is not exported.  An
+/// empty slice disables the check.
 pub fn filter_seed_to_toplevel(
     seed: &HashMap<BindingKey, VarTaint>,
     toplevel: &HashSet<BindingKey>,
+    exporter_declared: &[String],
 ) -> HashMap<BindingKey, VarTaint> {
     let toplevel_names: HashSet<&str> = toplevel.iter().map(|k| k.name.as_str()).collect();
     let mut out: HashMap<BindingKey, VarTaint> = HashMap::new();
     for (key, taint) in seed.iter() {
         if !toplevel_names.contains(key.name.as_str()) {
+            continue;
+        }
+        let root = key.name.split('.').next().unwrap_or(key.name.as_str());
+        if exporter_declared
+            .binary_search_by(|d| d.as_str().cmp(root))
+            .is_ok()
+        {
             continue;
         }
         let rekeyed = BindingKey::new(key.name.clone(), BodyId(0));
@@ -7365,6 +7379,17 @@ pub(super) fn transfer_inst(
 
             if !info.is_eq_with_const {
                 for &use_val in uses {
+                    // `container[key]`: the key selects an element, the value
+                    // comes from the container.
+                    if let Some(key) = info.index_read_key.as_deref()
+                        && ssa
+                            .value_defs
+                            .get(use_val.0 as usize)
+                            .and_then(|vd| vd.var_name.as_deref())
+                            == Some(key)
+                    {
+                        continue;
+                    }
                     if let Some(taint) = state.get(use_val) {
                         combined_caps |= taint.caps;
                         inherited_summary |= taint.uses_summary;
