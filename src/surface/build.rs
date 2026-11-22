@@ -44,6 +44,7 @@ use crate::surface::{
     reachability,
 };
 use crate::utils::config::Config;
+use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use tree_sitter::Parser;
 
@@ -97,165 +98,27 @@ pub fn build_surface_map_with_coverage(
         ..Default::default()
     };
 
-    let mut parsers = Parsers::new();
-    for path in inputs.files {
-        let Ok(bytes) = std::fs::read(path) else {
-            cov.files_unreadable += 1;
-            continue;
-        };
-        let kind = classify_file(path);
-        if kind == FileKind::Other {
-            cov.files_unsupported += 1;
-            continue;
-        }
-        cov.files_supported += 1;
-        // `Some(nodes)` on a clean parse (possibly empty), `None` when the
-        // tree-sitter parse failed — lets coverage distinguish the two.
-        let parsed: Option<Vec<SurfaceNode>> = match kind {
-            FileKind::Python => parsers
-                .python
-                .as_mut()
-                .and_then(|p| p.parse(&bytes, None))
-                .map(|tree| {
-                    let mut all =
-                        python_flask::detect_flask_routes(&tree, &bytes, path, inputs.scan_root);
-                    all.extend(python_fastapi::detect_fastapi_routes(
-                        &tree,
-                        &bytes,
-                        path,
-                        inputs.scan_root,
-                    ));
-                    all.extend(python_django::detect_django_routes(
-                        &tree,
-                        &bytes,
-                        path,
-                        inputs.scan_root,
-                    ));
-                    all
-                }),
-            FileKind::JavaScript => parsers
-                .javascript
-                .as_mut()
-                .and_then(|p| p.parse(&bytes, None))
-                .map(|tree| {
-                    let mut all =
-                        js_express::detect_express_routes(&tree, &bytes, path, inputs.scan_root);
-                    all.extend(js_koa::detect_koa_routes(
-                        &tree,
-                        &bytes,
-                        path,
-                        inputs.scan_root,
-                    ));
-                    all
-                }),
-            FileKind::TypeScript => parsers
-                .typescript
-                .as_mut()
-                .and_then(|p| p.parse(&bytes, None))
-                .map(|tree| {
-                    let mut all =
-                        js_express::detect_express_routes(&tree, &bytes, path, inputs.scan_root);
-                    all.extend(js_koa::detect_koa_routes(
-                        &tree,
-                        &bytes,
-                        path,
-                        inputs.scan_root,
-                    ));
-                    all.extend(ts_next::detect_next_routes(
-                        &tree,
-                        &bytes,
-                        path,
-                        inputs.scan_root,
-                    ));
-                    all
-                }),
-            FileKind::Java => parsers
-                .java
-                .as_mut()
-                .and_then(|p| p.parse(&bytes, None))
-                .map(|tree| {
-                    let mut all =
-                        java_spring::detect_spring_routes(&tree, &bytes, path, inputs.scan_root);
-                    all.extend(java_servlet::detect_servlet_routes(
-                        &tree,
-                        &bytes,
-                        path,
-                        inputs.scan_root,
-                    ));
-                    all.extend(java_quarkus::detect_quarkus_routes(
-                        &tree,
-                        &bytes,
-                        path,
-                        inputs.scan_root,
-                    ));
-                    all
-                }),
-            FileKind::Go => parsers
-                .go
-                .as_mut()
-                .and_then(|p| p.parse(&bytes, None))
-                .map(|tree| {
-                    let mut all =
-                        go_http::detect_go_http_routes(&tree, &bytes, path, inputs.scan_root);
-                    all.extend(go_gin::detect_gin_routes(
-                        &tree,
-                        &bytes,
-                        path,
-                        inputs.scan_root,
-                    ));
-                    all
-                }),
-            FileKind::Php => parsers
-                .php
-                .as_mut()
-                .and_then(|p| p.parse(&bytes, None))
-                .map(|tree| {
-                    let mut all =
-                        php_laravel::detect_laravel_routes(&tree, &bytes, path, inputs.scan_root);
-                    all.extend(php_slim::detect_slim_routes(
-                        &tree,
-                        &bytes,
-                        path,
-                        inputs.scan_root,
-                    ));
-                    all
-                }),
-            FileKind::Ruby => parsers
-                .ruby
-                .as_mut()
-                .and_then(|p| p.parse(&bytes, None))
-                .map(|tree| {
-                    let mut all =
-                        ruby_sinatra::detect_sinatra_routes(&tree, &bytes, path, inputs.scan_root);
-                    all.extend(ruby_rails::detect_rails_routes(
-                        &tree,
-                        &bytes,
-                        path,
-                        inputs.scan_root,
-                    ));
-                    all
-                }),
-            FileKind::Rust => parsers
-                .rust
-                .as_mut()
-                .and_then(|p| p.parse(&bytes, None))
-                .map(|tree| {
-                    let mut all =
-                        rust_actix::detect_actix_routes(&tree, &bytes, path, inputs.scan_root);
-                    all.extend(rust_axum::detect_axum_routes(
-                        &tree,
-                        &bytes,
-                        path,
-                        inputs.scan_root,
-                    ));
-                    all
-                }),
-            // Unreachable: `Other` is filtered out before this match, but
-            // the arm keeps the match exhaustive.
-            FileKind::Other => None,
-        };
-        match parsed {
-            Some(nodes) => {
+    // Per-file probes are independent, so run them on the rayon pool.  The
+    // indexed collect keeps results in `inputs.files` order, and the merge
+    // below is serial, so the map is built exactly as the old serial loop
+    // built it.
+    let outcomes: Vec<FileOutcome> = inputs
+        .files
+        .par_iter()
+        .map_init(Parsers::new, |parsers, path| {
+            probe_file(parsers, path, inputs.scan_root)
+        })
+        .collect();
+    for outcome in outcomes {
+        match outcome {
+            FileOutcome::Unreadable => cov.files_unreadable += 1,
+            FileOutcome::Unsupported => cov.files_unsupported += 1,
+            FileOutcome::ParseFailed => {
+                cov.files_supported += 1;
+                cov.files_parse_failed += 1;
+            }
+            FileOutcome::Parsed(nodes) => {
+                cov.files_supported += 1;
                 cov.files_parsed += 1;
                 if nodes
                     .iter()
@@ -263,11 +126,8 @@ pub fn build_surface_map_with_coverage(
                 {
                     cov.files_with_entry_points += 1;
                 }
-                for n in nodes {
-                    map.nodes.push(n);
-                }
+                map.nodes.extend(nodes);
             }
-            None => cov.files_parse_failed += 1,
         }
     }
 
@@ -460,6 +320,127 @@ fn upgrade_auth_required_from_summaries(map: &mut SurfaceMap, summaries: &Global
         if let SurfaceNode::EntryPoint(ep) = &mut map.nodes[idx] {
             ep.auth_required = true;
         }
+    }
+}
+
+/// Result of probing one file.
+enum FileOutcome {
+    Unreadable,
+    Unsupported,
+    ParseFailed,
+    Parsed(Vec<SurfaceNode>),
+}
+
+fn probe_file(parsers: &mut Parsers, path: &Path, scan_root: Option<&Path>) -> FileOutcome {
+    let kind = classify_file(path);
+    if kind == FileKind::Other {
+        // Only readability is observable for unsupported files; skip the
+        // read itself.
+        return if std::fs::File::open(path).is_ok() {
+            FileOutcome::Unsupported
+        } else {
+            FileOutcome::Unreadable
+        };
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return FileOutcome::Unreadable;
+    };
+
+    let parsed: Option<Vec<SurfaceNode>> = match kind {
+        FileKind::Python => parsers
+            .python
+            .as_mut()
+            .and_then(|p| p.parse(&bytes, None))
+            .map(|tree| {
+                let mut all = python_flask::detect_flask_routes(&tree, &bytes, path, scan_root);
+                all.extend(python_fastapi::detect_fastapi_routes(
+                    &tree, &bytes, path, scan_root,
+                ));
+                all.extend(python_django::detect_django_routes(
+                    &tree, &bytes, path, scan_root,
+                ));
+                all
+            }),
+        FileKind::JavaScript => parsers
+            .javascript
+            .as_mut()
+            .and_then(|p| p.parse(&bytes, None))
+            .map(|tree| {
+                let mut all = js_express::detect_express_routes(&tree, &bytes, path, scan_root);
+                all.extend(js_koa::detect_koa_routes(&tree, &bytes, path, scan_root));
+                all
+            }),
+        FileKind::TypeScript => parsers
+            .typescript
+            .as_mut()
+            .and_then(|p| p.parse(&bytes, None))
+            .map(|tree| {
+                let mut all = js_express::detect_express_routes(&tree, &bytes, path, scan_root);
+                all.extend(js_koa::detect_koa_routes(&tree, &bytes, path, scan_root));
+                all.extend(ts_next::detect_next_routes(&tree, &bytes, path, scan_root));
+                all
+            }),
+        FileKind::Java => parsers
+            .java
+            .as_mut()
+            .and_then(|p| p.parse(&bytes, None))
+            .map(|tree| {
+                let mut all = java_spring::detect_spring_routes(&tree, &bytes, path, scan_root);
+                all.extend(java_servlet::detect_servlet_routes(
+                    &tree, &bytes, path, scan_root,
+                ));
+                all.extend(java_quarkus::detect_quarkus_routes(
+                    &tree, &bytes, path, scan_root,
+                ));
+                all
+            }),
+        FileKind::Go => parsers
+            .go
+            .as_mut()
+            .and_then(|p| p.parse(&bytes, None))
+            .map(|tree| {
+                let mut all = go_http::detect_go_http_routes(&tree, &bytes, path, scan_root);
+                all.extend(go_gin::detect_gin_routes(&tree, &bytes, path, scan_root));
+                all
+            }),
+        FileKind::Php => parsers
+            .php
+            .as_mut()
+            .and_then(|p| p.parse(&bytes, None))
+            .map(|tree| {
+                let mut all = php_laravel::detect_laravel_routes(&tree, &bytes, path, scan_root);
+                all.extend(php_slim::detect_slim_routes(&tree, &bytes, path, scan_root));
+                all
+            }),
+        FileKind::Ruby => parsers
+            .ruby
+            .as_mut()
+            .and_then(|p| p.parse(&bytes, None))
+            .map(|tree| {
+                let mut all = ruby_sinatra::detect_sinatra_routes(&tree, &bytes, path, scan_root);
+                all.extend(ruby_rails::detect_rails_routes(
+                    &tree, &bytes, path, scan_root,
+                ));
+                all
+            }),
+        FileKind::Rust => parsers
+            .rust
+            .as_mut()
+            .and_then(|p| p.parse(&bytes, None))
+            .map(|tree| {
+                let mut all = rust_actix::detect_actix_routes(&tree, &bytes, path, scan_root);
+                all.extend(rust_axum::detect_axum_routes(
+                    &tree, &bytes, path, scan_root,
+                ));
+                all
+            }),
+        // Unreachable: `Other` is filtered out before this match, but
+        // the arm keeps the match exhaustive.
+        FileKind::Other => None,
+    };
+    match parsed {
+        Some(nodes) => FileOutcome::Parsed(nodes),
+        None => FileOutcome::ParseFailed,
     }
 }
 

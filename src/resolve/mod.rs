@@ -175,6 +175,48 @@ pub struct ModuleGraph {
     tsconfigs: Vec<(PathBuf, TsConfigPaths)>,
     builtins: HashSet<String>,
     imports: std::sync::RwLock<ImportTable>,
+    canon: CanonCache,
+}
+
+/// Number of independent lock shards in [`CanonCache`].
+const CANON_SHARDS: usize = 16;
+
+/// Memo of successful `Path::canonicalize` results, keyed by the path as
+/// passed in.  Every resolver query canonicalises its input (a `realpath`
+/// syscall per file per query), and a scan asks about the same files from
+/// many rayon workers, so the table is sharded to keep read locks off one
+/// shared cache line.  Failed canonicalisations are not recorded: a path
+/// that does not exist yet must be retried, not frozen.
+#[derive(Debug, Default)]
+struct CanonCache {
+    shards: [std::sync::RwLock<HashMap<PathBuf, PathBuf>>; CANON_SHARDS],
+}
+
+impl CanonCache {
+    fn shard(&self, p: &Path) -> &std::sync::RwLock<HashMap<PathBuf, PathBuf>> {
+        use std::hash::{BuildHasher, Hash, Hasher};
+        let mut h = rustc_hash::FxBuildHasher.build_hasher();
+        p.hash(&mut h);
+        &self.shards[(h.finish() as usize) % CANON_SHARDS]
+    }
+
+    fn canonical(&self, p: &Path) -> PathBuf {
+        let shard = self.shard(p);
+        if let Ok(g) = shard.read()
+            && let Some(hit) = g.get(p)
+        {
+            return hit.clone();
+        }
+        match p.canonicalize() {
+            Ok(c) => {
+                if let Ok(mut g) = shard.write() {
+                    g.insert(p.to_path_buf(), c.clone());
+                }
+                c
+            }
+            Err(_) => p.to_path_buf(),
+        }
+    }
 }
 
 impl ModuleGraph {
@@ -186,6 +228,7 @@ impl ModuleGraph {
             tsconfigs: Vec::new(),
             builtins,
             imports: std::sync::RwLock::new(ImportTable::default()),
+            canon: CanonCache::default(),
         }
     }
 
@@ -212,7 +255,7 @@ impl ModuleGraph {
     /// `file`. Returns `None` for paths outside every package root (e.g.
     /// scratch files in a parent directory of the scan root).
     pub fn package_for(&self, file: &Path) -> Option<&PackageEntry> {
-        let canonical = canonicalize_or_owned(file);
+        let canonical = self.canon.canonical(file);
         self.packages
             .iter()
             .filter(|p| canonical.starts_with(&p.root))
@@ -226,8 +269,8 @@ impl ModuleGraph {
     /// path) otherwise. Phase 10 will route [`crate::symbol::FuncKey`]
     /// construction through this helper, phase 04 only exposes it.
     pub fn project_namespace_for(&self, file: &Path, scan_root: &Path) -> String {
-        let canonical_file = canonicalize_or_owned(file);
-        let canonical_root = canonicalize_or_owned(scan_root);
+        let canonical_file = self.canon.canonical(file);
+        let canonical_root = self.canon.canonical(scan_root);
         let rel = canonical_file
             .strip_prefix(&canonical_root)
             .unwrap_or(&canonical_file)
@@ -331,7 +374,7 @@ impl ModuleGraph {
     }
 
     fn resolve_tsconfig_alias(&self, importer: &Path, spec: &str) -> Option<PathBuf> {
-        let canonical_importer = canonicalize_or_owned(importer);
+        let canonical_importer = self.canon.canonical(importer);
         // Prefer the deepest tsconfig that's an ancestor of the importer;
         // fall back to any tsconfig if none matches (covers test fixtures
         // where the tsconfig sits at the scan root and `importer` is a

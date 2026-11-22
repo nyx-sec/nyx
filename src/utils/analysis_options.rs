@@ -19,6 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 /// Default parse timeout (milliseconds).  See [`AnalysisOptions::parse_timeout_ms`].
 pub const DEFAULT_PARSE_TIMEOUT_MS: u64 = 10_000;
@@ -167,6 +168,7 @@ pub fn install(opts: AnalysisOptions) -> bool {
         return false;
     }
     *guard = Some(opts);
+    publish_hot(&opts);
     true
 }
 
@@ -177,7 +179,36 @@ pub fn install(opts: AnalysisOptions) -> bool {
 /// must ensure no scan is concurrently reading `current()`, in practice
 /// this means calling `reinstall` before the scan's rayon pool starts.
 pub fn reinstall(opts: AnalysisOptions) {
-    *RUNTIME.write().expect("analysis options RwLock poisoned") = Some(opts);
+    let mut guard = RUNTIME.write().expect("analysis options RwLock poisoned");
+    *guard = Some(opts);
+    publish_hot(&opts);
+}
+
+/// Lock-free mirror of the installed options for the hot-path scalar
+/// accessors.  The taint worklist reads `max_origins` once per origin
+/// push; an `RwLock` read there is an atomic RMW on a cache line shared by
+/// every rayon worker.  `HOT_FLAGS` bit 0 = installed, bit 1 =
+/// `constraint_solving`, bit 2 = `abstract_interpretation`.  Writers
+/// (`install` / `reinstall`) update the mirror while holding the write
+/// lock, with `HOT_FLAGS` stored last (Release) so a reader that sees the
+/// installed bit also sees the scalar fields.
+static HOT_FLAGS: AtomicU8 = AtomicU8::new(0);
+static HOT_MAX_ORIGINS: AtomicU32 = AtomicU32::new(0);
+static HOT_MAX_POINTSTO: AtomicU32 = AtomicU32::new(0);
+
+fn publish_hot(opts: &AnalysisOptions) {
+    HOT_MAX_ORIGINS.store(opts.max_origins, Ordering::Relaxed);
+    HOT_MAX_POINTSTO.store(opts.max_pointsto, Ordering::Relaxed);
+    let flags = 1u8
+        | (u8::from(opts.constraint_solving) << 1)
+        | (u8::from(opts.abstract_interpretation) << 2);
+    HOT_FLAGS.store(flags, Ordering::Release);
+}
+
+#[inline]
+fn hot_flags() -> Option<u8> {
+    let f = HOT_FLAGS.load(Ordering::Acquire);
+    (f & 1 != 0).then_some(f)
 }
 
 /// Read the active options.  Returns the installed runtime when present,
@@ -207,12 +238,6 @@ pub fn current() -> AnalysisOptions {
     }
 }
 
-/// Installed runtime options, if any.  `AnalysisOptions` is `Copy`, so this
-/// is a read-lock plus a copy.
-fn installed() -> Option<AnalysisOptions> {
-    *RUNTIME.read().expect("analysis options RwLock poisoned")
-}
-
 /// Env-derived fallback for the hot-path scalar accessors below.  Resolved
 /// once per process: `current()` re-reads every `NYX_*` variable on each
 /// call, which is a libc `getenv` scan under a global lock and dominates
@@ -234,28 +259,28 @@ fn env_fallback() -> &'static AnalysisOptions {
 
 /// Same value as `current().constraint_solving`, without the per-call env scan.
 pub fn constraint_solving() -> bool {
-    installed().map_or_else(
-        || env_fallback().constraint_solving,
-        |o| o.constraint_solving,
-    )
+    hot_flags().map_or_else(|| env_fallback().constraint_solving, |f| f & 2 != 0)
 }
 
 /// Same value as `current().abstract_interpretation`, without the per-call env scan.
 pub fn abstract_interpretation() -> bool {
-    installed().map_or_else(
-        || env_fallback().abstract_interpretation,
-        |o| o.abstract_interpretation,
-    )
+    hot_flags().map_or_else(|| env_fallback().abstract_interpretation, |f| f & 4 != 0)
 }
 
 /// Same value as `current().max_origins`, without the per-call env scan.
 pub fn max_origins() -> u32 {
-    installed().map_or_else(|| env_fallback().max_origins, |o| o.max_origins)
+    hot_flags().map_or_else(
+        || env_fallback().max_origins,
+        |_| HOT_MAX_ORIGINS.load(Ordering::Relaxed),
+    )
 }
 
 /// Same value as `current().max_pointsto`, without the per-call env scan.
 pub fn max_pointsto() -> u32 {
-    installed().map_or_else(|| env_fallback().max_pointsto, |o| o.max_pointsto)
+    hot_flags().map_or_else(
+        || env_fallback().max_pointsto,
+        |_| HOT_MAX_POINTSTO.load(Ordering::Relaxed),
+    )
 }
 
 fn env_bool_default(key: &str, default: bool) -> bool {
