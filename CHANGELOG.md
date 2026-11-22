@@ -2,6 +2,77 @@
 
 All notable changes to Nyx are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html). For where Nyx is going, see the [Roadmap](ROADMAP.md).
 
+## [0.9.0] - 2026-11-22
+
+The accuracy and speed release. Pass 2 now analyses files in parallel, so large repos scan in a fraction of the time: keycloak goes from 660 s to about 30 s, Ghost from 304 s to about 20 s and strapi from 140 s to about 15 s, and gogs and roundcube no longer time out.
+
+Security findings on 23 open-source repos drop by more than a third, almost all of them false positives, and every language gets recall fixes. The benchmark corpus grows from 674 to 1279 cases, including 23 new CVE pairs, and scores TP 655, FP 0, FN 0, TN 610.
+
+### Behaviour changes
+
+- **Rust 1.89 is the minimum supported version** (was 1.88).
+- **JSON responses are not XSS sinks.** Express `res.json(..)` and a Koa `ctx.body` set to an object or array literal are sent as `application/json`, so they no longer report as HTML injection. A `res.json` in a handler that sets a `text/html` content type, `res.send`, and a string `ctx.body` still do.
+- **Test mocks no longer report on production code.** A mock request built in a test file (`req.query = {..}`) that reaches a sink in a production file is no longer reported; the production flow is reported from the production file's own sources. `--keep-nonprod-severity` (alias `--include-nonprod`) keeps these findings.
+- **Test and non-production paths are classified relative to the scan root.** A checkout under `/opt/build` or `~/test` is no longer downgraded as a whole, and `_test.go`, `_spec.rb`, RSpec and JS `spec/` trees and Cucumber step definitions now count as test code wherever they live.
+- **`.mjs`, `.cjs`, `.mts` and `.cts` files are scanned.**
+- **Inline `nyx:ignore` works everywhere.** It now applies in `.jsx` and C++ header files, on Rust lines that contain a lifetime, and in `nyx serve` and library scans, not only the CLI.
+- **Findings come out in a stable order.** Output order, which duplicate flow survives and `max_results` truncation no longer depend on the run's call-graph batch order.
+- **Indexed scans drop cached summaries when analysis settings change.** Adding a custom sink in `nyx.conf`, a framework to a manifest, or switching mode no longer leaves unchanged files on stale summaries.
+
+### Performance
+
+- **Parallel pass 2.** Files are analysed by dependency level instead of one at a time, SCC batches converge cheaply, and false self-recursion no longer forces extra rounds.
+- **Less time on one core.** The surface-map build probes files in parallel, pass-2 files start largest first so one huge file no longer runs alone at the end, analysis options are read lock-free, long chained callee texts are normalised once, the Express route witness is computed once per file, and canonicalised paths are cached in the module graph.
+- **Per-node work.** Constant propagation runs over per-instruction use lists, post-dominators are built once per body without copying the CFG, callee resolution reuses candidate lists and callee facts across a run, engine option scalars are resolved once instead of per call, and closure children a parameter never reaches are skipped.
+- **Tree-sitter calls.** The CFG builder reads node kinds and their classes from a per-file table indexed by `kind_id()` instead of converting the grammar's C string on every call, walks call-argument nesting with one top-down cursor descent instead of `parent()`, and the label suffix matcher is always inlined.
+
+### Fewer false positives
+
+- **Taint sources.** Writing to `req.path` or `req.headers[k]` no longer makes them a source. Caught exceptions only reach output, header, template, format and shell sinks, not SQL, file, SSRF, redirect or prototype-pollution sinks. Java `getContextPath()` is not request input. Rails `*_path` helpers, `URL.searchParams` writes and the page's own `location.origin` no longer count as redirect sources.
+- **JS/TS closures.** Variables local to one handler no longer leak into sibling closures through the file's top-level scope. `this.field` writes are not globals. Reading `obj[key]` takes the taint of `obj`, not of `key`. Params with handler-like names are only seeded when the function has no known caller.
+- **Validation.** `startsWith(root) === false` and similar negated or sentinel checks are read the right way round. Allowlists checked with `==`, comma-ok, `slices.Contains` or a ternary now validate the value they test. Multiline and alternation regexes are not treated as anchored.
+- **Path containment.** A string prefix check only proves containment when the root ends in a separator, since `/srv/data` also admits `/srv/data-x`. `Path.startsWith`, `Path::starts_with` and `is_relative_to` compare components, so any root works. The check has to hold after `..` is normalised away.
+- **SSRF and redirects.** Origin locks have to hold on every path to the sink, and now follow URL builders and more fixed-host string shapes. A same-host check on a parsed URL clears both redirect and SSRF taint. Open redirect needs a protocol-relative rejection (`//evil.com`) before it is cleared. Host denylists and `IsHostnameInternal` / `safe_for_redirect` style helpers count as guards.
+- **Authorization ownership.** These now count as owned: ids read off a row the handler already loaded or just inserted, gitea `ctx.Repo`, session user ids, the signed-in user, Redmine `Model.visible` scopes, querysets scoped to the caller, and owner checks on a fetched or parent row.
+- **Authorization frameworks.** Rust `is_admin(..)?` gates, axum and actix-web layers, Spring security annotations (including role alternatives), Rails `only:` / `except:` filter lists, CanCanCan class macros, Django view decorators and DRF class views without a `urls.py`. Django migrations, private helpers, Mirage mock servers and JS/TS test files no longer report.
+- **Resource leaks.** Null and error branches are pruned. A handle that is returned, stored, wrapped or added to a collection counts as handed off. Releases inside `if` conditions count. Python cursors are treated like JDBC statements. Same-file close wrappers, sub-object aliases, cast views and `pipe` hand-offs are followed. Use after close only reports the handle that was closed.
+- **`cfg-unguarded-sink`.** Ruby ActiveRecord chains are checked as a whole statement, so `reorder(nil)`, Arel, `select(1)` and table-name-only SQL stay quiet. So do project methods named `eval`, Go `db.Exec(ctx, sql, ..)`, constant collections in interpolation, constant `Sequelize.literal` calls, PHP numeric casts, Ruby `shellescape` and writes to a declared file stream.
+- **Control flow.** `finally` and `ensure` run on return paths. `match`, `select`, `case` and arrow `switch` are exclusive branches. `x += 1` and `x++` read `x` before writing it. Framework abort helpers end the request. `err == nil` is a success check in `cfg-error-fallthrough`.
+- **Pattern rules.** Java `execute(..)` concat needs a SQL-shaped call. `java.reflection.method_invoke` needs a `Method` receiver. Ruby `send` over a fixed set of literals, lossless Rust narrowing casts, and `res.sendFile` / `res.download` with a literal root stay quiet. File-write sinks check the path, not the content written. The CORS, `secure: false`, location, cookie and error patterns, and EJS partials, skip their safe forms.
+- **Per language.** JS/TS `child_process` sinks need the import. Go HTTP clients, response writers and request sources are typed from their declarations. Python labels follow `from` imports and DB-API `execute` is gated on the query argument. Bound SQLAlchemy statements and bound Rust SQL parameters are not injection. JS/TS query builders, tagged SQL and config-object queries are checked for where the values come from, and `orderBy` keys must be static.
+
+### New detections
+
+- **PHP.** `echo` / `print` / `<?=` of a direct superglobal (`echo $_GET['q']`) now reports, as do ternary `echo` operands. FILE_IO builtins (`unlink`, `rename`, `mkdir`, `readfile`, `file`, `scandir` and more), dbFacile SQL helpers with the parameter array as the safe channel, and `$x = !call(..)` are modelled.
+- **C/C++.** Pointer-returning function declarators (`char *f(char *x)`) keep their parameters, a call assigned inside a condition (`if ((x = getenv(..)) == NULL)`) is lowered, functions inside `#if` groups are analysed, arity-suffixed wrapper macros keep their argument layout, and calls through local function pointers no longer resolve to unrelated globals.
+- **Java.** Statement-form `StringBuilder.append`, Spring handlers that return HTML, Netty file sinks, path-view `startsWith` chains, path taint through `File` and `String` constructors, and `Paths.get` as a static call.
+- **JS/TS.** Member paths longer than three segments (`event.node.req.url`), Koa `this.redirect` and prototype handlers, Astro sources, `$fetch` sinks, missing Node sinks, browser redirects as open redirects, and header setters as header injection.
+- **Python and Ruby.** `Popen` shell arrays and shell kwargs, FastAPI query parameters, default markers and Pydantic bodies as sources, Ruby optional and keyword parameters bound by name, ActiveRecord `connection.execute` chains, and bare zero-arity calls as sink arguments. Ruby argv-form `system` is not a shell.
+- **Go and Rust.** Origin locks through `strings.Trim`, `ReplaceAll` and `Sprintf`, struct fields declared as requests, missing Go sinks, Rust reads from an open `File` as a source, `toml` / `ron` decode into a `dyn` target through a `let` annotation, rusqlite handles in struct fields and `Arc<Mutex<Connection>>`, and every path spelling of the unsafe memory primitives.
+- **Mongoose.** An actor id in the update document of `findOneAndUpdate` / `updateOne` no longer suppresses the missing ownership check on the filter.
+
+### CVE corpus and ground truth
+
+- 23 new vulnerable/patched pairs built from upstream fix commits: CVE-2022-48624, CVE-2024-23819, CVE-2024-32461, CVE-2024-42352, CVE-2024-49760, CVE-2025-15379, CVE-2025-53623, CVE-2025-54314, CVE-2025-58179, CVE-2025-6023, CVE-2025-62595, CVE-2025-66645, CVE-2025-71405, CVE-2025-8129, CVE-2026-112049, CVE-2026-25554, CVE-2026-28415, CVE-2026-34375, CVE-2026-41058, CVE-2026-46671, CVE-2026-8274, CVE-2026-85396, CVE-2026-85439.
+- Previously disabled cases that now pass: `ruby-sqli-raw-001`, `cve-go-2023-3188-patched`, `cve-go-2024-37896-patched`, `cve-ruby-2026-40295-vulnerable`.
+- Two former safe cases (`py-safe-022`, `js-safe-021`) were real sibling-prefix bugs and are now vulnerable cases with separator-terminated safe twins.
+- 14 cases stay disabled, each with the missing capability named in `ground_truth.json`.
+
+### Fixes
+
+- AST-pattern rules fire on both `.ts` and `.tsx` files. The two share a language slug but not a grammar, and the compiled query cache was keyed by slug only, so one of the two file types got no AST-rule hits.
+- `nyx scan <file>` no longer fails with "triage sync failed: scan root is not a directory". A single-file scan reads the triage file of the enclosing project (nearest `.nyx/triage.json`, stopping at the repository root).
+
+### Dependencies
+
+- `chrono` is replaced by `jiff` 1.0 (timestamps keep the `+00:00` RFC 3339 format). `rusqlite` 0.41 (with `r2d2_sqlite` 0.36), `tokio` 1.54, and `h2` 0.4.20 for RUSTSEC-2026-0258.
+
+### Known limitations
+
+- argv and `ARGV` are not taint sources; CLI trust is a separate policy decision.
+- Path containment reasoning assumes POSIX separators.
+- Known false positives: `describe` / `it` closure flows in express tests, mastodon `redirect_to streaming_api_url`, redmine `order(options[:order])` on caller-supplied options, and `window.location.origin + pathname`.
+
 ## [0.8.0] - 2026-08-13
 
 The dynamic-verification release. An attack-surface map, a sandboxed dynamic verifier, a framework adapter registry that grounds both, the per-language build infrastructure that makes per-finding verification affordable at corpus scale, and the first real-corpus acceptance gates.

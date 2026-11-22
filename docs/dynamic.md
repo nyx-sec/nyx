@@ -285,7 +285,7 @@ Each line is a JSON object with a versioned envelope:
 ```json
 {
   "schema_version": 1,
-  "nyx_version": "0.8.0",
+  "nyx_version": "0.9.0",
   "corpus_version": "15",
   "kind": "verdict",
   "ts": "2026-06-01T18:42:09Z",

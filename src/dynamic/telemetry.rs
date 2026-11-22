@@ -20,7 +20,7 @@
 //! ```json
 //! {
 //!   "schema_version": 1,
-//!   "nyx_version": "0.8.0",
+//!   "nyx_version": "0.9.0",
 //!   "corpus_version": "15",
 //!   "kind": "verdict",
 //!   "ts": "<RFC-3339>",
