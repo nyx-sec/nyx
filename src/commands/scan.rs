@@ -4755,7 +4755,7 @@ fn indexed_scan_drops_cached_summaries_when_rules_change() {
 }
 
 #[test]
-fn flows_from_go_test_files_are_downgraded_at_the_promoted_sink() {
+fn flows_from_go_test_files_are_dropped_at_the_promoted_sink() {
     let td = tempfile::tempdir().unwrap();
     let root = td.path();
     std::fs::write(
@@ -4773,16 +4773,21 @@ fn flows_from_go_test_files_are_downgraded_at_the_promoted_sink() {
 
     let mut cfg = Config::default();
     cfg.performance.worker_threads = Some(1);
+    let in_helper = |diags: &[Diag]| {
+        diags
+            .iter()
+            .filter(|d| d.id.starts_with("taint-") && d.path.ends_with("helper.go"))
+            .count()
+    };
+    // A mock request built in a test is not attacker input: the flow it
+    // drives into the production sink is not reported.
     let diags = crate::scan_no_index(root, &cfg).unwrap();
-    let in_helper: Vec<&Diag> = diags
-        .iter()
-        .filter(|d| d.id.starts_with("taint-") && d.path.ends_with("helper.go"))
-        .collect();
-    assert!(!in_helper.is_empty(), "{diags:?}");
-    assert!(
-        in_helper.iter().all(|d| d.severity == Severity::Medium),
-        "test-origin flows keep the test file's downgrade: {in_helper:?}"
-    );
+    assert_eq!(in_helper(&diags), 0, "{diags:?}");
+    // `include_nonprod` keeps non-production flows.
+    let mut keep = cfg.clone();
+    keep.scanner.include_nonprod = true;
+    let diags = crate::scan_no_index(root, &keep).unwrap();
+    assert!(in_helper(&diags) > 0, "{diags:?}");
 
     // The same caller in a production file reports at full severity.
     std::fs::remove_file(root.join("helper_test.go")).unwrap();

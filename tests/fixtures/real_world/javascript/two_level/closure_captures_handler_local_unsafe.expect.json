@@ -1,0 +1,32 @@
+{
+  "description": "A closure nested in a handler sees the taint of the handler's own local through the lexical parent seed, while a same-named constant in a sibling handler stays clean.",
+  "tags": [
+    "taint",
+    "two-level",
+    "closure",
+    "unsafe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [
+        7,
+        7
+      ],
+      "must_match": true,
+      "notes": "cmd is captured by the arrow from the enclosing handler"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [
+        14,
+        14
+      ],
+      "must_not_match": true,
+      "notes": "cmd in the sibling handler is a literal"
+    }
+  ]
+}
