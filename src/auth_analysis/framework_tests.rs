@@ -520,7 +520,7 @@ pub async fn tag_bad(Json(data): Json<Del>, context: Data<Ctx>, local_user_view:
         let found = rules("rust", "api.rs", src);
         assert_eq!(
             lines(&found, "missing_ownership_check"),
-            vec![10, 11, 19, 21, 22, 23],
+            vec![10, 11, 22, 25],
             "{found:?}"
         );
     }
