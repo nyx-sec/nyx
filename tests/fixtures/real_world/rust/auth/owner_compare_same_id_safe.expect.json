@@ -1,0 +1,21 @@
+{
+  "description": "The same request id that fetched the compared row is updated and deleted after the owner comparison",
+  "tags": [
+    "auth",
+    "negative",
+    "owner-compare"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "evidence_contains": [],
+      "notes": "The same request id that fetched the compared row is updated and deleted after the owner comparison"
+    }
+  ]
+}

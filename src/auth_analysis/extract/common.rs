@@ -1924,17 +1924,58 @@ fn collect_call(node: Node<'_>, bytes: &[u8], rules: &AuthAnalysisRules, state: 
     }
 
     if let Some(kind) = op_kind {
+        // Go driver calls take a context first (`UpdateOne(ctx, filter, update)`),
+        // so positions differ there; Go carries `request_roots`.
+        let payload_subjects_start = if state.request_roots.is_none()
+            && is_filter_then_update_callee(&callee)
+            && call_sites_arg_count(&state.call_sites) >= 2
+        {
+            state
+                .call_sites
+                .last()
+                .and_then(|c| c.args_value_refs.first())
+                .map(|first| receiver_subjects + first.len())
+        } else {
+            None
+        };
         state.operations.push(SensitiveOperation {
             kind,
             sink_class,
             callee,
             subjects,
             receiver_subjects,
+            payload_subjects_start,
             span: span(node),
             line,
             text: node_text.to_string(),
         });
     }
+}
+
+fn call_sites_arg_count(sites: &[CallSite]) -> usize {
+    sites.last().map_or(0, |c| c.args_value_refs.len())
+}
+
+/// MongoDB / Mongoose write methods whose first argument is the query filter
+/// and whose later arguments are the update or replacement document.
+fn is_filter_then_update_callee(callee: &str) -> bool {
+    let method = callee.rsplit('.').next().unwrap_or(callee);
+    [
+        "findoneandupdate",
+        "findbyidandupdate",
+        "findoneandreplace",
+        "findbyidandreplace",
+        "updateone",
+        "updatemany",
+        "replaceone",
+        "find_one_and_update",
+        "find_one_and_replace",
+        "update_one",
+        "update_many",
+        "replace_one",
+    ]
+    .iter()
+    .any(|m| method.eq_ignore_ascii_case(m))
 }
 
 /// `<client>.<verb>(<url>, ..)` in JS/TS: an HTTP client request.  Either the
@@ -4421,19 +4462,31 @@ fn detect_ownership_equality_check(if_node: Node<'_>, bytes: &[u8], state: &mut 
 
     let (owner_ref, _self_ref) = match (
         pick_owner_field_ref(&left_refs),
-        pick_self_actor_ref(&right_refs),
+        pick_self_actor_ref(&right_refs, &state.self_actor_vars),
     ) {
         (Some(o), Some(s)) => (o, s),
         _ => match (
             pick_owner_field_ref(&right_refs),
-            pick_self_actor_ref(&left_refs),
+            pick_self_actor_ref(&left_refs, &state.self_actor_vars),
         ) {
             (Some(o), Some(s)) => (o, s),
             _ => return,
         },
     };
 
-    let row_binding = state.row_field_vars.get(&owner_ref.name).cloned();
+    // `if actor.id != orig.creator_id`: the owner field is read straight off
+    // the fetched row, so the row is the root of the chain.
+    let row_binding = state
+        .row_field_vars
+        .get(&owner_ref.name)
+        .cloned()
+        .or_else(|| {
+            let root = owner_ref.base.as_deref()?.split('.').next()?;
+            state
+                .row_population_data
+                .contains_key(root)
+                .then(|| root.to_string())
+        });
     let if_line = if_node.start_position().row + 1;
     let if_span = span(if_node);
     let condition_text = text(condition, bytes);
@@ -4449,16 +4502,19 @@ fn detect_ownership_equality_check(if_node: Node<'_>, bytes: &[u8], state: &mut 
         Some((row, nearest))
     });
     let (check_line, mut subjects) = match nearest_binding {
-        Some((row, (row_line, arg_refs))) => {
-            let mut subjects = arg_refs.clone();
-            subjects.push(ValueRef {
+        // Only the row itself is a subject. The ids the row was fetched with
+        // are covered through the row-population reverse-walk; listing them
+        // here would let the `data` base of `data.message_id` match any other
+        // request field (`data.second_id`) as related.
+        Some((row, (row_line, _))) => {
+            let subjects = vec![ValueRef {
                 source_kind: ValueSourceKind::Identifier,
                 name: row.clone(),
                 base: None,
                 field: None,
                 index: None,
                 span: if_span,
-            });
+            }];
             (*row_line, subjects)
         }
         None => match row_binding.as_ref() {
@@ -4679,8 +4735,23 @@ fn pick_owner_field_ref(refs: &[ValueRef]) -> Option<ValueRef> {
     refs.iter().find(|v| is_owner_field_subject(v)).cloned()
 }
 
-fn pick_self_actor_ref(refs: &[ValueRef]) -> Option<ValueRef> {
-    refs.iter().find(|v| is_self_actor_subject(v)).cloned()
+/// The caller's id on one side of an owner comparison: the usual `req.user.id`
+/// shapes, or an id field reached through a binding known to be the caller
+/// (`local_user_view.person.id` with `local_user_view` in `self_actor_vars`).
+fn pick_self_actor_ref(refs: &[ValueRef], self_actor_vars: &HashSet<String>) -> Option<ValueRef> {
+    refs.iter()
+        .find(|v| {
+            is_self_actor_subject(v)
+                || (v
+                    .field
+                    .as_deref()
+                    .is_some_and(|f| matches!(f, "id" | "person_id" | "user_id"))
+                    && v.base
+                        .as_deref()
+                        .and_then(|b| b.split('.').next())
+                        .is_some_and(|root| self_actor_vars.contains(root)))
+        })
+        .cloned()
 }
 
 fn classify_auth_check(callee: &str, rules: &AuthAnalysisRules) -> AuthCheckKind {

@@ -1,0 +1,21 @@
+{
+  "description": "`if local_user_view.person.id != orig.creator_id { return Err }` after the fetch is an ownership check on the row",
+  "tags": [
+    "auth",
+    "negative",
+    "owner-compare"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "evidence_contains": [],
+      "notes": "`if local_user_view.person.id != orig.creator_id { return Err }` after the fetch is an ownership check on the row"
+    }
+  ]
+}

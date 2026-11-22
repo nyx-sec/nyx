@@ -1,0 +1,24 @@
+{
+  "description": "The row is fetched and updated by request id without comparing its creator to the caller",
+  "tags": [
+    "auth",
+    "positive",
+    "owner-compare"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "rs.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        10,
+        11
+      ],
+      "evidence_contains": [],
+      "notes": "The row is fetched and updated by request id without comparing its creator to the caller"
+    }
+  ]
+}

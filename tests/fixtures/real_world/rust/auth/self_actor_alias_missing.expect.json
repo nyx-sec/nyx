@@ -2,7 +2,6 @@
   "description": "A mutation that only receives the viewer, and a view read with no viewer argument, are still unscoped",
   "tags": [
     "auth",
-    "auth",
     "positive",
     "self-actor"
   ],

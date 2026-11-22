@@ -1,0 +1,22 @@
+{
+  "description": "An actor pin inside the filter (first argument) scopes the update to the caller",
+  "tags": [
+    "auth",
+    "auth",
+    "negative",
+    "mongoose-update-doc"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "severity": null,
+      "must_match": false,
+      "must_not_match": true,
+      "evidence_contains": [],
+      "notes": "An actor pin inside the filter (first argument) scopes the update to the caller"
+    }
+  ]
+}

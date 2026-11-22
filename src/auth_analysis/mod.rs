@@ -1181,6 +1181,7 @@ mod tests {
             callee: callee.to_string(),
             subjects: Vec::new(),
             receiver_subjects: 0,
+            payload_subjects_start: None,
             span: (0, 0),
             line: 1,
             text: callee.to_string(),

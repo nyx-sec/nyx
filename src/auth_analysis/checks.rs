@@ -149,11 +149,13 @@ fn check_ownership_gaps(
                 // `me.id` does not qualify, so unrelated co-occurrences
                 // do not over-suppress.
                 //
-                // Trade-off: a privesc-via-`data` shape like
-                // `db.update({where: {id: input.id}, data: {ownerId: ctx.user.id}})`
-                // would also be suppressed because both subjects appear
-                // at the call site without arg-position info.  That
-                // pattern is rare and would need its own rule.  The
+                // Written documents of filter-then-update calls
+                // (`Note.findOneAndUpdate({_id: id}, {owner: req.user.id})`)
+                // are skipped via `payload_subjects_start`: storing the caller
+                // as owner is a write, not a scope.  Other call shapes
+                // (`db.update({where: {id}, data: {ownerId: ctx.user.id}})`)
+                // have no argument positions to tell apart and stay
+                // suppressed.  The
                 // owner-eq common case removes ~70 cal.com FPs and
                 // matches the canonical Express / TRPC scoping idiom.
                 //
@@ -178,6 +180,7 @@ fn check_ownership_gaps(
                 // to say, by what the method does.
                 let has_actor_co_subject = op.subjects.iter().enumerate().any(|(i, s)| {
                     !is_callee_receiver(s, &op.callee)
+                        && op.payload_subjects_start.is_none_or(|start| i < start)
                         && ((is_actor_context_subject(s, unit)
                             && (lookup
                                 || (receiver_lookup && i < op.receiver_subjects)
@@ -538,6 +541,10 @@ fn has_row_fetch_exemption(unit: &AnalysisUnit, op: &SensitiveOperation) -> bool
     if row_vars.is_empty() {
         return false;
     }
+    // A check on a row fetched through this row's own foreign key
+    // (`let community = Community::read(pool, tag.community_id)`) authorises
+    // the fetch of the child as well.
+    let row_vars = rows_with_derived(unit, row_vars);
 
     // Look for any non-login auth check whose subjects mention a row.
     // Match against the *root* of the subject's chain (`a.b.c` → `a`)
@@ -666,7 +673,7 @@ fn auth_check_covers_subject(check: &AuthCheck, subject: &ValueRef, unit: &Analy
     } else {
         None
     };
-    let subject_populates: Vec<&str> = unit
+    let direct_populates: Vec<&str> = unit
         .row_population_data
         .iter()
         .filter_map(|(row_var, bindings)| {
@@ -688,6 +695,10 @@ fn auth_check_covers_subject(check: &AuthCheck, subject: &ValueRef, unit: &Analy
             }
         })
         .collect();
+    // Authorising a row reached through the foreign key of a populated row
+    // (fetch the child by the request id, then its parent by `child.parent_id`,
+    // then check the parent) covers the request id too.
+    let subject_populates = rows_with_derived(unit, direct_populates);
 
     check.subjects.iter().any(|check_subject| {
         let check_key = canonical_subject_name(check_subject);
@@ -717,6 +728,60 @@ fn auth_check_covers_subject(check: &AuthCheck, subject: &ValueRef, unit: &Analy
         // var family this check anchors to, accept the coverage.
         subject_anchor_authorized && unit.authorized_sql_vars.contains(&check_key)
     })
+}
+
+/// Close `seed` over rows fetched with an argument rooted at a row already in
+/// the set (`let parent = Parent::read(pool, child.parent_id)` adds `parent`
+/// once `child` is in).  Only row-to-row derivations are followed, so a parent
+/// fetched with an unrelated request id is never added.  Bounded by the number
+/// of rows in the unit, and cycle-safe because rows are only ever added.
+fn rows_with_derived<'a>(unit: &'a AnalysisUnit, seed: Vec<&'a str>) -> Vec<&'a str> {
+    let mut rows = seed;
+    if rows.is_empty() {
+        return rows;
+    }
+    loop {
+        let before = rows.len();
+        for (row_var, bindings) in &unit.row_population_data {
+            if rows.contains(&row_var.as_str()) {
+                continue;
+            }
+            let derived = bindings.iter().flat_map(|(_line, args)| args).any(|arg| {
+                arg.base.is_some()
+                    && rows.contains(&chain_root(arg))
+                    && is_parent_link(row_var, arg)
+            });
+            if derived {
+                rows.push(row_var.as_str());
+            }
+        }
+        if rows.len() == before {
+            return rows;
+        }
+    }
+}
+
+/// Whether `arg` (`child.<field>`) reads like the foreign key to the row
+/// bound as `row_var`: the field stem (`community_id` -> `community`) must be
+/// the row variable's name or its trailing word (`parent_community`).  A field
+/// such as `sibling_id` fetched into `sib` names a peer, not an owner, so a
+/// check on that peer does not authorise the child.  When the naming does not
+/// line up the derivation is not followed and the finding stays.
+fn is_parent_link(row_var: &str, arg: &ValueRef) -> bool {
+    let field = arg.name.rsplit('.').next().unwrap_or(arg.name.as_str());
+    let lower = field.to_ascii_lowercase();
+    let stem = lower
+        .strip_suffix("_id")
+        .or_else(|| lower.strip_suffix("id"))
+        .unwrap_or(lower.as_str())
+        .trim_end_matches('_');
+    if stem.is_empty() {
+        return false;
+    }
+    let row = row_var.to_ascii_lowercase();
+    let norm = |v: &str| v.replace('_', "");
+    let (row_n, stem_n) = (norm(&row), norm(stem));
+    row_n == stem_n || row_n.ends_with(&stem_n)
 }
 
 /// Walk `unit.row_field_vars` transitively from `start` (inclusive)
@@ -2495,6 +2560,7 @@ mod tests {
             callee: "Community.read".into(),
             subjects: vec![member("data", "community_id")],
             receiver_subjects: 0,
+            payload_subjects_start: None,
             span: (0, 0),
             line: 10,
             text: String::new(),
@@ -2509,6 +2575,7 @@ mod tests {
             callee: "delete_post".into(),
             subjects: vec![member("data", "post_id")],
             receiver_subjects: 0,
+            payload_subjects_start: None,
             span: (0, 0),
             line: 15,
             text: String::new(),
@@ -2534,6 +2601,7 @@ mod tests {
             callee: "Community.read".into(),
             subjects: vec![member("data", "community_id")],
             receiver_subjects: 0,
+            payload_subjects_start: None,
             span: (0, 0),
             line: 10,
             text: String::new(),
@@ -2573,6 +2641,7 @@ mod tests {
             callee: "Community.read".into(),
             subjects: vec![member("data", "community_id")],
             receiver_subjects: 0,
+            payload_subjects_start: None,
             span: (0, 0),
             line: 10,
             text: String::new(),
