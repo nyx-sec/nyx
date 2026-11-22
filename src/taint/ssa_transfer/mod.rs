@@ -5480,7 +5480,8 @@ pub(super) fn transfer_inst(
                     source_caps |= *bits;
                 }
             }
-            if !source_caps.is_empty() {
+            // `$n = (int) $_GET['n']`: the value is a number, not the source.
+            if !source_caps.is_empty() && !info.yields_number {
                 let callee = info.call.callee.as_deref().unwrap_or("");
                 let source_kind = crate::labels::infer_source_kind(source_caps, callee);
                 let origin = TaintOrigin {
@@ -7435,6 +7436,12 @@ pub(super) fn transfer_inst(
                         push_origin_bounded(&mut combined_origins, origin);
                     }
                 }
+            }
+
+            // A numeric conversion or arithmetic result carries no payload,
+            // whatever its operands (or a source on this node) contributed.
+            if info.yields_number {
+                combined_caps = Cap::empty();
             }
 
             // Alias-aware taint propagation

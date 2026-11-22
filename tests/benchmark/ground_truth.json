@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 973
+    "corpus_size": 979
   },
   "cases": [
     {
@@ -30961,6 +30961,212 @@
       ],
       "disabled": false,
       "notes": "File.basename keeps only the final component."
+    },
+    {
+      "case_id": "cve-php-2026-34375-vulnerable",
+      "file": "cve_corpus/php/CVE-2026-34375/vulnerable.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          19,
+          19
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          19,
+          19
+        ]
+      ],
+      "tags": [
+        "cve",
+        "avideo",
+        "echo",
+        "superglobal"
+      ],
+      "disabled": false,
+      "notes": "CVE-2026-34375: AVideo YPTWallet Stripe confirmButton.php echoes $_REQUEST['plugin'] (error-suppressed) straight into an inline script block. JSON License (upstream root LICENSE)."
+    },
+    {
+      "case_id": "cve-php-2026-34375-patched",
+      "file": "cve_corpus/php/CVE-2026-34375/patched.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "avideo",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2026-34375 patched counterpart: the value is cast to string and passed through json_encode before the echo. JSON License (upstream root LICENSE)."
+    },
+    {
+      "case_id": "cve-php-2026-41058-vulnerable",
+      "file": "cve_corpus/php/CVE-2026-41058/vulnerable.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          56,
+          56
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          56,
+          56
+        ]
+      ],
+      "tags": [
+        "cve",
+        "avideo",
+        "unlink",
+        "file-io"
+      ],
+      "disabled": false,
+      "notes": "CVE-2026-41058: AVideo CloneSite cloneServer.json.php passes $_GET['deleteDump'] to unlink() inside $resp->error = !unlink(...), allowing arbitrary file deletion. JSON License (upstream root LICENSE)."
+    },
+    {
+      "case_id": "cve-php-2026-41058-patched",
+      "file": "cve_corpus/php/CVE-2026-41058/patched.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "avideo",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2026-41058 patched counterpart: the name is reduced with basename() and the resolved path is checked against the dump directory before unlink. JSON License (upstream root LICENSE)."
+    },
+    {
+      "case_id": "cve-php-2024-32461-vulnerable",
+      "file": "cve_corpus/php/CVE-2024-32461/vulnerable.php",
+      "language": "php",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          51,
+          51
+        ],
+        [
+          63,
+          63
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          33,
+          33
+        ],
+        [
+          60,
+          60
+        ]
+      ],
+      "tags": [
+        "cve",
+        "librenms",
+        "dbfacile",
+        "sql-concat"
+      ],
+      "disabled": false,
+      "notes": "CVE-2024-32461: LibreNMS search/packages.inc.php concatenates $_POST['package'] and $_POST['results'] into SQL text run by dbFetchCell/dbFetchRows. GPL-3.0-or-later."
+    },
+    {
+      "case_id": "cve-php-2024-32461-patched",
+      "file": "cve_corpus/php/CVE-2024-32461/patched.php",
+      "language": "php",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "real_cve",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "cve",
+        "librenms",
+        "patched",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "CVE-2024-32461 patched counterpart: the package filter moves to the bound parameter array and the LIMIT size is cast to int; user values reach dbFetch* only through arg 1. GPL-3.0-or-later."
     }
   ]
 }

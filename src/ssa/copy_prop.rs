@@ -37,6 +37,11 @@ pub fn copy_propagate(body: &mut SsaBody, cfg: &Cfg) -> (usize, HashMap<SsaValue
                     if info.is_numeric_length_access {
                         continue;
                     }
+                    // A numeric conversion (`$n = (int) $x`) is not a copy of
+                    // its operand: the taint transfer clears the value.
+                    if info.yields_number {
+                        continue;
+                    }
                     // Skip Assigns whose CFG node carries a `string_prefix`
                     // (template literals or `"lit" + var` RHS recognised by
                     // `template_prefix_of`).  The abstract-interpretation

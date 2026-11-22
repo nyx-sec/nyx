@@ -45,11 +45,12 @@ pub(crate) mod python_shapes;
 pub mod safe_fields;
 use blocks::{build_begin_rescue, build_switch, build_try, in_duplicate_finally_copy};
 use helpers::{
-    call_fn_callee_text, call_ident_at_or_under, collect_nested_function_nodes,
-    collect_rhs_object_literal, derive_anon_fn_name_from_context, find_classifiable_inner_call,
-    find_inner_sink_call, find_inner_source_or_sink_call, first_call_ident_with_span,
-    first_callback_sink_call, first_member_label, first_member_text, is_raii_factory,
-    is_subscript_kind, root_member_receiver, subscript_components, subscript_lhs_node,
+    call_fn_callee_text, call_ident_at_or_under, call_node_ident_with_span,
+    collect_nested_function_nodes, collect_rhs_object_literal, derive_anon_fn_name_from_context,
+    find_classifiable_inner_call, find_inner_sink_call, find_inner_source_or_sink_call,
+    first_call_ident_with_span, first_callback_sink_call, first_member_label, first_member_text,
+    is_raii_factory, is_subscript_kind, php_direct_operand_sources, php_output_construct,
+    root_member_receiver, subscript_components, subscript_lhs_node,
 };
 pub use nested_calls::{CallSlot, NestedCall, NestedCallTree, NestedUse};
 // Re-exports so sibling submodules can keep using `super::name` for
@@ -1207,6 +1208,13 @@ pub struct NodeInfo {
     /// boolean outcome of `x === 'literal'` carries no attacker-controlled
     /// data, so downstream branches on it should not inherit x's caps.
     pub is_eq_with_const: bool,
+    /// True when this assignment's right-hand side is a PHP numeric
+    /// conversion (`(int)`, `(float)`, `(bool)` cast) or an arithmetic
+    /// expression (`-`, `*`, `/`, `%`, `**`). PHP evaluates those to a
+    /// number (or throws), so the stored value cannot carry injection
+    /// payload and the SSA taint transfer clears its caps, like `intval`.
+    #[serde(default)]
+    pub yields_number: bool,
     /// True when this node reads a numeric-length property on a container:
     /// `arr.length`, `map.size`, `buf.byteLength`, `items.count`, `vec.len()`
     ///, either as a pure property access or as a zero-arg method call.
@@ -2913,6 +2921,43 @@ fn extract_member_field_name(node: Node, code: &[u8]) -> Option<String> {
     }
 }
 
+/// PHP `$x = (int) $y;`, `$x = ($a - 1) * $b;`: the assigned value is a
+/// number. `+` is left out (array union), as is `.` (concatenation).
+fn php_assigns_number(ast: Node, code: &[u8]) -> bool {
+    let assign = match ast.kind() {
+        "assignment_expression" => ast,
+        "expression_statement" => match ast.named_child(0) {
+            Some(c) if c.kind() == "assignment_expression" => c,
+            _ => return false,
+        },
+        _ => return false,
+    };
+    let Some(mut rhs) = assign.child_by_field_name("right") else {
+        return false;
+    };
+    while rhs.kind() == "parenthesized_expression" {
+        match rhs.named_child(0) {
+            Some(inner) => rhs = inner,
+            None => return false,
+        }
+    }
+    match rhs.kind() {
+        "cast_expression" => rhs
+            .child_by_field_name("type")
+            .and_then(|t| text_of(t, code))
+            .is_some_and(|t| {
+                matches!(
+                    t.trim().to_ascii_lowercase().as_str(),
+                    "int" | "integer" | "float" | "double" | "real" | "bool" | "boolean"
+                )
+            }),
+        "binary_expression" => rhs
+            .child_by_field_name("operator")
+            .is_some_and(|op| matches!(op.kind(), "-" | "*" | "/" | "%" | "**")),
+        _ => false,
+    }
+}
+
 fn detect_numeric_length_access(ast: Node, _lang: &str, code: &[u8]) -> bool {
     // Pull the value expression for variable declarations / assignments.
     // Other node shapes (e.g. plain member-expression reads) are checked
@@ -3431,6 +3476,13 @@ pub(super) fn push_node<'a>(
         if let Some((inner, inner_span)) = first_call_ident_with_span(ast, lang, code) {
             text = inner;
             inner_text_span = Some(inner_span);
+        } else if lang == "php"
+            && let Some(construct) = php_output_construct(ast, code)
+        {
+            // `print $x;` and `<?= $x ?>`: the keyword is not the node's first
+            // child, so name the construct explicitly.
+            text = construct.keyword.to_string();
+            inner_text_span = Some(construct.keyword_span);
         } else if matches!(lookup(lang, ast.kind()), Kind::CallWrapper) {
             // Fallback for language-construct "calls" (e.g. PHP `echo_statement`,
             // `print` expression):  the first child is a keyword leaf (e.g. "echo")
@@ -4073,6 +4125,22 @@ pub(super) fn push_node<'a>(
                 .or_else(|| cn.child_by_field_name("name"))
                 .and_then(|f| call_fn_callee_text(f, lang, code))
                 .map(|t| t.chars().filter(|c| !c.is_whitespace()).collect::<String>());
+            // PHP `$obj->method()` keeps its receiver in the `object` field,
+            // so the `name` field alone is the bare method name, which would
+            // match an exact-name gate (`=unlink`) meant for the builtin.
+            let function_field_text = if lang == "php"
+                && lookup(lang, cn.kind()) == Kind::CallMethod
+                && let Some((qualified, _)) = call_node_ident_with_span(cn, lang, code)
+            {
+                Some(
+                    qualified
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect::<String>(),
+                )
+            } else {
+                function_field_text
+            };
             let has_source_label = labels
                 .iter()
                 .any(|l| matches!(l, crate::labels::DataLabel::Source(_)));
@@ -4799,6 +4867,13 @@ pub(super) fn push_node<'a>(
     // describe the result.
     let rmw = rmw_statement(ast, lang);
 
+    // `$n = (int) $_GET['n']`: the stored value is a number, so a source read
+    // on the right-hand side does not label the node as a source.
+    let yields_number = lang == "php" && rmw.is_none() && php_assigns_number(ast, code);
+    if yields_number {
+        labels.retain(|l| !matches!(l, DataLabel::Source(_)));
+    }
+
     // Capture constant text for SSA constant propagation: when this node
     // defines a variable from a syntactic literal (no identifier uses),
     // extract the raw literal text from the AST.  Also capture the
@@ -5288,6 +5363,7 @@ pub(super) fn push_node<'a>(
         string_prefix,
         string_prefix_ident,
         is_eq_with_const: rmw.is_none() && detect_eq_with_const(ast, lang),
+        yields_number,
         is_numeric_length_access: rmw.is_none() && detect_numeric_length_access(ast, lang, code),
         member_field: if rmw.is_none() {
             detect_member_field_assignment(ast, code)
@@ -7874,6 +7950,44 @@ fn pre_emit_arg_source_nodes(
         }
     });
 
+    // PHP `echo` / `print` / `<?=` take bare operands instead of an argument
+    // list, so a source read straight into them (`echo $_GET['a']`) needs its
+    // synthetic Source node here. The names feed the node's `uses` only: the
+    // node may also be a call (`echo f($x), $_GET['a']`) whose own argument
+    // positions must stay untouched.
+    if lang == "php"
+        && let Some(construct) = php_output_construct(ast, code)
+    {
+        let mut found = Vec::new();
+        php_direct_operand_sources(construct.operand, code, extra, &mut found);
+        for (label, member_text, span) in found {
+            let synth_name = format!("__nyx_src_{}_{}", g.node_count(), uses_only.len());
+            let mut src_labels: SmallVec<[DataLabel; 2]> = SmallVec::new();
+            src_labels.push(label);
+            let src_idx = g.add_node(NodeInfo {
+                kind: StmtKind::Seq,
+                call: CallMeta {
+                    callee: member_text,
+                    ..Default::default()
+                },
+                taint: TaintMeta {
+                    labels: src_labels,
+                    defines: Some(synth_name.clone()),
+                    ..Default::default()
+                },
+                ast: AstMeta {
+                    span,
+                    enclosing_func: enclosing_func.map(|s| s.to_string()),
+                },
+                ..Default::default()
+            });
+            connect_all(g, &effective_preds, src_idx, EdgeKind::Seq);
+            effective_preds.clear();
+            effective_preds.push(src_idx);
+            uses_only.push(synth_name);
+        }
+    }
+
     let Some(outer_call) = find_call_node(ast, lang) else {
         return (effective_preds, bindings, uses_only);
     };
@@ -10337,7 +10451,9 @@ pub(super) fn build_sub<'a>(
             // `res.redirect(req.body.returnTo)`).  Created BEFORE the Call
             // node so they get lower indices, see doc comment on
             // `pre_emit_arg_source_nodes` for why this ordering matters.
-            let (effective_preds, src_bindings, mut src_uses_only) = if kind == StmtKind::Call {
+            let (effective_preds, src_bindings, mut src_uses_only) = if kind == StmtKind::Call
+                || (lang == "php" && php_output_construct(ast, code).is_some())
+            {
                 pre_emit_arg_source_nodes(g, ast, lang, code, enclosing_func, analysis_rules, preds)
             } else {
                 (SmallVec::from_slice(preds), Vec::new(), Vec::new())

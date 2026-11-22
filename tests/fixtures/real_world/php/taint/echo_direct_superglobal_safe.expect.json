@@ -1,0 +1,24 @@
+{
+  "description": "The same direct reads wrapped in htmlspecialchars or an int cast, plus literal operands, must stay silent.",
+  "tags": [
+    "taint",
+    "xss",
+    "echo",
+    "sanitizer",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        1,
+        21
+      ],
+      "notes": "No flow is expected anywhere in this file."
+    }
+  ]
+}

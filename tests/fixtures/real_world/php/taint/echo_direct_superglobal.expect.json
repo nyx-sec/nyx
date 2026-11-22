@@ -1,0 +1,82 @@
+{
+  "description": "PHP echo, print and the <?= short tag with a superglobal read directly as the operand (plain, @-suppressed, concatenated, comma list) reach the output unescaped.",
+  "tags": [
+    "taint",
+    "xss",
+    "echo",
+    "print",
+    "superglobal",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        4,
+        4
+      ],
+      "evidence_contains": [],
+      "notes": "Superglobal read directly by the output construct on line 4"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        8,
+        8
+      ],
+      "evidence_contains": [],
+      "notes": "Superglobal read directly by the output construct on line 8"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        12,
+        12
+      ],
+      "evidence_contains": [],
+      "notes": "Superglobal read directly by the output construct on line 12"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        16,
+        16
+      ],
+      "evidence_contains": [],
+      "notes": "Superglobal read directly by the output construct on line 16"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        20,
+        20
+      ],
+      "evidence_contains": [],
+      "notes": "Superglobal read directly by the output construct on line 20"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "must_match": true,
+      "line_range": [
+        25,
+        25
+      ],
+      "evidence_contains": [],
+      "notes": "Superglobal read directly by the output construct on line 25"
+    }
+  ]
+}

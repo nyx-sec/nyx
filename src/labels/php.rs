@@ -172,6 +172,41 @@ pub static RULES: &[LabelRule] = &[
         label: DataLabel::Sink(Cap::FILE_IO),
         case_sensitive: false,
     },
+    // Filesystem operations on a path.  Bare-name matches only (`=`): a
+    // method of the same name (`$request->file('f')`, `$model->touch()`,
+    // `$storage->rename(..)`) is not the PHP builtin.
+    LabelRule {
+        matchers: &[
+            "=unlink",
+            "=rename",
+            "=mkdir",
+            "=rmdir",
+            "=touch",
+            "=chmod",
+            "=readfile",
+            "=file",
+            "=scandir",
+        ],
+        label: DataLabel::Sink(Cap::FILE_IO),
+        // Case-sensitive so `new File($x)` / `new Touch($x)` (class
+        // constructors) are not read as the lowercase builtins.
+        case_sensitive: true,
+    },
+    // dbFacile helpers (LibreNMS): arg 0 is the SQL text, arg 1 the bound
+    // parameter array, so the sink is gated to arg 0 in `GATED_SINKS`.
+    LabelRule {
+        matchers: &[
+            "=dbFetchRows",
+            "=dbFetchRow",
+            "=dbFetchCell",
+            "=dbFetchColumn",
+            "=dbFetch",
+            "=dbQuery",
+            "=dbQueryReturn",
+        ],
+        label: DataLabel::Sink(Cap::SQL_QUERY),
+        case_sensitive: true,
+    },
     LabelRule {
         matchers: &["echo", "print"],
         label: DataLabel::Sink(Cap::HTML_ESCAPE),
@@ -652,6 +687,37 @@ pub static GATED_SINKS: &[SinkGate] = &[
         &[0],
     ),
     SinkGate::payload_positions("copy", DataLabel::Sink(Cap::FILE_IO), false, &[0, 1]),
+    // Single-path filesystem builtins: only arg 0 names the path
+    // (`chmod`'s mode, `mkdir`'s mode and recursive flag, `file`'s flags are
+    // not paths); `rename` takes a path in both positions.
+    SinkGate::payload_positions("=unlink", DataLabel::Sink(Cap::FILE_IO), true, &[0]),
+    SinkGate::payload_positions("=rename", DataLabel::Sink(Cap::FILE_IO), true, &[0, 1]),
+    SinkGate::payload_positions("=mkdir", DataLabel::Sink(Cap::FILE_IO), true, &[0]),
+    SinkGate::payload_positions("=rmdir", DataLabel::Sink(Cap::FILE_IO), true, &[0]),
+    SinkGate::payload_positions("=touch", DataLabel::Sink(Cap::FILE_IO), true, &[0]),
+    SinkGate::payload_positions("=chmod", DataLabel::Sink(Cap::FILE_IO), true, &[0]),
+    SinkGate::payload_positions("=readfile", DataLabel::Sink(Cap::FILE_IO), true, &[0]),
+    SinkGate::payload_positions("=file", DataLabel::Sink(Cap::FILE_IO), true, &[0]),
+    SinkGate::payload_positions("=scandir", DataLabel::Sink(Cap::FILE_IO), true, &[0]),
+    // dbFacile helpers: the SQL text is arg 0; the parameter array in arg 1
+    // is the safe channel and must not be taint-checked.
+    SinkGate::payload_positions("=dbFetchRows", DataLabel::Sink(Cap::SQL_QUERY), true, &[0]),
+    SinkGate::payload_positions("=dbFetchRow", DataLabel::Sink(Cap::SQL_QUERY), true, &[0]),
+    SinkGate::payload_positions("=dbFetchCell", DataLabel::Sink(Cap::SQL_QUERY), true, &[0]),
+    SinkGate::payload_positions(
+        "=dbFetchColumn",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        false,
+        &[0],
+    ),
+    SinkGate::payload_positions("=dbFetch", DataLabel::Sink(Cap::SQL_QUERY), true, &[0]),
+    SinkGate::payload_positions("=dbQuery", DataLabel::Sink(Cap::SQL_QUERY), true, &[0]),
+    SinkGate::payload_positions(
+        "=dbQueryReturn",
+        DataLabel::Sink(Cap::SQL_QUERY),
+        false,
+        &[0],
+    ),
     SinkGate::payload_positions(
         "move_uploaded_file",
         DataLabel::Sink(Cap::FILE_IO),

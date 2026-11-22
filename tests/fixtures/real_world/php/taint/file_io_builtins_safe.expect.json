@@ -1,0 +1,23 @@
+{
+  "description": "basename-confined paths, constant paths, a non-path mode argument and methods that only share a builtin's name must stay silent.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "file-io",
+    "php"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "must_not_match": true,
+      "line_range": [
+        1,
+        25
+      ],
+      "notes": "No flow is expected anywhere in this file."
+    }
+  ]
+}

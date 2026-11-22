@@ -487,7 +487,7 @@ pub(crate) fn call_ident_at_or_under<'a>(
 }
 
 /// Callee identifier and byte span of the call / method / macro node `c`.
-fn call_node_ident_with_span<'a>(
+pub(super) fn call_node_ident_with_span<'a>(
     c: Node<'a>,
     lang: &str,
     code: &'a [u8],
@@ -2513,5 +2513,113 @@ mod callback_sink_tests {
         assert!(
             first_callback_sink_call(tree.root_node(), "javascript", &code[..], None).is_none()
         );
+    }
+}
+
+/// A PHP output language construct: `echo a, b;`, `print a;` and the short
+/// tag form `<?= a ?>`. None of these has an `arguments` field, so their
+/// operands are direct children rather than call arguments.
+pub(crate) struct PhpOutputConstruct<'a> {
+    /// Callee name the construct classifies under (`echo` or `print`).
+    pub keyword: &'static str,
+    /// Byte span of the keyword token (the `<?=` tag for the short form).
+    pub keyword_span: (usize, usize),
+    /// The expression operand (a `sequence_expression` for `echo a, b`).
+    pub operand: Node<'a>,
+}
+
+/// Recognise a PHP output construct at statement level. `ast` is the
+/// `echo_statement` or the `expression_statement` wrapping a `print` or a
+/// `<?=` expression.
+pub(crate) fn php_output_construct<'a>(
+    ast: Node<'a>,
+    code: &[u8],
+) -> Option<PhpOutputConstruct<'a>> {
+    match ast.kind() {
+        "echo_statement" => {
+            let mut cursor = ast.walk();
+            let kw = ast.children(&mut cursor).next()?;
+            let operand = ast
+                .named_children(&mut ast.walk())
+                .find(|c| c.kind() != "comment")?;
+            (kw.child_count() == 0 && kw.id() != operand.id()).then_some(PhpOutputConstruct {
+                keyword: "echo",
+                keyword_span: (kw.start_byte(), kw.end_byte()),
+                operand,
+            })
+        }
+        "expression_statement" => {
+            let inner = ast.named_child(0)?;
+            if inner.kind() == "print_intrinsic" {
+                let kw = inner.child(0)?;
+                let operand = inner.named_child(0).filter(|o| o.id() != kw.id())?;
+                return Some(PhpOutputConstruct {
+                    keyword: "print",
+                    keyword_span: (kw.start_byte(), kw.end_byte()),
+                    operand,
+                });
+            }
+            // `<?=` is the trailing `php_tag` of the `text_interpolation`
+            // extra that precedes the expression.
+            let prev = ast.prev_sibling()?;
+            let tag = match prev.kind() {
+                "php_tag" => prev,
+                "text_interpolation" => prev.child((prev.child_count().checked_sub(1)?) as u32)?,
+                _ => return None,
+            };
+            (tag.kind() == "php_tag" && code.get(tag.start_byte()..tag.end_byte()) == Some(b"<?="))
+                .then_some(PhpOutputConstruct {
+                    keyword: "echo",
+                    keyword_span: (tag.start_byte(), tag.end_byte()),
+                    operand: inner,
+                })
+        }
+        _ => None,
+    }
+}
+
+/// Source labels read directly by an output operand, as `(label, member text,
+/// span)`. Walks only value-preserving shapes (sequence, concatenation,
+/// parentheses, `@`, string interpolation) and never enters a call or a cast,
+/// so a source wrapped in a sanitiser or an integer cast is not reported here.
+pub(crate) fn php_direct_operand_sources<'a>(
+    operand: Node<'a>,
+    code: &[u8],
+    extra: Option<&[crate::labels::RuntimeLabelRule]>,
+    out: &mut Vec<(DataLabel, Option<String>, (usize, usize))>,
+) {
+    match operand.kind() {
+        "sequence_expression"
+        | "parenthesized_expression"
+        | "error_suppression_expression"
+        | "encapsed_string" => {
+            let mut cursor = operand.walk();
+            for c in operand.named_children(&mut cursor) {
+                php_direct_operand_sources(c, code, extra, out);
+            }
+        }
+        "binary_expression" => {
+            let is_concat = operand
+                .child_by_field_name("operator")
+                .is_some_and(|op| op.kind() == ".");
+            if is_concat {
+                let mut cursor = operand.walk();
+                for c in operand.named_children(&mut cursor) {
+                    php_direct_operand_sources(c, code, extra, out);
+                }
+            }
+        }
+        "subscript_expression" | "member_access_expression" | "variable_name" => {
+            if let Some(lbl @ DataLabel::Source(_)) =
+                first_member_label(operand, "php", code, extra)
+            {
+                out.push((
+                    lbl,
+                    first_member_text(operand, code),
+                    (operand.start_byte(), operand.end_byte()),
+                ));
+            }
+        }
+        _ => {}
     }
 }
