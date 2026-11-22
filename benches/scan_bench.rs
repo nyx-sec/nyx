@@ -1137,6 +1137,171 @@ fn bench_auth_matches_name(c: &mut Criterion) {
     });
 }
 
+/// Write `count` generated source files into a fresh temp dir and return the
+/// dir plus the file list.  Shared by the surface-map benches.
+fn write_corpus(
+    tag: &str,
+    count: usize,
+    ext: &str,
+    gen_file: impl Fn(usize) -> String,
+) -> (std::path::PathBuf, Vec<std::path::PathBuf>) {
+    let dir = std::env::temp_dir().join(format!("nyx_bench_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create corpus dir");
+    let mut files = Vec::with_capacity(count);
+    for i in 0..count {
+        let path = dir.join(format!("f{i:04}.{ext}"));
+        std::fs::write(&path, gen_file(i)).expect("write corpus file");
+        files.push(path);
+    }
+    (dir, files)
+}
+
+fn surface_inputs_run(files: &[std::path::PathBuf], root: &Path, cfg: &Config) -> usize {
+    use nyx_scanner::summary::GlobalSummaries;
+    let gs = GlobalSummaries::new();
+    let cg = nyx_scanner::callgraph::build_call_graph(&gs, &[]);
+    let map = nyx_scanner::surface::build::build_surface_map(
+        &nyx_scanner::surface::build::SurfaceBuildInputs {
+            files,
+            scan_root: Some(root),
+            global_summaries: &gs,
+            call_graph: &cg,
+            config: cfg,
+        },
+    );
+    map.nodes.len()
+}
+
+/// `build_surface_map` over a multi-file JS + Java corpus.  The per-file
+/// probes run on the rayon pool; a regression to the serial re-read /
+/// re-parse loop shows up here as a multiple of the core count.
+fn bench_surface_build_corpus(c: &mut Criterion) {
+    let (js_dir, mut files) = write_corpus("surf_js", 240, "js", |i| {
+        let mut src = String::from("const express = require('express');\nconst app = express();\n");
+        for r in 0..24 {
+            src.push_str(&format!(
+                "app.get('/r{i}/{r}', requireAuth, (req, res) => {{ res.send(req.query.q{r}); }});\n"
+            ));
+        }
+        src
+    });
+    let (java_dir, java_files) = write_corpus("surf_java", 120, "java", |i| {
+        let mut src = format!(
+            "import org.springframework.web.bind.annotation.*;\n@RestController\n@RequestMapping(\"/c{i}\")\npublic class C{i} {{\n"
+        );
+        for r in 0..16 {
+            src.push_str(&format!(
+                "  @GetMapping(\"/m{r}\")\n  public String m{r}(@RequestParam String q) {{ return q; }}\n"
+            ));
+        }
+        src.push_str("}\n");
+        src
+    });
+    files.extend(java_files);
+    let cfg = Config::default();
+    c.bench_function("surface_build_corpus", |b| {
+        b.iter(|| surface_inputs_run(&files, &js_dir, &cfg));
+    });
+    let _ = std::fs::remove_dir_all(&js_dir);
+    let _ = std::fs::remove_dir_all(&java_dir);
+}
+
+/// One large minified JS file with thousands of member calls on a single
+/// line.  The Express probe used to validate and scan the whole file for
+/// the `express` witness once per member call (quadratic); it is now
+/// computed once per file.
+fn bench_surface_detect_express_minified_js(c: &mut Criterion) {
+    let (dir, files) = write_corpus("surf_min", 1, "js", |_| {
+        let mut src = String::with_capacity(700_000);
+        src.push_str("var r=function(){");
+        for i in 0..9000 {
+            src.push_str(&format!("o{i}.m{i}(a{i},b{i});x{i}.y{i}.z{i}(c{i});"));
+        }
+        src.push_str("};\n");
+        src
+    });
+    let cfg = Config::default();
+    let mut group = c.benchmark_group("surface_detect_express_minified_js");
+    group.sample_size(10);
+    group.bench_function("one_file", |b| {
+        b.iter(|| surface_inputs_run(&files, &dir, &cfg));
+    });
+    group.finish();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Type-fact predicates over a chained JS callee whose text embeds a whole
+/// callback body (`wrap(function(){...}).then`).  The call analysis asks
+/// several predicates about the same text per instruction; each used to
+/// re-normalise the full string.
+fn bench_type_facts_chained_callee_js(c: &mut Criterion) {
+    use nyx_scanner::ssa::type_facts::{
+        is_int_producing_callee, is_safe_string_producing_callee, peel_identity_suffix,
+    };
+    use nyx_scanner::symbol::Lang;
+    let mut callee = String::from("wrap(function(){");
+    for i in 0..400 {
+        callee.push_str(&format!(
+            "var v{i}=f{i}(a({i}),b[{i}]);if(v{i}){{g(v{i});}}"
+        ));
+    }
+    callee.push_str("}).then");
+    c.bench_function("type_facts_chained_callee_js", |b| {
+        b.iter(|| {
+            let callee = std::hint::black_box(callee.as_str());
+            let mut hits = 0usize;
+            for _ in 0..4 {
+                hits += usize::from(is_int_producing_callee(Some(Lang::JavaScript), callee));
+                hits += usize::from(is_safe_string_producing_callee(callee));
+                hits += peel_identity_suffix(callee).len();
+            }
+            hits
+        });
+    });
+}
+
+/// Wide fan-in: many sources joined through branches and loops so SSA
+/// variables carry 10+ origins and every worklist join merges origin
+/// sets.  Exercises `merge_origins` / `push_origin_bounded` and the
+/// per-push origin-cap lookup.
+fn bench_taint_many_origins_join_c(c: &mut Criterion) {
+    let mut src = String::from("#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n");
+    for f in 0..12 {
+        src.push_str(&format!("void fan{f}(int mode, int n) {{\n"));
+        for k in 0..14 {
+            src.push_str(&format!("  char *s{k} = getenv(\"V{f}_{k}\");\n"));
+        }
+        src.push_str("  char *x = s0;\n  char buf[256];\n");
+        src.push_str("  for (int i = 0; i < n; i++) {\n");
+        for k in 1..14 {
+            src.push_str(&format!(
+                "    if (mode == {k}) {{ x = s{k}; }} else if (mode == {}) {{ x = s{}; }}\n",
+                k + 20,
+                (k + 3) % 14
+            ));
+            src.push_str(&format!(
+                "    while (i < {k}) {{ x = s{}; i++; }}\n",
+                (k + 5) % 14
+            ));
+        }
+        src.push_str("  }\n  strcpy(buf, x);\n  system(x);\n}\n\n");
+    }
+    let bytes = src.into_bytes();
+    let path = Path::new("bench_many_origins.c");
+    let mut cfg = Config::default();
+    cfg.scanner.mode = AnalysisMode::Full;
+    cfg.performance.worker_threads = Some(1);
+    let _ = nyx_scanner::ast::analyse_file_fused(&bytes, path, &cfg, None, None)
+        .expect("warmup analyse");
+    c.bench_function("taint_many_origins_join_c", |b| {
+        b.iter(|| {
+            nyx_scanner::ast::analyse_file_fused(&bytes, path, &cfg, None, None)
+                .expect("analyse_file_fused")
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_ast_only_scan,
@@ -1164,5 +1329,9 @@ criterion_group!(
     bench_cfg_build_large_go,
     bench_ast_queries_large_go,
     bench_node_text_walk_large_go,
+    bench_surface_build_corpus,
+    bench_surface_detect_express_minified_js,
+    bench_type_facts_chained_callee_js,
+    bench_taint_many_origins_join_c,
 );
 criterion_main!(benches);
