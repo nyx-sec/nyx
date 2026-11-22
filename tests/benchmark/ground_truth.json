@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 990
+    "corpus_size": 993
   },
   "cases": [
     {
@@ -31480,6 +31480,102 @@
       ],
       "disabled": false,
       "notes": "Tortoise `await Note.get(id=note_id)` on a Model imported from tortoise.models is a row read by a route id"
+    },
+    {
+      "case_id": "js-auth-realrepo-009",
+      "file": "javascript/auth/react_server_loader_missing.jsx",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "react"
+      ],
+      "disabled": false,
+      "notes": "A server data loader beside a component that calls a hook still needs an ownership check"
+    },
+    {
+      "case_id": "py-auth-realrepo-034",
+      "file": "python/auth/private_helper_function_view_missing.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "py.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "private-helper"
+      ],
+      "disabled": false,
+      "notes": "A private helper called by a function view that takes request is reachable from the web"
+    },
+    {
+      "case_id": "rs-auth-realrepo-022",
+      "file": "rust/auth/admin_gate_other_user_missing.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-862",
+      "provenance": "real_world",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "admin-gate"
+      ],
+      "disabled": false,
+      "notes": "An admin gate on a value other than the acting user does not guard the delete"
     }
   ]
 }

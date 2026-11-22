@@ -127,6 +127,7 @@ pub struct JsFileFacts {
 pub(super) fn scan_file(root: Node<'_>, bytes: &[u8]) -> JsFileFacts {
     let mut facts = JsFileFacts::default();
     let mut runtime_import = false;
+    let mut server_loader = false;
     for stmt in named_children(root) {
         match stmt.kind() {
             "expression_statement" => {
@@ -135,6 +136,11 @@ pub(super) fn scan_file(root: Node<'_>, bytes: &[u8]) -> JsFileFacts {
                     && value == "use client"
                 {
                     facts.use_client = true;
+                }
+            }
+            "export_statement" => {
+                if exports_server_loader(stmt, bytes) {
+                    server_loader = true;
                 }
             }
             "import_statement" => {
@@ -166,10 +172,42 @@ pub(super) fn scan_file(root: Node<'_>, bytes: &[u8]) -> JsFileFacts {
             _ => {}
         }
     }
-    if runtime_import && !facts.client_import && file_calls_a_hook(root, bytes) {
+    // A file that also exports a server data loader mixes server and browser
+    // code, so a hook call somewhere in it says nothing about the other units.
+    if runtime_import && !server_loader && !facts.client_import && file_calls_a_hook(root, bytes) {
         facts.client_import = true;
     }
     facts
+}
+
+/// Exports that only run on a server (Next.js and Remix data loaders).
+const SERVER_LOADER_EXPORTS: &[&str] = &[
+    "getServerSideProps",
+    "getStaticProps",
+    "getStaticPaths",
+    "getInitialProps",
+    "loader",
+    "action",
+    "generateMetadata",
+    "generateStaticParams",
+];
+
+/// True when an `export` statement declares a server data loader.
+fn exports_server_loader(stmt: Node<'_>, bytes: &[u8]) -> bool {
+    let Some(decl) = stmt.child_by_field_name("declaration") else {
+        return false;
+    };
+    let named = |n: Node<'_>| {
+        n.child_by_field_name("name")
+            .is_some_and(|id| SERVER_LOADER_EXPORTS.contains(&text(id, bytes).as_str()))
+    };
+    match decl.kind() {
+        "function_declaration" | "generator_function_declaration" => named(decl),
+        "lexical_declaration" | "variable_declaration" => {
+            named_children(decl).into_iter().any(named)
+        }
+        _ => false,
+    }
 }
 
 /// True when any call in the file is a React hook call.  Only runs for files

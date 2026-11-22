@@ -938,6 +938,16 @@ fn collect_dominating_admin_gates(
                 subjects.extend(refs.iter().cloned());
             }
         }
+        // The gate must test the acting user.  `is_admin(&other)?` checks
+        // someone else, so it covers nothing.
+        let tests_actor = subjects.iter().any(|s| {
+            let full = s.base.as_deref().unwrap_or(s.name.as_str());
+            let root = full.split('.').next().unwrap_or(full);
+            state.self_actor_vars.contains(root)
+        });
+        if !tests_actor {
+            continue;
+        }
         state.auth_checks.push(AuthCheck {
             kind: AuthCheckKind::AdminGuard,
             callee,

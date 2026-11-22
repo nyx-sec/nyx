@@ -208,7 +208,12 @@ fn mark_internal_python_helpers(model: &mut AuthorizationModel) {
                 continue;
             }
             let caller_unit = &model.units[caller];
-            if caller_unit.kind == AnalysisUnitKind::RouteHandler {
+            // A function view wired in a separate `urls.py` is not a
+            // `RouteHandler` unit, but its `request` parameter marks it as
+            // a web entry.
+            if caller_unit.kind == AnalysisUnitKind::RouteHandler
+                || caller_unit.params.iter().any(|p| is_request_param(p))
+            {
                 route_reaches = true;
                 break;
             }
@@ -224,6 +229,12 @@ fn mark_internal_python_helpers(model: &mut AuthorizationModel) {
     for idx in marks {
         model.units[idx].internal_helper = true;
     }
+}
+
+/// A Python parameter that names the incoming web request.
+fn is_request_param(param: &str) -> bool {
+    let name = param.split([':', '=']).next().unwrap_or(param).trim();
+    matches!(name, "request" | "req" | "_request")
 }
 
 /// Django/Alembic (`migrations/`, `alembic/versions/`) and Rails
