@@ -4658,9 +4658,11 @@ pub(super) fn push_node<'a>(
     }
 
     // Ruby `system(prog, arg, ...)` / `exec(prog, arg, ...)` with two or more
-    // command words is the argv form: Ruby execs the program directly and
-    // never starts a shell, so metacharacters in any word are inert.  Only
-    // the single-string form goes through `/bin/sh`.  The same-node
+    // command words and a fixed non-shell program is the argv form: Ruby
+    // execs the program directly and never starts a shell, so metacharacters
+    // in any word are inert.  The single-string form goes through `/bin/sh`,
+    // and a dynamic or shell/interpreter program still runs tainted text as
+    // code (see `kernel_exec_is_argv_form`).  The same-node
     // `Sanitizer` follows the AR-query precedent above.
     if (lang == "ruby" || lang == "rb")
         && matches!(text.as_str(), "system" | "exec")
@@ -4670,7 +4672,7 @@ pub(super) fn push_node<'a>(
         && !labels
             .iter()
             .any(|l| matches!(l, DataLabel::Sanitizer(c) if c.contains(Cap::SHELL_ESCAPE)))
-        && call_ast.is_some_and(|cn| crate::labels::ruby::kernel_exec_is_argv_form(cn))
+        && call_ast.is_some_and(|cn| crate::labels::ruby::kernel_exec_is_argv_form(cn, code))
     {
         labels.push(DataLabel::Sanitizer(Cap::SHELL_ESCAPE));
     }

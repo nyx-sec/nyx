@@ -3211,6 +3211,120 @@ pub fn custom_rule_id(lang: &str, kind: &str, matchers: &[String]) -> String {
     format!("custom.{}", rule_id(lang, kind, &refs))
 }
 
+/// Final path component of a program name, lower-cased, without a `.exe`
+/// suffix: `/bin/Bash` and `C:\\Windows\\cmd.EXE` become `bash` and `cmd`.
+fn program_leaf(name: &str) -> String {
+    let leaf = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    let lower = leaf.to_ascii_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
+}
+
+fn is_shell_program(leaf: &str) -> bool {
+    matches!(
+        leaf,
+        "sh" | "bash"
+            | "zsh"
+            | "dash"
+            | "ksh"
+            | "ash"
+            | "fish"
+            | "csh"
+            | "tcsh"
+            | "cmd"
+            | "powershell"
+            | "pwsh"
+    )
+}
+
+fn is_interpreter_program(leaf: &str) -> bool {
+    [
+        "python", "pypy", "ruby", "perl", "php", "lua", "node", "deno", "bun",
+    ]
+    .iter()
+    .any(|p| leaf.starts_with(p))
+}
+
+fn is_wrapper_program(leaf: &str) -> bool {
+    matches!(
+        leaf,
+        "env"
+            | "sudo"
+            | "doas"
+            | "nice"
+            | "nohup"
+            | "timeout"
+            | "stdbuf"
+            | "setsid"
+            | "xargs"
+            | "busybox"
+            | "command"
+            | "exec"
+            | "time"
+            | "ionice"
+            | "chroot"
+            | "su"
+            | "runuser"
+    )
+}
+
+/// True when running `name` can evaluate a string or script it is handed as
+/// code: a shell, a language interpreter, or a wrapper that runs another
+/// program (`env`, `sudo`, `timeout`).  Used to decide that an argv-form
+/// `system` / `Popen` is not shell-free: the program is chosen literally, but
+/// its arguments are still run as code.
+pub fn is_command_runner_program(name: &str) -> bool {
+    let leaf = program_leaf(name);
+    is_shell_program(&leaf) || is_interpreter_program(&leaf) || is_wrapper_program(&leaf)
+}
+
+/// True when `name` is a wrapper such as `env` or `sudo` that runs the
+/// program named by one of its later arguments.
+pub fn is_wrapper_command(name: &str) -> bool {
+    is_wrapper_program(&program_leaf(name))
+}
+
+/// True when `flag` makes the shell or interpreter `program` run the next
+/// argument as code: `-c` and clustered forms such as `-lc` for POSIX shells,
+/// `/c` and `/k` for cmd, `-Command` for PowerShell, and the eval switch of
+/// the common interpreters (`python -c`, `ruby -e`, `perl -e`, `node -e`,
+/// `php -r`).
+pub fn is_code_flag(program: &str, flag: &str) -> bool {
+    let leaf = program_leaf(program);
+    let lower = flag.to_ascii_lowercase();
+    if leaf == "cmd" {
+        return matches!(lower.as_str(), "/c" | "/k");
+    }
+    if leaf == "powershell" || leaf == "pwsh" {
+        return matches!(
+            lower.as_str(),
+            "-c" | "-command" | "-encodedcommand" | "-ec" | "-e"
+        );
+    }
+    let cluster = |chars: &str| {
+        flag.len() > 1
+            && flag.starts_with('-')
+            && !flag.starts_with("--")
+            && flag[1..].chars().all(|c| c.is_ascii_alphabetic())
+            && flag[1..].chars().any(|c| chars.contains(c))
+    };
+    if is_shell_program(&leaf) {
+        return cluster("c");
+    }
+    if leaf.starts_with("python") || leaf.starts_with("pypy") {
+        return cluster("c");
+    }
+    if leaf.starts_with("ruby") || leaf.starts_with("perl") || leaf == "lua" {
+        return cluster("eE");
+    }
+    if leaf.starts_with("php") {
+        return cluster("r");
+    }
+    if matches!(leaf.as_str(), "node" | "deno" | "bun") {
+        return cluster("ep") || matches!(flag, "--eval" | "--print");
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4445,6 +4559,25 @@ mod tests {
             |kw| kw == "shell",
         );
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn code_flag_covers_clusters_wrappers_and_interpreters() {
+        assert!(is_code_flag("bash", "-c"));
+        assert!(is_code_flag("/bin/sh", "-lc"));
+        assert!(is_code_flag("zsh", "-ic"));
+        assert!(!is_code_flag("bash", "-x"));
+        assert!(!is_code_flag("bash", "--norc"));
+        assert!(is_code_flag("cmd.exe", "/C"));
+        assert!(is_code_flag("python3.11", "-c"));
+        assert!(is_code_flag("ruby", "-e"));
+        assert!(is_code_flag("node", "--eval"));
+        assert!(!is_code_flag("git", "-c"));
+        assert!(is_command_runner_program("C:\\Windows\\System32\\CMD.EXE"));
+        assert!(is_command_runner_program("env"));
+        assert!(is_wrapper_command("/usr/bin/sudo"));
+        assert!(!is_command_runner_program("git"));
+        assert!(!is_command_runner_program("ls"));
     }
 
     #[test]

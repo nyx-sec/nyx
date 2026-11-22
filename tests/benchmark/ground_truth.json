@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 995
+    "corpus_size": 1007
   },
   "cases": [
     {
@@ -31687,6 +31687,447 @@
       "disabled": true,
       "notes": "CVE-2026-85396 patched counterpart: regression guard that Nyx does not refire on the fix. BSD-2-Clause",
       "disabled_reason": "Precision deferred: the fix requires start_with?(dest_dir + File::SEPARATOR) while the vulnerable form checks start_with?(dest_dir), and Nyx has no path-containment predicate for Ruby start_with? that separates the two. Doing so needs the prefix lock to record whether the prefix ends in a separator, which would also change how the rswag CVE-2023-38337 patched form (an opaque method-call root) is judged. Until then the taint flow fires on both twins."
+    },
+    {
+      "case_id": "ruby-cmdi-system-sh-c-001",
+      "file": "ruby/cmdi/cmdi_system_sh_c.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "rb.cmdi.system_interp"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "tags": [
+        "system",
+        "argv",
+        "shell-c"
+      ],
+      "disabled": false,
+      "notes": "argv-form system with an explicit shell still runs the tainted string as code"
+    },
+    {
+      "case_id": "ruby-cmdi-exec-env-bash-001",
+      "file": "ruby/cmdi/cmdi_exec_env_bash.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "rb.cmdi.system_interp"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "tags": [
+        "exec",
+        "argv",
+        "wrapper"
+      ],
+      "disabled": false,
+      "notes": "env bash -c in argv form runs the tainted script in a shell"
+    },
+    {
+      "case_id": "ruby-cmdi-system-dynamic-program-001",
+      "file": "ruby/cmdi/cmdi_system_dynamic_program.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "rb.cmdi.system_interp"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "tags": [
+        "system",
+        "argv",
+        "dynamic-program"
+      ],
+      "disabled": false,
+      "notes": "A tainted program name is arbitrary command execution even in argv form"
+    },
+    {
+      "case_id": "ruby-safe-system-literal-program-env-001",
+      "file": "ruby/safe/safe_system_literal_program_env.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "system",
+        "exec",
+        "argv",
+        "env-hash",
+        "safe"
+      ],
+      "disabled": false,
+      "notes": "Fixed non-shell program with an environment hash and option pairs never starts a shell"
+    },
+    {
+      "case_id": "py-cmdi-popen-bash-lc-001",
+      "file": "python/cmdi/cmdi_popen_bash_lc.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "shell-array",
+        "clustered-flag"
+      ],
+      "disabled": false,
+      "notes": "bash -lc payload in a bare Popen argv list"
+    },
+    {
+      "case_id": "py-cmdi-popen-env-wrapper-001",
+      "file": "python/cmdi/cmdi_popen_env_wrapper.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "shell-array",
+        "tuple",
+        "wrapper"
+      ],
+      "disabled": false,
+      "notes": "env bash -c tuple argv runs the tainted script in a shell"
+    },
+    {
+      "case_id": "py-cmdi-popen-args-keyword-001",
+      "file": "python/cmdi/cmdi_popen_args_keyword.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "shell-array",
+        "args-keyword"
+      ],
+      "disabled": false,
+      "notes": "bash -c payload passed as the args= keyword"
+    },
+    {
+      "case_id": "py-cmdi-popen-dynamic-program-001",
+      "file": "python/cmdi/cmdi_popen_dynamic_program.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "dynamic-program"
+      ],
+      "disabled": false,
+      "notes": "A tainted program in argv element 0 is arbitrary command execution"
+    },
+    {
+      "case_id": "py-cmdi-popen-kwargs-shell-001",
+      "file": "python/cmdi/cmdi_popen_kwargs_shell.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "kwargs-splat",
+        "shell-true"
+      ],
+      "disabled": false,
+      "notes": "shell=True supplied through a ** spread"
+    },
+    {
+      "case_id": "py-cmdi-popen-positional-shell-001",
+      "file": "python/cmdi/cmdi_popen_positional_shell.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "positional-shell"
+      ],
+      "disabled": false,
+      "notes": "shell=True passed as the ninth positional argument"
+    },
+    {
+      "case_id": "py-cmdi-popen-shell-truthy-int-001",
+      "file": "python/cmdi/cmdi_popen_shell_truthy_int.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "cmdi",
+      "cwe": "CWE-78",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [
+        "cfg-unguarded-sink"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "tags": [
+        "popen",
+        "shell-truthy"
+      ],
+      "disabled": false,
+      "notes": "shell=1 is truthy and starts a shell"
+    },
+    {
+      "case_id": "py-safe-popen-literal-program-opts-001",
+      "file": "python/safe/safe_popen_literal_program_opts.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "popen",
+        "argv",
+        "literal-program",
+        "safe"
+      ],
+      "disabled": false,
+      "notes": "Fixed non-shell program, args= keyword, literal-dict spread without shell and an explicit positional shell=False never start a shell"
     }
   ]
 }

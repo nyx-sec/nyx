@@ -62,11 +62,15 @@ pub const PATTERNS: &[Pattern] = &[
         // shell-execution sink and must not fire this cmdi rule — it is routed
         // by its receiver type instead.  Motivated by CVE-2026-42087.
         //
-        // The `arguments` alternatives keep only the single-command-string
-        // shape (optionally after an environment hash and before option
-        // pairs).  Two or more command words is the argv form, which execs the
-        // program directly and never starts a shell.
-        query: r#"(call
+        // The `arguments` alternatives drop only the shell-free argv form:
+        // two or more command words whose program is a fixed string that is
+        // not a shell, interpreter or wrapper (`system("git", "log", x)`),
+        // which execs the program directly.  They keep the single command
+        // string (optionally after an environment hash and before option
+        // pairs), a dynamic program (`system(cmd, "x")`), and a shell,
+        // interpreter or wrapper program (`system("sh", "-c", x)`).  The
+        // program list mirrors `labels::is_command_runner_program`.
+        query: r##"(call
                      !receiver
                      method: (identifier) @m (#match? @m "^(system|exec)$")
                      arguments: [
@@ -75,7 +79,25 @@ pub const PATTERNS: &[Pattern] = &[
                        (argument_list . (hash) . (_) .)
                        (argument_list . (hash) . (_) . (pair))
                      ])
-                   @vuln"#,
+                   @vuln
+                   (call
+                     !receiver
+                     method: (identifier) @m (#match? @m "^(system|exec)$")
+                     arguments: [
+                       (argument_list . (_) @first . (_))
+                       (argument_list . (hash) . (_) @first . (_))
+                     ]
+                     (#not-match? @first "(?s)^(\"[^\"#]*\"|'[^']*'|\\{.*)$"))
+                   @vuln
+                   (call
+                     !receiver
+                     method: (identifier) @m (#match? @m "^(system|exec)$")
+                     arguments: [
+                       (argument_list . (_) @first)
+                       (argument_list . (hash) . (_) @first)
+                     ]
+                     (#match? @first "(?i)^[\"'](.*[/\\\\])?(sh|bash|zsh|dash|ksh|ash|fish|csh|tcsh|cmd|powershell|pwsh|python[0-9.]*|pypy[0-9.]*|ruby[0-9.]*|perl[0-9.]*|php[0-9.]*|lua[0-9.]*|node|nodejs|deno|bun|env|sudo|doas|nice|nohup|timeout|stdbuf|setsid|xargs|busybox|command|exec|time|ionice|chroot|su|runuser)(\\.exe)?[\"']$"))
+                   @vuln"##,
         severity: Severity::High,
         tier: PatternTier::A,
         category: PatternCategory::CommandExec,

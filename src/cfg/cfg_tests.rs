@@ -8635,3 +8635,51 @@ end
         .expect("summary for target");
     assert_eq!(names, vec!["a", "b", "c", "d"]);
 }
+
+#[cfg(test)]
+mod popen_shell_shape_tests {
+    use super::super::literals::extract_shell_array_payload_idents;
+    use tree_sitter::Parser;
+
+    fn matches(src: &str) -> usize {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let stmt = tree.root_node().named_child(0).unwrap();
+        let call = stmt.named_child(0).unwrap();
+        extract_shell_array_payload_idents(call, src.as_bytes()).len()
+    }
+
+    #[test]
+    fn popen_shapes_that_run_code() {
+        for src in [
+            r#"Popen(["bash", "-lc", x])"#,
+            r#"Popen(("bash", "-c", x))"#,
+            r#"Popen(["env", "bash", "-c", x])"#,
+            r#"Popen(["sudo", "-u", "root", "sh", "-c", x])"#,
+            r#"Popen(["python", "-c", x])"#,
+            r#"Popen(args=["bash", "-c", f"echo {x}"])"#,
+            r#"Popen([x, "a"])"#,
+            r#"Popen(args=[x, "a"])"#,
+            r#"Popen(["bash", "-c", x], **opts)"#,
+        ] {
+            assert_eq!(matches(src), 1, "{src}");
+        }
+    }
+
+    #[test]
+    fn popen_shapes_that_do_not() {
+        for src in [
+            r#"Popen(["git", "log", x])"#,
+            r#"Popen(["bash", "run.sh", x])"#,
+            r#"Popen(["bash", "-c", "ls"])"#,
+            r#"Popen(args=["git", "log", x])"#,
+            r#"Popen(x)"#,
+            r#"other([x, "a"])"#,
+        ] {
+            assert_eq!(matches(src), 0, "{src}");
+        }
+    }
+}
