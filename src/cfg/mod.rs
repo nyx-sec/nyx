@@ -1445,6 +1445,14 @@ pub struct NodeInfo {
     /// other node.
     #[serde(default)]
     pub index_read_key: Option<Box<str>>,
+    /// Python only: identifiers this statement reads solely through a
+    /// scheme-free and host-free `urlparse` component (`parsed.path`,
+    /// `.query`, `.fragment`, `.params`) and nowhere else.  SSA lowering
+    /// turns those reads into field projections of the parse result, which
+    /// the taint transfer then treats as unable to carry a redirect target.
+    /// Empty for every other node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hostless_proj_roots: Vec<Box<str>>,
 }
 
 /// A `map[key]` read whose presence result lands in `result_var`.  See
@@ -2206,6 +2214,79 @@ fn plain_index_read_key(ast: Node, code: &[u8]) -> Option<Box<str>> {
     }
     let (arr, key) = subscript_components(rhs, code)?;
     (arr != key).then(|| key.into_boxed_str())
+}
+
+/// Identifiers a Python statement reads only as `<id>.path`, `<id>.query`,
+/// `<id>.fragment` or `<id>.params` (see [`NodeInfo::hostless_proj_roots`]).
+/// Any other read of the identifier in the same statement (`<id>`,
+/// `<id>.netloc`, `<id>.geturl()`) disqualifies it.  The cheap `uses` suffix
+/// test runs first so ordinary statements never walk their subtree.
+fn python_hostless_projection_roots(
+    ast: Node,
+    uses: &[String],
+    arg_uses: &[Vec<String>],
+    code: &[u8],
+) -> Vec<Box<str>> {
+    const FIELDS: [&str; 4] = ["path", "query", "fragment", "params"];
+    if !matches!(
+        ast.kind(),
+        "assignment"
+            | "augmented_assignment"
+            | "expression_statement"
+            | "return_statement"
+            | "call"
+    ) || !uses
+        .iter()
+        .chain(arg_uses.iter().flatten())
+        .any(|u| u.rsplit_once('.').is_some_and(|(_, f)| FIELDS.contains(&f)))
+    {
+        return Vec::new();
+    }
+    let mut projected: Vec<String> = Vec::new();
+    let mut bare: Vec<String> = Vec::new();
+    // The target of `x.path = v` is a write, not a read.
+    let root = if matches!(ast.kind(), "assignment" | "augmented_assignment") {
+        match ast.child_by_field_name("right") {
+            Some(r) => r,
+            None => return Vec::new(),
+        }
+    } else {
+        ast
+    };
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "attribute" => {
+                let obj = n.child_by_field_name("object");
+                let attr = n.child_by_field_name("attribute");
+                if let (Some(obj), Some(attr)) = (obj, attr)
+                    && obj.kind() == "identifier"
+                    && let Some(f) = text_of(attr, code)
+                    && FIELDS.contains(&f.as_str())
+                    && let Some(r) = text_of(obj, code)
+                {
+                    projected.push(r);
+                    continue;
+                }
+            }
+            "identifier" => {
+                if let Some(t) = text_of(n, code) {
+                    bare.push(t);
+                }
+                continue;
+            }
+            _ => {}
+        }
+        let mut c = n.walk();
+        stack.extend(n.children(&mut c));
+    }
+    projected.sort();
+    projected.dedup();
+    projected
+        .into_iter()
+        .filter(|r| !bare.contains(r))
+        .map(String::into_boxed_str)
+        .collect()
 }
 
 fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
@@ -5882,6 +5963,12 @@ pub(super) fn push_node<'a>(
         Vec::new()
     };
 
+    let hostless_proj_roots = if lang == "python" {
+        python_hostless_projection_roots(ast, &uses, &arg_uses, code)
+    } else {
+        Vec::new()
+    };
+
     let idx = g.add_node(NodeInfo {
         kind,
         call: CallMeta {
@@ -5988,6 +6075,7 @@ pub(super) fn push_node<'a>(
         } else {
             None
         },
+        hostless_proj_roots,
     });
 
     debug!(

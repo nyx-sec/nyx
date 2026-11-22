@@ -1,0 +1,16 @@
+{
+  "description": "urlparse(x).path/.query/.fragment carry no scheme or host, so rebuilding the target from them is not an open redirect",
+  "tags": ["taint", "open-redirect", "urlparse", "safe"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "line_range": [11, 18],
+      "evidence_contains": [],
+      "notes": "hostless components only",
+      "must_match": false,
+      "must_not_match": true
+    }
+  ]
+}

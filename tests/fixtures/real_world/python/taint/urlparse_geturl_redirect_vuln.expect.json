@@ -1,0 +1,15 @@
+{
+  "description": "urlparse(x).geturl() keeps scheme and host, so the redirect target is still attacker controlled",
+  "tags": ["taint", "open-redirect", "urlparse", "positive"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-open-redirect",
+      "severity": null,
+      "must_match": true,
+      "line_range": [14, 14],
+      "evidence_contains": [],
+      "notes": "geturl() returns the whole URL"
+    }
+  ]
+}

@@ -8407,6 +8407,19 @@ pub(super) fn transfer_inst(
             // untainted projection (no entry inserted).
             let mut combined: Option<VarTaint> = state.get(*receiver).cloned();
 
+            // `urlparse(x).path` / `.query` / `.fragment` / `.params` hold
+            // no scheme or host, so they cannot steer a redirect off-site.
+            // Every other cap flows through unchanged.
+            if let Some(t) = combined.as_mut()
+                && t.caps.intersects(Cap::OPEN_REDIRECT)
+                && is_url_parse_hostless_projection(*receiver, *field, ssa, transfer.lang)
+            {
+                t.caps &= !Cap::OPEN_REDIRECT;
+                if t.caps.is_empty() {
+                    combined = None;
+                }
+            }
+
             // W4: collect cell validation channels alongside taint.
             // `must` AND-intersects across the contributing cells; a
             // single un-validated cell wins because it represents a
@@ -13377,6 +13390,46 @@ fn name_has_single_definition(ssa: &SsaBody, name: &str) -> bool {
         .take(2)
         .count()
         == 1
+}
+
+/// Whether `receiver.field` reads a component of a Python `urlparse` /
+/// `urlsplit` result that cannot carry a scheme or host (`path`, `query`,
+/// `fragment`, `params`).  `netloc`, `hostname`, `scheme`, and `geturl()`
+/// are deliberately not covered.  Plain copies of the parse result are
+/// followed so `p = urlparse(x); q = p; q.path` is recognised too.
+fn is_url_parse_hostless_projection(
+    receiver: SsaValue,
+    field: crate::ssa::ir::FieldId,
+    ssa: &SsaBody,
+    lang: Lang,
+) -> bool {
+    if lang != Lang::Python {
+        return false;
+    }
+    if !matches!(
+        ssa.field_interner.resolve(field),
+        "path" | "query" | "fragment" | "params"
+    ) {
+        return false;
+    }
+    let mut cur = receiver;
+    for _ in 0..4 {
+        let Some(inst) = find_inst_for_value(cur, ssa) else {
+            return false;
+        };
+        match &inst.op {
+            SsaOp::Assign(uses) if uses.len() == 1 => cur = uses[0],
+            SsaOp::Call {
+                callee,
+                receiver: None,
+                ..
+            } => {
+                return crate::ssa::ir::is_python_url_parse_callee(callee);
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Locate the [`SsaInst`] that defines `v` within its declared block.

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 1253
+    "corpus_size": 1255
   },
   "cases": [
     {
@@ -39033,12 +39033,10 @@
         "oauth",
         "redirect",
         "patched",
-        "negative",
-        "disabled"
+        "negative"
       ],
-      "disabled": true,
-      "notes": "CVE-2026-28415 patched counterpart: regression guard that Nyx does not refire on the fix. Apache-2.0",
-      "disabled_reason": "Precision deferred: the fix rebuilds the target from urlparse(target).path/.query/.fragment, which drops scheme and host, but Nyx has no model for these projections of a urlparse result, so taint-open-redirect still fires at the RedirectResponse call. A sound fix needs the projection to be separated from the bare parse result in def-use naming (parsed.path and parsed.netloc currently share the base value), plus a per-function check that the base was bound to urlparse/urlsplit."
+      "disabled": false,
+      "notes": "CVE-2026-28415 patched counterpart: the fix rebuilds the redirect target from urlparse(target).path/.query/.fragment, which carry no scheme or host. Regression guard that Nyx does not refire on the fix. Apache-2.0"
     },
     {
       "case_id": "cve-ruby-2025-54314-vulnerable",
@@ -40214,6 +40212,74 @@
       ],
       "disabled": false,
       "notes": "Safe twin of go-redirect-trim-aliased-001: the closure only reads the trimmed value, so the origin lock stands."
+    },
+    {
+      "case_id": "py-open_redirect-urlparse-geturl-001",
+      "file": "python/open_redirect/redirect_urlparse_geturl.py",
+      "language": "python",
+      "is_vulnerable": true,
+      "vuln_class": "open_redirect",
+      "cwe": "CWE-601",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-open-redirect"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          14,
+          14
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ]
+      ],
+      "tags": [
+        "open_redirect",
+        "urlparse",
+        "geturl",
+        "recall-guard"
+      ],
+      "disabled": false,
+      "notes": "urlparse(x).geturl() keeps scheme and host, so the redirect stays attacker controlled. Recall twin of the hostless-projection suppression."
+    },
+    {
+      "case_id": "py-safe-urlparse-path-redirect-001",
+      "file": "python/safe/safe_urlparse_path_redirect.py",
+      "language": "python",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "taint-open-redirect",
+        "taint-unsanitised-flow"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "open_redirect",
+        "urlparse",
+        "hostless-projection"
+      ],
+      "disabled": false,
+      "notes": "urlparse(x).path/.query/.fragment carry no scheme or host, so a target rebuilt from them cannot leave the site."
     }
   ]
 }
