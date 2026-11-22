@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 977
+    "corpus_size": 979
   },
   "cases": [
     {
@@ -31085,6 +31085,65 @@
       ],
       "disabled": false,
       "notes": "Request-derived redirect target still fires next to sibling handlers."
+    },
+    {
+      "case_id": "js-safe-index-key-lookup-001",
+      "file": "javascript/safe/safe_index_key_lookup.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "index-read",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A request-supplied key into a server-side table selects an element; the element is not request data."
+    },
+    {
+      "case_id": "js-interproc-index-read-tainted-container-001",
+      "file": "javascript/interprocedural/index_read_tainted_container.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          6,
+          6
+        ]
+      ],
+      "tags": [
+        "index-read"
+      ],
+      "disabled": false,
+      "notes": "An element read from a tainted container keeps the container's taint."
     }
   ]
 }

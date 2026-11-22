@@ -7379,6 +7379,17 @@ pub(super) fn transfer_inst(
 
             if !info.is_eq_with_const {
                 for &use_val in uses {
+                    // `container[key]`: the key selects an element, the value
+                    // comes from the container.
+                    if let Some(key) = info.index_read_key.as_deref()
+                        && ssa
+                            .value_defs
+                            .get(use_val.0 as usize)
+                            .and_then(|vd| vd.var_name.as_deref())
+                            == Some(key)
+                    {
+                        continue;
+                    }
                     if let Some(taint) = state.get(use_val) {
                         combined_caps |= taint.caps;
                         inherited_summary |= taint.uses_summary;

@@ -1,0 +1,22 @@
+{
+  "description": "A request-supplied key into an untainted container does not taint the element read.",
+  "tags": [
+    "taint",
+    "index-read",
+    "safe"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "line_range": [
+        1,
+        12
+      ],
+      "must_not_match": true,
+      "notes": "repos is a server-side table; the key only selects an entry"
+    }
+  ]
+}

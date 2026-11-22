@@ -1302,6 +1302,14 @@ pub struct NodeInfo {
     /// (`cfg-error-fallthrough`) do not apply to it.
     #[serde(default)]
     pub is_ternary_condition: bool,
+    /// For an assignment whose whole right-hand side is a subscript read
+    /// `container[key]` of a plain-identifier container (`user = repos[name]`):
+    /// the text of the key.  The key picks which element is read; it is not
+    /// part of the value, so the taint transfer leaves the key operand out of
+    /// the result and takes taint from the container only.  `None` for every
+    /// other node.
+    #[serde(default)]
+    pub index_read_key: Option<Box<str>>,
 }
 
 /// A `map[key]` read whose presence result lands in `result_var`.  See
@@ -2038,6 +2046,33 @@ pub(super) fn build_cond_arith(
 /// Find the RHS value node of an assignment-like AST node (variable declarator,
 /// lexical declaration, assignment expression). Used by helpers that need to
 /// inspect what an identifier is being initialized to.
+/// Key text of `container[key]` when `ast` is a plain assignment or
+/// declaration whose entire right-hand side is that subscript read (see
+/// [`NodeInfo::index_read_key`]).  The kind check comes first so ordinary
+/// nodes pay one string match.
+fn plain_index_read_key(ast: Node, code: &[u8]) -> Option<Box<str>> {
+    let assign = match ast.kind() {
+        "variable_declarator"
+        | "assignment_expression"
+        | "assignment"
+        | "lexical_declaration"
+        | "variable_declaration" => ast,
+        "expression_statement" => ast
+            .named_child(0)
+            .filter(|c| matches!(c.kind(), "assignment_expression" | "assignment"))?,
+        _ => return None,
+    };
+    let mut rhs = assignment_rhs(assign)?;
+    while matches!(
+        rhs.kind(),
+        "parenthesized_expression" | "non_null_expression" | "as_expression"
+    ) {
+        rhs = rhs.named_child(0)?;
+    }
+    let (arr, key) = subscript_components(rhs, code)?;
+    (arr != key).then(|| key.into_boxed_str())
+}
+
 fn assignment_rhs<'a>(ast: Node<'a>) -> Option<Node<'a>> {
     match ast.kind() {
         "variable_declarator" | "assignment_expression" | "assignment" => ast
@@ -5314,6 +5349,11 @@ pub(super) fn push_node<'a>(
             None
         },
         is_ternary_condition: false,
+        index_read_key: if rmw.is_none() {
+            plain_index_read_key(ast, code)
+        } else {
+            None
+        },
     });
 
     debug!(
