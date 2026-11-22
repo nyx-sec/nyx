@@ -1,0 +1,19 @@
+{
+  "description": "A constant that is appended to, or an iterator over a non-literal receiver, is not a closed set, so send keeps firing.",
+  "tags": ["reflection", "ruby", "pattern"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "rb.reflection.send_dynamic",
+      "severity": null,
+      "line_range": [6, 6],
+      "notes": "NAMES is mutated in this file"
+    },
+    {
+      "rule_id": "rb.reflection.send_dynamic",
+      "severity": null,
+      "line_range": [10, 10],
+      "notes": "receiver is not a literal"
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "description": "A root option that is attacker controlled, the filesystem root or computed from input does not confine sendFile or download, so path traversal is still reported.",
+  "tags": [
+    "taint",
+    "path-traversal",
+    "javascript",
+    "express",
+    "positive"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        4,
+        4
+      ],
+      "notes": "root is not a safe constant"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        5,
+        5
+      ],
+      "notes": "root is not a safe constant"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        6,
+        6
+      ],
+      "notes": "root is not a safe constant"
+    },
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [
+        7,
+        7
+      ],
+      "notes": "root is not a safe constant"
+    }
+  ]
+}

@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 981
+    "corpus_size": 995
   },
   "cases": [
     {
@@ -31205,6 +31205,484 @@
       ],
       "disabled": false,
       "notes": "Per-handler declarations of the same name share no taint."
+    },
+    {
+      "case_id": "java-sqli-execute-stmt-001",
+      "file": "java/sqli/SqliExecuteStatementConcat.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "java.sqli.execute_concat"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow",
+        "state-resource-leak"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          9,
+          9
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "concat",
+        "execute",
+        "jdbc"
+      ],
+      "disabled": false,
+      "notes": "Statement.execute with a concatenated request parameter."
+    },
+    {
+      "case_id": "java-safe-execute-cli-001",
+      "file": "java/safe/SafeExecuteCliHelper.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "execute",
+        "cli-helper",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "A bare execute() helper and a static call on a CamelCase type are not JDBC."
+    },
+    {
+      "case_id": "java-xss-printwriter-001",
+      "file": "java/xss/XssPrintWriterResponse.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          11,
+          11
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          8,
+          8
+        ]
+      ],
+      "tags": [
+        "printwriter",
+        "response-writer"
+      ],
+      "disabled": false,
+      "notes": "Request parameter printed through the servlet response PrintWriter."
+    },
+    {
+      "case_id": "java-safe-printstream-001",
+      "file": "java/safe/SafePrintStreamField.java",
+      "language": "java",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "printstream",
+        "println",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "println on a PrintStream field is console output, not an HTML response sink."
+    },
+    {
+      "case_id": "rb-reflection-send-var-001",
+      "file": "ruby/reflection/send_dynamic_variable.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "reflection",
+      "cwe": "CWE-470",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rb.reflection.send_dynamic"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "send",
+        "dynamic-dispatch"
+      ],
+      "disabled": false,
+      "notes": "send with a caller supplied method name."
+    },
+    {
+      "case_id": "rb-safe-send-closed-set-001",
+      "file": "ruby/safe/safe_send_closed_set.rb",
+      "language": "ruby",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "send",
+        "closed-set",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "send with a symbol first argument or an element of a closed literal set."
+    },
+    {
+      "case_id": "rs-narrow-cast-len-001",
+      "file": "rust/memory/narrow_cast_len.rs",
+      "language": "rust",
+      "is_vulnerable": true,
+      "vuln_class": "memory",
+      "cwe": "CWE-197",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rs.memory.narrow_cast"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "LOW",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          2,
+          2
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "as-cast",
+        "truncation"
+      ],
+      "disabled": false,
+      "notes": "len() and u64 cast to 16 and 8 bit integers can truncate."
+    },
+    {
+      "case_id": "rs-safe-lossless-cast-001",
+      "file": "rust/safe/safe_lossless_cast.rs",
+      "language": "rust",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "as-cast",
+        "lossless",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "repr(u8) enum variant, in-range const, masked value and comparison casts cannot truncate."
+    },
+    {
+      "case_id": "js-path-sendfile-noroot-001",
+      "file": "javascript/path_traversal/path_sendfile_no_root.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          5,
+          5
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          5,
+          16
+        ]
+      ],
+      "tags": [
+        "express",
+        "res.download"
+      ],
+      "disabled": false,
+      "notes": "res.download of a request path with no root option."
+    },
+    {
+      "case_id": "js-safe-sendfile-root-001",
+      "file": "javascript/safe/safe_sendfile_root.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "file_presence",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "express",
+        "res.download",
+        "root-option",
+        "negative"
+      ],
+      "disabled": false,
+      "notes": "res.download with a root option is confined to root by the send module."
+    },
+    {
+      "case_id": "js-path-sendfile-root-dynamic-001",
+      "file": "javascript/path_traversal/path_sendfile_root_dynamic.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "path_traversal",
+      "cwe": "CWE-22",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          4,
+          4
+        ],
+        [
+          5,
+          5
+        ],
+        [
+          6,
+          6
+        ],
+        [
+          7,
+          7
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          4,
+          4
+        ],
+        [
+          5,
+          5
+        ],
+        [
+          6,
+          6
+        ],
+        [
+          7,
+          7
+        ]
+      ],
+      "tags": [
+        "express",
+        "root"
+      ],
+      "disabled": false,
+      "notes": "A non-constant root option does not confine sendFile or download."
+    },
+    {
+      "case_id": "java-xss-printstream-001",
+      "file": "java/xss/XssPrintStreamResponse.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "xss",
+      "cwe": "CWE-79",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "taint-unsanitised-flow"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "HIGH",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          10,
+          10
+        ],
+        [
+          15,
+          15
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          10,
+          10
+        ],
+        [
+          15,
+          15
+        ]
+      ],
+      "tags": [
+        "printstream",
+        "response-writer"
+      ],
+      "disabled": false,
+      "notes": "PrintStream and DataOutputStream wrapping the response stream are response writers."
+    },
+    {
+      "case_id": "java-sqli-execute-helper-001",
+      "file": "java/sqli/SqliExecuteUserHelper.java",
+      "language": "java",
+      "is_vulnerable": true,
+      "vuln_class": "sqli",
+      "cwe": "CWE-89",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "java.sqli.execute_concat"
+      ],
+      "allowed_alternative_rule_ids": [
+        "taint-unsanitised-flow",
+        "state-resource-leak"
+      ],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          19,
+          19
+        ],
+        [
+          20,
+          20
+        ]
+      ],
+      "expected_source_lines": [
+        [
+          18,
+          18
+        ]
+      ],
+      "tags": [
+        "execute",
+        "helper"
+      ],
+      "disabled": false,
+      "notes": "A user helper named execute with concatenated SQL still fires."
+    },
+    {
+      "case_id": "rb-reflection-send-shadow-001",
+      "file": "ruby/reflection/send_shadowed_block_param.rb",
+      "language": "ruby",
+      "is_vulnerable": true,
+      "vuln_class": "reflection",
+      "cwe": "CWE-470",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "rb.reflection.send_dynamic"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [
+        [
+          3,
+          3
+        ]
+      ],
+      "expected_source_lines": [],
+      "tags": [
+        "send",
+        "shadowing"
+      ],
+      "disabled": false,
+      "notes": "An inner block parameter shadowing the literal iterator keeps send flagged."
     }
   ]
 }

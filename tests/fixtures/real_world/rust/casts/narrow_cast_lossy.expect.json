@@ -1,0 +1,13 @@
+{
+  "description": "Casts whose operand can exceed the target width keep firing: len(), plain variables, an enum wider than the target, an enum with explicit discriminants, an out-of-range const, a mask wider than the target and an out-of-range literal.",
+  "tags": ["rust", "casts", "pattern"],
+  "modes": ["full"],
+  "expected": [
+    {"rule_id": "rs.memory.narrow_cast", "severity": null, "line_range": [14, 14], "notes": "len() as u16"},
+    {"rule_id": "rs.memory.narrow_cast", "severity": null, "line_range": [19, 19], "notes": "repr(u16) enum to u8"},
+    {"rule_id": "rs.memory.narrow_cast", "severity": null, "line_range": [20, 20], "notes": "explicit discriminant 300 to u8"},
+    {"rule_id": "rs.memory.narrow_cast", "severity": null, "line_range": [21, 21], "notes": "const 70000 to u16"},
+    {"rule_id": "rs.memory.narrow_cast", "severity": null, "line_range": [22, 22], "notes": "mask 0x1FF exceeds u8"},
+    {"rule_id": "rs.memory.narrow_cast", "severity": null, "line_range": [23, 23], "notes": "literal 300 to u8"}
+  ]
+}

@@ -119,6 +119,9 @@ pub const PATTERNS: &[Pattern] = &[
     Pattern {
         id: "java.sqli.execute_concat",
         description: "SQL execute with concatenated string argument",
+        // The receiver is judged in `ast_query_diag`: an instance receiver is
+        // JDBC, while a bare or class-name receiver must concatenate visible
+        // SQL text (a user helper may wrap a Statement, or be a CLI wrapper).
         query: r#"(method_invocation
                      name: (identifier) @id (#match? @id "^execute(Query|Update)?$")
                      arguments: (argument_list

@@ -1,0 +1,13 @@
+{
+  "description": "A PrintWriter obtained from the servlet response still reaches the HTML sink.",
+  "tags": ["taint", "xss", "java", "response-writer"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "taint-unsanitised-flow",
+      "severity": null,
+      "line_range": [9, 10],
+      "notes": "request parameter written into the response writer"
+    }
+  ]
+}

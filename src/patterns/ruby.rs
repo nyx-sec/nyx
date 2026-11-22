@@ -96,11 +96,11 @@ pub const PATTERNS: &[Pattern] = &[
     // ── Tier A: Reflection ─────────────────────────────────────────────
     Pattern {
         id: "rb.reflection.send_dynamic",
-        description: "send() with a non-symbol argument is arbitrary method dispatch",
+        description: "send() with a non-symbol first argument is arbitrary method dispatch",
         query: r#"(call
                      method: (identifier) @m (#eq? @m "send")
                      arguments: (argument_list
-                       [(identifier) (string (interpolation)+)] @vuln))
+                       . [(identifier) (string (interpolation)+)] @vuln))
         "#,
         severity: Severity::Medium,
         tier: PatternTier::B,

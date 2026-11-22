@@ -1,0 +1,19 @@
+{
+  "description": "send with a variable or interpolated first argument is arbitrary method dispatch and still fires.",
+  "tags": ["reflection", "ruby", "pattern"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "rb.reflection.send_dynamic",
+      "severity": null,
+      "line_range": [3, 3],
+      "notes": "first argument is a caller supplied name"
+    },
+    {
+      "rule_id": "rb.reflection.send_dynamic",
+      "severity": null,
+      "line_range": [7, 7],
+      "notes": "interpolated method name"
+    }
+  ]
+}

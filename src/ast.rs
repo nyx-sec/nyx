@@ -1669,6 +1669,24 @@ impl<'a> ParsedSource<'a> {
         {
             return None;
         }
+        // Layer N: Rust `as u8/i8/u16/i16` whose operand provably fits the
+        // target (same-file `repr` enum variant, in-range literal or const,
+        // masked value, bool, ASCII char).
+        if meta.id == "rs.memory.narrow_cast"
+            && self.lang_slug == "rust"
+            && let Some(cast) = vuln_node.filter(|v| v.kind() == "type_cast_expression")
+            && crate::patterns::rust_cast::is_provably_lossless_cast(cast, self.bytes)
+        {
+            return None;
+        }
+        // Layer I2: Ruby `send(name)` where `name` iterates a closed literal
+        // set (`%w[a b].each { |n| obj.send(n) }`).
+        if meta.id == "rb.reflection.send_dynamic"
+            && self.lang_slug == "ruby"
+            && vuln_node.is_some_and(|arg| is_ruby_send_closed_set_arg(arg, self.bytes))
+        {
+            return None;
+        }
         // Layer J: JS/TS `setHeader('Access-Control-Allow-Origin', origin)`
         // where an allowlist test on `origin` guards the call, either as the
         // enclosing `if` (`if (ALLOWED.includes(origin)) ...`) or as an
@@ -1712,6 +1730,18 @@ impl<'a> ParsedSource<'a> {
             meta.id,
             "js.config.verbose_error_response" | "ts.config.verbose_error_response"
         ) && is_js_error_shorthand_a_message(cap_node, self.bytes)
+        {
+            return None;
+        }
+        // Layer J2: Java `execute(..)` / `Type.execute(..)` without an
+        // instance receiver.  JDBC `execute*` runs on a Statement or
+        // Connection, but a user helper of that name also wraps one, so the
+        // call is kept when its concatenation visibly builds SQL and dropped
+        // otherwise (CLI wrappers such as `Exec.execute("get " + url)`).
+        if meta.id == "java.sqli.execute_concat"
+            && self.lang_slug == "java"
+            && let Some(call) = vuln_node.filter(|v| v.kind() == "method_invocation")
+            && !java_execute_concat_may_be_sql(call, self.bytes)
         {
             return None;
         }
@@ -4747,6 +4777,295 @@ fn is_ruby_eval_string_arg(cap_node: tree_sitter::Node) -> bool {
             continue;
         }
         return true;
+    }
+    false
+}
+
+/// A `execute*` call on an instance receiver is judged JDBC.  With no
+/// receiver or a class-name receiver, the concatenation must contain a string
+/// literal that starts like a SQL statement.
+fn java_execute_concat_may_be_sql(call: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let class_like = |t: &str| {
+        let mut ch = t.chars();
+        ch.next().is_some_and(|c| c.is_ascii_uppercase())
+            && ch
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    match call.child_by_field_name("object") {
+        Some(o) => {
+            let Ok(t) = o.utf8_text(bytes) else {
+                return true;
+            };
+            if !class_like(t) {
+                return true;
+            }
+        }
+        None => {}
+    }
+    let Some(arg) = call
+        .child_by_field_name("arguments")
+        .and_then(|a| a.named_child(0))
+    else {
+        return true;
+    };
+    let mut stack = vec![arg];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "string_literal"
+            && let Ok(t) = n.utf8_text(bytes)
+        {
+            let t = t.trim_matches('"').trim_start().to_ascii_lowercase();
+            if [
+                "select ",
+                "insert ",
+                "update ",
+                "delete ",
+                "drop ",
+                "create ",
+                "alter ",
+                "call ",
+                "merge ",
+                "with ",
+                "replace ",
+                "truncate ",
+            ]
+            .iter()
+            .any(|k| t.starts_with(k))
+            {
+                return true;
+            }
+        }
+        let mut w = n.walk();
+        stack.extend(n.named_children(&mut w));
+    }
+    false
+}
+
+/// True iff `ident` (the first argument of a Ruby `send`) is the element
+/// parameter of an enclosing iterator block whose receiver is a closed set of
+/// literals: an array / `%w` / `%i` literal, or a constant assigned exactly
+/// once in this file to such a literal and never mutated here.
+///
+/// `[:scheme, :host].each { |c| uri.send(c) }` can only dispatch to the
+/// listed names, so it is not arbitrary method dispatch.  Constants defined
+/// in other files, scoped constants and constants that are appended to keep
+/// firing, because the set is then not provably closed.
+fn is_ruby_send_closed_set_arg(ident: tree_sitter::Node, bytes: &[u8]) -> bool {
+    if ident.kind() != "identifier" {
+        return false;
+    }
+    let Ok(name) = ident.utf8_text(bytes) else {
+        return false;
+    };
+    let mut cur = ident.parent();
+    while let Some(n) = cur {
+        if matches!(n.kind(), "block" | "do_block") && ruby_block_binds_name(n, name, bytes) {
+            // The nearest block that binds `name` decides: an inner block
+            // parameter shadows any outer literal-iterating block.
+            return ruby_iterator_literal_receiver(n, name, bytes).is_some_and(|recv| {
+                ruby_receiver_is_closed_literal_set(recv, bytes)
+                    && !ruby_node_assigns_identifier(n, name, bytes)
+            });
+        }
+        if matches!(n.kind(), "method" | "singleton_method" | "program") {
+            return false;
+        }
+        cur = n.parent();
+    }
+    false
+}
+
+/// True iff any parameter (or block-local) of `block` is named `name`.
+fn ruby_block_binds_name(block: tree_sitter::Node, name: &str, bytes: &[u8]) -> bool {
+    let Some(params) = block.child_by_field_name("parameters") else {
+        return false;
+    };
+    let mut stack = vec![params];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "identifier" && n.utf8_text(bytes).ok() == Some(name) {
+            return true;
+        }
+        let mut w = n.walk();
+        stack.extend(n.named_children(&mut w));
+    }
+    false
+}
+
+/// For an iterator block whose FIRST parameter is `name`, the receiver of the
+/// call the block is attached to.
+fn ruby_iterator_literal_receiver<'a>(
+    block: tree_sitter::Node<'a>,
+    name: &str,
+    bytes: &[u8],
+) -> Option<tree_sitter::Node<'a>> {
+    let params = block.child_by_field_name("parameters")?;
+    let first = params.named_child(0)?;
+    if first.kind() != "identifier" || first.utf8_text(bytes).ok()? != name {
+        return None;
+    }
+    let call = block.parent()?;
+    if call.kind() != "call" {
+        return None;
+    }
+    let method = call.child_by_field_name("method")?.utf8_text(bytes).ok()?;
+    if !matches!(
+        method,
+        "each"
+            | "map"
+            | "collect"
+            | "flat_map"
+            | "filter_map"
+            | "select"
+            | "reject"
+            | "each_with_index"
+            | "each_with_object"
+            | "any?"
+            | "all?"
+            | "none?"
+            | "find"
+            | "detect"
+            | "sum"
+    ) {
+        return None;
+    }
+    call.child_by_field_name("receiver")
+}
+
+fn ruby_literal_collection_is_closed(node: tree_sitter::Node) -> bool {
+    match node.kind() {
+        "string_array" | "symbol_array" => (0..node.named_child_count() as u32).all(|i| {
+            node.named_child(i as _).is_some_and(|c| {
+                let mut w = c.walk();
+                !c.named_children(&mut w)
+                    .any(|g| g.kind() == "interpolation")
+            })
+        }),
+        "array" => (0..node.named_child_count() as u32).all(|i| {
+            node.named_child(i as _).is_some_and(|c| match c.kind() {
+                "simple_symbol" | "integer" | "float" | "true" | "false" | "nil" => true,
+                "string" => {
+                    let mut w = c.walk();
+                    !c.named_children(&mut w)
+                        .any(|g| g.kind() == "interpolation")
+                }
+                _ => false,
+            })
+        }),
+        _ => false,
+    }
+}
+
+fn ruby_receiver_is_closed_literal_set(recv: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let mut recv = recv;
+    // `LIST.freeze` / `%w[a b].freeze`
+    if recv.kind() == "call"
+        && recv
+            .child_by_field_name("method")
+            .and_then(|m| m.utf8_text(bytes).ok())
+            == Some("freeze")
+        && let Some(inner) = recv.child_by_field_name("receiver")
+    {
+        recv = inner;
+    }
+    match recv.kind() {
+        "constant" => ruby_constant_is_closed_literal_set(recv, bytes),
+        _ => ruby_literal_collection_is_closed(recv),
+    }
+}
+
+fn ruby_constant_is_closed_literal_set(constant: tree_sitter::Node, bytes: &[u8]) -> bool {
+    let Ok(name) = constant.utf8_text(bytes) else {
+        return false;
+    };
+    let mut root = constant;
+    while let Some(p) = root.parent() {
+        root = p;
+    }
+    let mut assigned = 0usize;
+    let mut closed = false;
+    let mut mutated = false;
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "assignment" | "operator_assignment" => {
+                if n.child_by_field_name("left").is_some_and(|l| {
+                    l.kind() == "constant" && l.utf8_text(bytes).ok() == Some(name)
+                }) {
+                    assigned += 1;
+                    if n.kind() == "assignment"
+                        && let Some(mut r) = n.child_by_field_name("right")
+                    {
+                        if r.kind() == "call"
+                            && r.child_by_field_name("method")
+                                .and_then(|m| m.utf8_text(bytes).ok())
+                                == Some("freeze")
+                            && let Some(inner) = r.child_by_field_name("receiver")
+                        {
+                            r = inner;
+                        }
+                        closed = ruby_literal_collection_is_closed(r);
+                    }
+                }
+            }
+            "call" => {
+                if n.child_by_field_name("receiver").is_some_and(|r| {
+                    r.kind() == "constant" && r.utf8_text(bytes).ok() == Some(name)
+                }) && n
+                    .child_by_field_name("method")
+                    .and_then(|m| m.utf8_text(bytes).ok())
+                    .is_some_and(|m| {
+                        matches!(
+                            m,
+                            "push"
+                                | "append"
+                                | "<<"
+                                | "concat"
+                                | "unshift"
+                                | "prepend"
+                                | "insert"
+                                | "replace"
+                                | "[]="
+                                | "map!"
+                                | "collect!"
+                                | "fill"
+                        )
+                    })
+                {
+                    mutated = true;
+                }
+            }
+            "binary" => {
+                if n.child_by_field_name("left").is_some_and(|l| {
+                    l.kind() == "constant" && l.utf8_text(bytes).ok() == Some(name)
+                }) && n
+                    .child_by_field_name("operator")
+                    .is_some_and(|o| o.kind() == "<<")
+                {
+                    mutated = true;
+                }
+            }
+            _ => {}
+        }
+        let mut w = n.walk();
+        stack.extend(n.children(&mut w));
+    }
+    assigned == 1 && closed && !mutated
+}
+
+/// True iff `scope` assigns to a local named `name`, which would let the
+/// iterator element be replaced by something other than the literal.
+fn ruby_node_assigns_identifier(scope: tree_sitter::Node, name: &str, bytes: &[u8]) -> bool {
+    let mut stack = vec![scope];
+    while let Some(n) = stack.pop() {
+        if matches!(n.kind(), "assignment" | "operator_assignment")
+            && n.child_by_field_name("left")
+                .is_some_and(|l| l.kind() == "identifier" && l.utf8_text(bytes).ok() == Some(name))
+        {
+            return true;
+        }
+        let mut w = n.walk();
+        stack.extend(n.children(&mut w));
     }
     false
 }
