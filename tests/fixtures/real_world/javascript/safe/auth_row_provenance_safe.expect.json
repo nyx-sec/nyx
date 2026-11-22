@@ -1,0 +1,13 @@
+{
+  "description": "Ids read off rows the unit already holds (a passed-in entity, an insert result, rows from a query) are not request-supplied ids.",
+  "tags": ["auth", "javascript", "row-provenance", "negative"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "line_range": [1, 22],
+      "must_not_match": true,
+      "notes": "every id here is read off a loaded or minted row"
+    }
+  ]
+}

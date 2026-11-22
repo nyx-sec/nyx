@@ -1,0 +1,19 @@
+{
+  "description": "A row found by a bare request name, then used by id, still reports; so does a raw path id.",
+  "tags": ["auth", "go", "row-provenance", "positive"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "line_range": [16, 16],
+      "must_match": true,
+      "notes": "r.ID after a name-only lookup with no scope pin"
+    },
+    {
+      "rule_id": "go.auth.missing_ownership_check",
+      "line_range": [22, 22],
+      "must_match": true,
+      "notes": "raw path id to GetHook"
+    }
+  ]
+}

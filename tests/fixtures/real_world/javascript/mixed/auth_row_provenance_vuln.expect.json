@@ -1,0 +1,26 @@
+{
+  "description": "A lookup keyed by a request id reports; the id read off the row it returned does not.  A helper taking a raw id reports.",
+  "tags": ["auth", "javascript", "row-provenance", "positive"],
+  "modes": ["full"],
+  "expected": [
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "line_range": [9, 9],
+      "must_match": true,
+      "max_count": 1,
+      "notes": "findByPk(req.params.id) with no ownership check"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "line_range": [10, 10],
+      "must_not_match": true,
+      "notes": "doc.parentDocumentId is read off the row loaded on the previous line"
+    },
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "line_range": [16, 16],
+      "must_match": true,
+      "notes": "raw id parameter reaches findByPk"
+    }
+  ]
+}

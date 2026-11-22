@@ -1,0 +1,23 @@
+{
+  "description": "The id of a row this handler just created is database minted, not request supplied.",
+  "tags": [
+    "auth",
+    "javascript",
+    "row-provenance",
+    "negative"
+  ],
+  "modes": [
+    "full"
+  ],
+  "expected": [
+    {
+      "rule_id": "js.auth.missing_ownership_check",
+      "line_range": [
+        1,
+        20
+      ],
+      "must_not_match": true,
+      "notes": "id comes from Doc.create"
+    }
+  ]
+}

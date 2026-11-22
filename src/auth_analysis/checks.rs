@@ -115,6 +115,7 @@ fn check_ownership_gaps(
                 .subjects
                 .iter()
                 .filter(|s| is_relevant_target_subject(s, unit, lang))
+                .filter(|s| !is_row_derived_subject(s, unit, op))
                 .collect();
             if relevant_subjects.is_empty() {
                 continue;
@@ -719,6 +720,241 @@ fn is_relevant_target_subject(subject: &ValueRef, unit: &AnalysisUnit, lang: &st
         && !is_caller_scope_entity_subject(subject, unit)
         && !is_package_level_subject(subject, unit)
         && !is_model_selector_subject(subject, unit, lang)
+}
+
+/// True iff `subject` is read off a row the unit already holds, so it names
+/// something the code found rather than something the caller supplied.
+///
+/// A subject counts when its root variable is
+///   * a row bound earlier in the unit by a modelled fetch (`pv := Get(..)`,
+///     `const doc = await Doc.findByPk(id)`), including an insert's result,
+///     whose id the database minted,
+///   * a local read off such a row (`const id = res[0].id`), a loop variable
+///     over one (`for _, t := range tasks`), or a callback parameter of one
+///     (`rows.map(row => ..)`), or
+///   * outside a route handler, an entity parameter (`document` in
+///     `move(document)`): the caller hands the helper an entity it already
+///     loaded.
+///
+/// The fetch itself is what must be authorised.  In request-bearing code the
+/// row only counts when that fetch was keyed by an id or pinned to the
+/// caller's scope, so it either reports on its own or is covered by a check.
+/// A row found by a bare request-supplied name has no such site, and its
+/// fields keep reporting.
+fn is_row_derived_subject(
+    subject: &ValueRef,
+    unit: &AnalysisUnit,
+    op: &SensitiveOperation,
+) -> bool {
+    if matches!(
+        subject.source_kind,
+        ValueSourceKind::RequestParam
+            | ValueSourceKind::RequestBody
+            | ValueSourceKind::RequestQuery
+            | ValueSourceKind::Session
+    ) {
+        return false;
+    }
+    let chain = subject.base.as_deref().unwrap_or(subject.name.as_str());
+    let root = chain.split(['.', '[', '(']).next().unwrap_or(chain);
+    if root.is_empty() || unit.request_roots.contains(root) {
+        return false;
+    }
+    var_is_held_row(unit, root, op, 0)
+}
+
+/// The unit is a route handler or reads the request or request context
+/// directly.  A helper that only takes an options bag named `params` or `input`
+/// is not: whoever calls it owns the question of where the bag came from.
+fn unit_handles_request(unit: &AnalysisUnit) -> bool {
+    const REQUEST_NAMES: &[&str] = &["req", "request", "ctx", "event", "res", "response"];
+    let is_request_name = |name: &str| REQUEST_NAMES.contains(&name.to_ascii_lowercase().as_str());
+    unit.kind == AnalysisUnitKind::RouteHandler
+        || !unit.request_roots.is_empty()
+        || unit.params.iter().any(|p| is_request_name(p))
+        || unit.context_inputs.iter().any(|input| {
+            let chain = input.base.as_deref().unwrap_or(input.name.as_str());
+            is_request_name(chain.split(['.', '[', '(']).next().unwrap_or(chain))
+        })
+}
+
+fn var_is_held_row(unit: &AnalysisUnit, var: &str, op: &SensitiveOperation, depth: usize) -> bool {
+    if depth > 8 {
+        return false;
+    }
+    if let Some(bindings) = unit.row_population_data.get(var) {
+        let mut prior = bindings
+            .iter()
+            .filter(|(line, _)| *line < op.line)
+            .peekable();
+        if prior.peek().is_none() {
+            return false;
+        }
+        return prior.all(|(line, args)| fetch_site_is_authorised_elsewhere(unit, *line, args));
+    }
+    if let Some(sources) = unit.row_derived_from.get(var) {
+        return !sources.is_empty()
+            && sources
+                .iter()
+                .all(|source| source != var && var_is_held_row(unit, source, op, depth + 1));
+    }
+    // A helper is handed an entity it did not load; a registered handler or a
+    // function holding the framework request context is not.
+    unit.kind != AnalysisUnitKind::RouteHandler
+        && unit.request_roots.is_empty()
+        && unit.params.iter().any(|p| p == var)
+        && is_entity_param_name(var)
+}
+
+/// The fetch at `line` is a data fetch, and it either minted the row (an
+/// insert), or it is not in request-bearing code, or it was keyed by an id or
+/// scoped to the caller.  A pure conversion such as `parseInt(id)` is not a
+/// fetch.
+fn fetch_site_is_authorised_elsewhere(unit: &AnalysisUnit, line: usize, args: &[ValueRef]) -> bool {
+    let callees = unit.row_fetch_callees.get(&line);
+    if callees.is_some_and(|callees| callees.iter().any(|c| is_minting_callee(c))) {
+        return true;
+    }
+    let modelled = unit
+        .operations
+        .iter()
+        .any(|o| o.line == line && o.sink_class.is_none_or(|c| c.is_auth_relevant()));
+    let fetch_like = callees.is_some_and(|callees| callees.iter().any(|c| is_row_fetch_callee(c)));
+    if !modelled && !fetch_like {
+        return false;
+    }
+    if !unit_handles_request(unit) {
+        return true;
+    }
+    // Pinned to the caller or to a scope the caller holds: nothing outside it
+    // can come back, so there is no first fetch left to report.
+    if args
+        .iter()
+        .any(|s| is_actor_context_subject(s, unit) || is_caller_scope_entity_subject(s, unit))
+    {
+        return true;
+    }
+    // Keyed by an id: the fetch is a modelled operation that reports, or is
+    // covered by a check, on its own.
+    unit.operations.iter().any(|o| {
+        o.line == line
+            && o.sink_class.is_none_or(|c| c.is_auth_relevant())
+            && o.subjects
+                .iter()
+                .any(|s| is_id_like(s) || is_route_primary_key(s, unit))
+    })
+}
+
+/// A call that reads rows: a lookup, or a query, load, list or search.
+fn is_row_fetch_callee(callee: &str) -> bool {
+    if is_lookup_callee(callee) {
+        return true;
+    }
+    let method = callee.rsplit('.').next().unwrap_or(callee);
+    let lower = method
+        .trim_end_matches(['!', '?'])
+        .trim_end_matches("()")
+        .to_ascii_lowercase();
+    [
+        "query", "select", "read", "load", "list", "search", "lookup", "retrieve",
+    ]
+    .iter()
+    .any(|prefix| lower.starts_with(prefix))
+}
+
+/// `insert`, `create`, `createMany`: the call writes a new row, so the id on
+/// the result was minted by the database.  `createQueryBuilder` only starts a
+/// query.
+fn is_minting_callee(callee: &str) -> bool {
+    // The write must be the last real step of the chain. Earlier segments are
+    // scopes or accessors (`createdBy`, `createSession().findOne`), so a read
+    // after a create/insert-named segment means the row was looked up, not
+    // inserted. Only builder and promise tails may follow the write.
+    const TAILS: &[&str] = &[
+        "then",
+        "catch",
+        "finally",
+        "execute",
+        "exec",
+        "values",
+        "into",
+        "returning",
+        "save",
+    ];
+    let normalise = |s: &str| {
+        s.trim_end_matches(['!', '?'])
+            .trim_end_matches("()")
+            .to_ascii_lowercase()
+    };
+    // Drop call arguments so a dot inside `insert(params.data)` does not
+    // split the chain.
+    let mut depth = 0usize;
+    let bare: String = callee
+        .chars()
+        .filter(|&c| match c {
+            '(' => {
+                depth += 1;
+                false
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                false
+            }
+            _ => depth == 0,
+        })
+        .collect();
+    for segment in bare.rsplit(['.', ':']).filter(|s| !s.is_empty()) {
+        let lower = normalise(segment);
+        if TAILS.contains(&lower.as_str()) {
+            continue;
+        }
+        return (lower.starts_with("create") && !lower.starts_with("createquery"))
+            || lower.starts_with("insert")
+            || lower == "bulkcreate";
+    }
+    false
+}
+
+/// A parameter named for a domain entity, as opposed to an id, a request or an
+/// options bag.
+fn is_entity_param_name(name: &str) -> bool {
+    if is_id_like_name(name) || is_external_input_param_name_for_lang(name, "") {
+        return false;
+    }
+    let lower = name.to_ascii_lowercase();
+    const BAGS: &[&str] = &[
+        "args",
+        "arguments",
+        "body",
+        "criteria",
+        "data",
+        "dto",
+        "event",
+        "filter",
+        "filters",
+        "form",
+        "headers",
+        "input",
+        "opts",
+        "options",
+        "params",
+        "payload",
+        "props",
+        "query",
+        "req",
+        "request",
+        "settings",
+        "this",
+        "self",
+    ];
+    if BAGS.contains(&lower.as_str()) {
+        return false;
+    }
+    const BAG_SUFFIXES: &[&str] = &[
+        "form", "opts", "options", "request", "req", "dto", "payload", "input", "params", "args",
+        "body", "data", "query", "filter", "filters", "criteria",
+    ];
+    !BAG_SUFFIXES.iter().any(|suffix| lower.ends_with(suffix))
 }
 
 /// `pk`, the Django and DRF name for the row id a viewset action receives
@@ -1621,6 +1857,8 @@ mod tests {
             row_field_vars: HashMap::new(),
             var_alias_chain: HashMap::new(),
             row_population_data: HashMap::new(),
+            row_derived_from: HashMap::new(),
+            row_fetch_callees: HashMap::new(),
             self_actor_vars: HashSet::new(),
             self_actor_id_vars: HashSet::new(),
             authorized_sql_vars: HashSet::new(),

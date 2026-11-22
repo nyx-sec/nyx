@@ -3,7 +3,7 @@
   "metadata": {
     "description": "Nyx benchmark ground truth",
     "created": "2026-03-20",
-    "corpus_size": 973
+    "corpus_size": 979
   },
   "cases": [
     {
@@ -30961,6 +30961,168 @@
       ],
       "disabled": false,
       "notes": "File.basename keeps only the final component."
+    },
+    {
+      "case_id": "js-auth-rp-001",
+      "file": "javascript/auth/vuln_row_provenance_first_fetch.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "row-provenance"
+      ],
+      "disabled": false,
+      "notes": "The lookup keyed by a request id still reports; only the id read off the row it returned is exempt. A raw id parameter reports too."
+    },
+    {
+      "case_id": "js-auth-rp-002",
+      "file": "javascript/auth/safe_row_provenance_derived_ids.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "row-provenance"
+      ],
+      "disabled": false,
+      "notes": "Ids read off a passed-in entity, an insert result and queried rows are not request-supplied ids."
+    },
+    {
+      "case_id": "js-auth-rp-003",
+      "file": "javascript/auth/vuln_row_scope_segment_name_fetch.js",
+      "language": "javascript",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "row-provenance"
+      ],
+      "disabled": false,
+      "notes": "Accessors named createdBy, createSession and insertedDocs are scopes, not writes; a row fetched by a request name still reports."
+    },
+    {
+      "case_id": "js-auth-rp-004",
+      "file": "javascript/auth/safe_row_scope_segment_minted.js",
+      "language": "javascript",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "js.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "row-provenance"
+      ],
+      "disabled": false,
+      "notes": "The id of a row the handler just created with Doc.create is database minted."
+    },
+    {
+      "case_id": "go-auth-rp-001",
+      "file": "go/auth/vuln_row_provenance_name_fetch.go",
+      "language": "go",
+      "is_vulnerable": true,
+      "vuln_class": "auth",
+      "cwe": "CWE-639",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [],
+      "expected_severity": "MEDIUM",
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "positive",
+        "row-provenance"
+      ],
+      "disabled": false,
+      "notes": "A row found by a bare request name with no scope pin, then deleted by its id, still reports; so does a raw path id."
+    },
+    {
+      "case_id": "go-auth-rp-002",
+      "file": "go/auth/safe_row_provenance_scoped_rows.go",
+      "language": "go",
+      "is_vulnerable": false,
+      "vuln_class": "safe",
+      "cwe": "N/A",
+      "provenance": "synthetic",
+      "equivalence_tier": "exact",
+      "match_mode": "rule_match",
+      "expected_rule_ids": [],
+      "allowed_alternative_rule_ids": [],
+      "forbidden_rule_ids": [
+        "go.auth.missing_ownership_check"
+      ],
+      "expected_severity": null,
+      "expected_category": "Security",
+      "expected_sink_lines": [],
+      "expected_source_lines": [],
+      "tags": [
+        "auth",
+        "negative",
+        "row-provenance"
+      ],
+      "disabled": false,
+      "notes": "Ids read off rows fetched under an owner or repo scope, and range variables over those rows, are row attributes."
     }
   ]
 }
