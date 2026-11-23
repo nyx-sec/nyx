@@ -1077,7 +1077,7 @@ fn ssa_summary_backward_compat_missing_return_abstract() {
 
 /// Helper: build a minimal CalleeSsaBody with a given number of blocks.
 #[allow(dead_code)] // used by tests below
-fn make_callee_body(
+pub(super) fn make_callee_body(
     num_blocks: usize,
     param_count: usize,
 ) -> crate::taint::ssa_transfer::CalleeSsaBody {
@@ -1400,6 +1400,69 @@ fn global_summaries_insert_body_exact_key_replacement() {
     // Second insert replaces (exact-key, no union)
     gs.insert_body(key.clone(), body2);
     assert_eq!(gs.get_body(&key).unwrap().ssa.blocks.len(), 5);
+}
+
+/// A body inserted in its stored form answers fingerprint reads, key
+/// reconciliation and leaf lookup like the same body inserted decoded,
+/// without being decoded until a reader asks for its contents.
+#[test]
+fn encoded_body_behaves_like_a_decoded_one() {
+    use deps::DepOracle;
+    let key = |name: &str, arity| {
+        FuncKey::from_parts(
+            crate::symbol::Lang::Python,
+            "helper.py",
+            String::new(),
+            name,
+            Some(arity),
+            None,
+            FuncKind::Function,
+        )
+    };
+    // The second `transform` collides with the first at a different
+    // parameter count, so reconciliation rekeys it.
+    let inserts = [
+        (key("transform", 2), make_callee_body(3, 2)),
+        (key("transform", 2), make_callee_body(4, 3)),
+        (key("other", 1), make_callee_body(2, 1)),
+    ];
+    let mut eager = GlobalSummaries::new();
+    let mut lazy = GlobalSummaries::new();
+    for (k, body) in &inserts {
+        eager.insert_body(k.clone(), body.clone());
+        lazy.insert_encoded_body(k.clone(), EncodedBody::encode(body).unwrap());
+    }
+    let mut keys: Vec<_> = eager.bodies_by_key.keys().cloned().collect();
+    keys.sort_by_key(ToString::to_string);
+    let mut lazy_keys: Vec<_> = lazy.bodies_by_key.keys().cloned().collect();
+    lazy_keys.sort_by_key(ToString::to_string);
+    assert_eq!(keys, lazy_keys);
+    assert_eq!(keys.len(), 3);
+
+    for k in &keys {
+        for kind in [KeyedRead::Body, KeyedRead::BodyShape] {
+            assert_eq!(
+                lazy.keyed_fp(kind, k),
+                eager.keyed_fp(kind, k),
+                "{kind:?} {k}"
+            );
+        }
+    }
+    let pick = |gs: &GlobalSummaries| {
+        let picked = gs.body_by_leaf(crate::symbol::Lang::Python, "transform", 3);
+        picked.map(|(b, k)| (b.ssa.blocks.len(), k))
+    };
+    assert!(
+        lazy.bodies_by_key.values().all(|e| !e.v.is_decoded()),
+        "fingerprints and leaf filtering must not decode"
+    );
+    assert_eq!(pick(&lazy), pick(&eager));
+    for k in &keys {
+        let (a, b) = (lazy.get_body(k).unwrap(), eager.get_body(k).unwrap());
+        assert_eq!(a.param_count, b.param_count);
+        assert_eq!(a.ssa.blocks.len(), b.ssa.blocks.len());
+        assert_eq!(deps::fp_value(a), deps::fp_value(b));
+    }
 }
 
 #[test]

@@ -3216,21 +3216,8 @@ pub fn scan_with_index_parallel_observer(
                                         )
                                     })
                                     .collect();
-                                let body_rows: Vec<_> = ssa_bodies
-                                    .into_iter()
-                                    .map(|(key, body)| {
-                                        (
-                                            key.name,
-                                            key.arity.unwrap_or(0),
-                                            key.lang.as_str().to_string(),
-                                            key.namespace,
-                                            key.container,
-                                            key.disambig,
-                                            key.kind,
-                                            body,
-                                        )
-                                    })
-                                    .collect();
+                                let body_rows =
+                                    crate::database::index::encode_ssa_body_rows(ssa_bodies);
                                 let auth_rows: Vec<_> = auth_sums
                                     .into_iter()
                                     .map(|(key, sum)| {
@@ -3272,6 +3259,7 @@ pub fn scan_with_index_parallel_observer(
                                 let path_for_write = path.clone();
                                 let path_label = path.display().to_string();
                                 if let Err(e) = write_tx.enqueue(move |writer_idx| {
+                                    let body_rows = body_rows?;
                                     let cpi_arg = cross_pkg_imports
                                         .as_ref()
                                         .map(|(ns, map)| (ns.as_str(), map.as_ref()));
@@ -3421,9 +3409,11 @@ pub fn scan_with_index_parallel_observer(
             }
         }
 
-        // Load cross-file callee bodies from DB
+        // Load cross-file callee bodies from DB.  They stay encoded until a
+        // re-analysed unit reads one, so a rescan that reuses every unit
+        // never decodes or frees them.
         let body_count = if crate::symex::cross_file_symex_enabled() {
-            match idx.load_all_ssa_bodies() {
+            match idx.load_all_encoded_ssa_bodies() {
                 Ok(body_rows) => {
                     let count = body_rows.len();
                     for (
@@ -3462,7 +3452,7 @@ pub fn scan_with_index_parallel_observer(
                             disambig,
                             kind,
                         );
-                        gs.insert_body(key, body);
+                        gs.insert_encoded_body(key, body);
                     }
                     count
                 }

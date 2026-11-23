@@ -15,6 +15,7 @@
 //! Same-name collisions across files are merged conservatively: capabilities
 //! are unioned and booleans are OR-ed so no true positive is silently dropped.
 
+mod body_cell;
 pub mod deps;
 pub mod points_to;
 pub mod ssa_summary;
@@ -23,6 +24,8 @@ use crate::labels::Cap;
 use crate::summary::deps::{Fp, KeyedRead, MapId, NamedRead};
 use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::{FuncKey, FuncKind, Lang, normalize_namespace};
+use body_cell::BodyCell;
+pub use body_cell::EncodedBody;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Deserializer, Serialize};
 use smallvec::SmallVec;
@@ -749,6 +752,15 @@ impl<T> Stored<T> {
         }
     }
 
+    /// A value whose fingerprints were computed when it was stored.
+    fn with_fps(v: T, fp: Fp, shape: Fp) -> Self {
+        Stored {
+            v,
+            fp: std::sync::OnceLock::from(fp),
+            shape: std::sync::OnceLock::from(shape),
+        }
+    }
+
     fn into_inner(self) -> T {
         self.v
     }
@@ -898,7 +910,7 @@ pub struct GlobalSummaries {
     ssa_by_lang_ns_name: HashMap<(Lang, String, String), Vec<FuncKey>>,
     /// Cross-file callee bodies for interprocedural symbolic execution.
     /// Keyed by `FuncKey` (same identity model as SSA summaries).
-    bodies_by_key: HashMap<FuncKey, Stored<crate::taint::ssa_transfer::CalleeSsaBody>>,
+    bodies_by_key: HashMap<FuncKey, Stored<BodyCell>>,
     /// Per-function auth-check summaries for cross-file helper lifting.
     /// Keyed by `FuncKey` so a call-site resolver can go from a resolved
     /// callee name to the helper's auth-check signature.  Populated in
@@ -1045,30 +1057,26 @@ impl GlobalSummaries {
     /// `CalleeSsaBody` carries an explicit `param_count`, which must
     /// agree with both `key.arity` and any co-located body's
     /// `param_count`.  A mismatch is a hard collision.
-    fn reconcile_body_key(
-        &self,
-        mut key: FuncKey,
-        body: &crate::taint::ssa_transfer::CalleeSsaBody,
-    ) -> FuncKey {
+    fn reconcile_body_key(&self, mut key: FuncKey, param_count: usize) -> FuncKey {
         let mut probe: u32 = 0;
         loop {
             let conflict = match self.bodies_by_key.get(&key).map(|e| &e.v) {
-                Some(existing) => existing.param_count != body.param_count,
+                Some(existing) => existing.param_count() != param_count,
                 None => match key.arity {
-                    Some(a) => a != body.param_count,
+                    Some(a) => a != param_count,
                     None => false,
                 },
             };
             if !conflict {
                 return key;
             }
-            let synth = (body.param_count as u32)
+            let synth = (param_count as u32)
                 .wrapping_mul(0x9E37_79B9)
                 .wrapping_add(probe);
             key.set_disambig(Some(
                 SYNTHETIC_DISAMBIG_BIT | (synth & !SYNTHETIC_DISAMBIG_BIT),
             ));
-            key.set_arity(Some(body.param_count));
+            key.set_arity(Some(param_count));
             probe = probe.wrapping_add(1);
             if probe >= 1024 {
                 tracing::warn!(
@@ -1828,15 +1836,25 @@ impl GlobalSummaries {
     /// signal: a collision between bodies with different `param_count`
     /// cannot be the same function and is always rekeyed.
     pub fn insert_body(&mut self, key: FuncKey, body: crate::taint::ssa_transfer::CalleeSsaBody) {
-        let key = self.reconcile_body_key(key, &body);
-        self.bodies_by_key.insert(key, Stored::new(body));
+        let key = self.reconcile_body_key(key, body.param_count);
+        self.bodies_by_key
+            .insert(key, Stored::new(BodyCell::decoded(body)));
+    }
+
+    /// Insert a body loaded from the index without decoding it.  It is
+    /// decoded on first read; its fingerprints come from the index row.
+    pub fn insert_encoded_body(&mut self, key: FuncKey, body: EncodedBody) {
+        let key = self.reconcile_body_key(key, body.param_count);
+        let (fp, shape) = (body.fp, body.shape_fp);
+        self.bodies_by_key
+            .insert(key, Stored::with_fps(BodyCell::encoded(body), fp, shape));
     }
 
     /// Exact lookup of a cross-file callee body by fully-qualified key.
     pub fn get_body(&self, key: &FuncKey) -> Option<&crate::taint::ssa_transfer::CalleeSsaBody> {
         let e = self.bodies_by_key.get(key);
         deps::note_keyed(KeyedRead::Body, key, || stored_fp(e));
-        e.map(|e| &e.v)
+        e.and_then(|e| e.v.get())
     }
 
     /// [`Self::get_body`] for a reader whose results do not depend on where
@@ -1852,7 +1870,7 @@ impl GlobalSummaries {
         deps::note_keyed(KeyedRead::BodyShape, key, || {
             e.map_or(deps::ABSENT, Stored::shape_fp)
         });
-        e.map(|e| &e.v)
+        e.and_then(|e| e.v.get())
     }
 
     /// Record that the current analysis used the absolute positions of
@@ -1880,7 +1898,9 @@ impl GlobalSummaries {
         &self,
     ) -> impl Iterator<Item = (&FuncKey, &crate::taint::ssa_transfer::CalleeSsaBody)> {
         deps::note_opaque();
-        self.bodies_by_key.iter().map(|(k, e)| (k, &e.v))
+        self.bodies_by_key
+            .iter()
+            .filter_map(|(k, e)| e.v.get().map(|b| (k, b)))
     }
 
     /// The cross-file body backwards analysis uses for a call to `leaf`:
@@ -1898,7 +1918,7 @@ impl GlobalSummaries {
             || NamedRead::BodyByLeaf(lang, leaf.to_string(), max_blocks),
             || body_pick_fp(found),
         );
-        found.map(|(stored, key)| (&stored.v, key.clone()))
+        found.and_then(|(stored, key)| stored.v.get().map(|b| (b, key.clone())))
     }
 
     fn body_by_leaf_uncached(
@@ -1906,10 +1926,10 @@ impl GlobalSummaries {
         lang: Lang,
         leaf: &str,
         max_blocks: usize,
-    ) -> Option<(&Stored<crate::taint::ssa_transfer::CalleeSsaBody>, &FuncKey)> {
-        let mut best: Option<(&FuncKey, &Stored<crate::taint::ssa_transfer::CalleeSsaBody>)> = None;
+    ) -> Option<(&Stored<BodyCell>, &FuncKey)> {
+        let mut best: Option<(&FuncKey, &Stored<BodyCell>)> = None;
         for (key, body) in &self.bodies_by_key {
-            if key.name != leaf || key.lang != lang || body.v.ssa.blocks.len() > max_blocks {
+            if key.name != leaf || key.lang != lang || body.v.block_count() > max_blocks {
                 continue;
             }
             let better = match best {
@@ -2746,9 +2766,7 @@ fn ssa_named_fp(found: &[(&FuncKey, &Stored<SsaFuncSummary>)]) -> Fp {
 }
 
 /// Fingerprint of the backwards-analysis body pick: the body and its key.
-fn body_pick_fp(
-    found: Option<(&Stored<crate::taint::ssa_transfer::CalleeSsaBody>, &FuncKey)>,
-) -> Fp {
+fn body_pick_fp(found: Option<(&Stored<BodyCell>, &FuncKey)>) -> Fp {
     match found {
         Some((stored, key)) => deps::fp_value(&(stored.fp(), deps::fp_keys(std::iter::once(key)))),
         None => deps::ABSENT,

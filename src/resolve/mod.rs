@@ -172,6 +172,9 @@ const RESOLVE_EXTENSIONS: &[&str] = &["ts", "tsx", "mts", "cts", "js", "jsx", "m
 #[derive(Debug, Default)]
 pub struct ModuleGraph {
     packages: Vec<PackageEntry>,
+    /// Package root to its index in `packages`.  A root seen twice (from
+    /// overlapping scan roots) maps to its last entry.
+    package_roots: rustc_hash::FxHashMap<PathBuf, usize>,
     tsconfigs: Vec<(PathBuf, TsConfigPaths)>,
     builtins: HashSet<String>,
     imports: std::sync::RwLock<ImportTable>,
@@ -223,6 +226,7 @@ impl ModuleGraph {
         let builtins = NODE_BUILTINS.iter().map(|s| (*s).to_string()).collect();
         Self {
             packages: Vec::new(),
+            package_roots: rustc_hash::FxHashMap::default(),
             tsconfigs: Vec::new(),
             builtins,
             imports: std::sync::RwLock::new(ImportTable::default()),
@@ -254,10 +258,10 @@ impl ModuleGraph {
     /// scratch files in a parent directory of the scan root).
     pub fn package_for(&self, file: &Path) -> Option<&PackageEntry> {
         let canonical = self.canon.canonical(file);
-        self.packages
-            .iter()
-            .filter(|p| canonical.starts_with(&p.root))
-            .max_by_key(|p| p.root.as_os_str().len())
+        canonical
+            .ancestors()
+            .find_map(|dir| self.package_roots.get(dir))
+            .map(|&i| &self.packages[i])
     }
 
     /// Project-relative or package-qualified namespace string for `file`.
@@ -753,6 +757,9 @@ fn walk_manifests(root: &Path, graph: &mut ModuleGraph) {
             match name_lossy.as_ref() {
                 "package.json" => {
                     if let Some(pkg) = parse_package_json(&path) {
+                        graph
+                            .package_roots
+                            .insert(pkg.root.clone(), graph.packages.len());
                         graph.packages.push(pkg);
                     }
                 }

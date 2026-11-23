@@ -363,22 +363,7 @@ pub fn build_index_with_observer(
         // would have written via its pass-1 branch.  Without this,
         // indexed scans load zero cross-file bodies and cross-file
         // inline silently falls back to summary resolution.
-        let body_rows: Vec<_> = fused
-            .ssa_bodies
-            .into_iter()
-            .map(|(key, body)| {
-                (
-                    key.name,
-                    key.arity.unwrap_or(0),
-                    key.lang.as_str().to_string(),
-                    key.namespace,
-                    key.container,
-                    key.disambig,
-                    key.kind,
-                    body,
-                )
-            })
-            .collect();
+        let body_rows = crate::database::index::encode_ssa_body_rows(fused.ssa_bodies);
 
         // Persist auth-check summaries and cross-package import maps too.
         // The indexed pass-1 rescan path persists these via
@@ -424,6 +409,7 @@ pub fn build_index_with_observer(
 
         let path_for_write = path.clone();
         write_tx.enqueue(move |idx| {
+            let body_rows = body_rows?;
             let file_id = idx.upsert_file_with_hash(&path_for_write, &hash)?;
             idx.replace_issues(
                 file_id,

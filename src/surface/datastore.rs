@@ -12,9 +12,11 @@
 //! are forgiving — the surface map is informational, not a finding
 //! that fires on its own.
 
+use super::leaf_match::LeafMatcher;
 use super::{AccessMode, DataStore, DataStoreKind, SourceLocation, SurfaceNode, namespace_file};
 use crate::labels::Cap;
 use crate::summary::GlobalSummaries;
+use std::sync::LazyLock;
 
 /// One detection rule: leaf-name pattern → store kind + label.  Stored
 /// as a flat list so adding a new ORM / driver is a one-line edit.
@@ -516,23 +518,14 @@ fn container_for_ordinal(typed: &[(u32, String)], ordinal: u32) -> Option<&str> 
 }
 
 fn match_rule(callee: &str) -> Option<&'static DriverRule> {
-    let cl = callee.trim().to_ascii_lowercase();
-    // Normalize `::` → `.` so segment-split treats both as separators.
-    let cl_segments = cl.replace("::", ".");
-    DRIVER_RULES.iter().find(|r| {
-        let rl = r.leaf.to_ascii_lowercase();
-        if r.leaf.contains('.') || r.leaf.contains("::") {
-            // Qualified pattern (e.g. `psycopg2.connect`, `Eloquent::find`):
-            // substring on the full callee text.  Qualified shapes are
-            // unambiguous so substring is precise enough.
-            cl.contains(&rl)
-        } else {
-            // Bare leaf (e.g. `open`, `fetch`, `PrismaClient`): require a
-            // whole-segment match.  Prevents `fopen` / `OpenSearch` /
-            // `getPrismaClient` from FP-matching short bare leaves.
-            cl_segments.split('.').any(|seg| seg == rl)
-        }
-    })
+    match_rule_index(callee).map(|i| &DRIVER_RULES[i])
+}
+
+/// Index into [`DRIVER_RULES`] of the first rule matching `callee`.
+fn match_rule_index(callee: &str) -> Option<usize> {
+    static MATCHER: LazyLock<LeafMatcher> =
+        LazyLock::new(|| LeafMatcher::new(DRIVER_RULES.iter().map(|r| r.leaf)));
+    MATCHER.find(callee)
 }
 
 /// Source location of a call site in the project-relative `file`.  Reads
@@ -551,6 +544,42 @@ fn call_site_location(file: &str, span: Option<(u32, u32)>) -> SourceLocation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The indexed matcher picks the same rule as scanning the table in
+    /// order, for every rule pattern and common variations of it.
+    #[test]
+    fn match_rule_agrees_with_an_in_order_scan() {
+        fn scan(callee: &str) -> Option<usize> {
+            let cl = callee.trim().to_ascii_lowercase();
+            let cl_segments = cl.replace("::", ".");
+            DRIVER_RULES.iter().position(|r| {
+                let rl = r.leaf.to_ascii_lowercase();
+                if r.leaf.contains('.') || r.leaf.contains("::") {
+                    cl.contains(&rl)
+                } else {
+                    cl_segments.split('.').any(|seg| seg == rl)
+                }
+            })
+        }
+        for rule in DRIVER_RULES {
+            let leaf = rule.leaf;
+            let variants = [
+                leaf.to_string(),
+                leaf.to_ascii_uppercase(),
+                format!("obj.{leaf}"),
+                format!("{leaf}.inner"),
+                format!("Pkg::{leaf}"),
+                format!("x{leaf}"),
+                format!("{leaf}x"),
+                format!("  {leaf} "),
+                leaf.replace('.', "::"),
+                leaf.replace("::", "."),
+            ];
+            for callee in &variants {
+                assert_eq!(match_rule_index(callee), scan(callee), "callee {callee:?}");
+            }
+        }
+    }
     use crate::summary::{CalleeSite, FuncSummary};
     use crate::symbol::{FuncKey, Lang};
 

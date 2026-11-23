@@ -145,11 +145,6 @@ struct UnitHeader {
     trace: DepTrace,
 }
 
-struct CachedUnit {
-    header: UnitHeader,
-    outputs: Vec<u8>,
-}
-
 /// A reused unit.
 pub(crate) struct Reused {
     pub outputs: UnitOutputs,
@@ -301,7 +296,8 @@ fn encode_payload(header: &UnitHeader, outputs: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn decode_payload(mut payload: Vec<u8>) -> Option<CachedUnit> {
+/// Split a stored payload into its header and encoded outputs.
+fn decode_payload(payload: &[u8]) -> Option<(UnitHeader, &[u8])> {
     if payload.len() < 16 || &payload[..4] != MAGIC {
         return None;
     }
@@ -315,8 +311,7 @@ fn decode_payload(mut payload: Vec<u8>) -> Option<CachedUnit> {
         return None;
     }
     let header: UnitHeader = rmp_serde::from_slice(&payload[16..head_end]).ok()?;
-    let outputs = payload.split_off(head_end);
-    Some(CachedUnit { header, outputs })
+    Some((header, &payload[head_end..]))
 }
 
 pub(crate) fn encode_outputs(outputs: &UnitOutputsView<'_>) -> Option<Vec<u8>> {
@@ -336,7 +331,9 @@ fn decode_outputs(bytes: &[u8]) -> Option<UnitOutputs> {
 
 /// Cached pass-2 units of one indexed scan, plus the units it produces.
 pub(crate) struct Pass2Cache {
-    units: HashMap<String, CachedUnit>,
+    /// Stored payloads by unit key, decoded when a unit is looked up (on
+    /// the worker that analyses it) rather than all at once at load.
+    units: HashMap<String, Vec<u8>>,
     /// Content hash of every file pass 1 read successfully this scan.
     hashes: HashMap<PathBuf, Vec<u8>>,
     verify: bool,
@@ -365,10 +362,7 @@ impl Pass2Cache {
             idx.set_metadata(CACHE_KEY_META, key)?;
             Vec::new()
         };
-        let units = rows
-            .into_iter()
-            .filter_map(|(k, payload)| decode_payload(payload).map(|u| (k, u)))
-            .collect();
+        let units = rows.into_iter().collect();
         Ok(Pass2Cache {
             units,
             hashes,
@@ -414,13 +408,12 @@ impl Pass2Cache {
         gs: &GlobalSummaries,
     ) -> Option<Reused> {
         let explain = std::env::var_os("NYX_INCREMENTAL_EXPLAIN").is_some();
-        let Some(unit) = self.units.get(key) else {
+        let Some((h, outputs)) = self.units.get(key).and_then(|p| decode_payload(p)) else {
             if explain {
-                tracing::info!(unit = key, "pass-2 miss: no stored unit");
+                tracing::info!(unit = key, "pass-2 miss: no readable stored unit");
             }
             return None;
         };
-        let h = &unit.header;
         if h.kind != kind || h.shape != shape || Some(&h.members) != self.members(files).as_ref() {
             if explain {
                 tracing::info!(unit = key, "pass-2 miss: files or batch shape changed");
@@ -439,7 +432,7 @@ impl Pass2Cache {
             }
             return None;
         }
-        let outputs = decode_outputs(&unit.outputs)?;
+        let outputs = decode_outputs(outputs)?;
         self.mark_used(key);
         self.reused.fetch_add(1, Ordering::Relaxed);
         Some(Reused {

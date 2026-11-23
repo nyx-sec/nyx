@@ -4411,8 +4411,8 @@ fn inline_analyse_callee_with_seeds(
         let body = xfile_bodies.get_body_shape(&key)?;
         xfile_source = Some(xfile_bodies);
         // Indexed-scan bodies deserialized from SQLite
-        // arrive with `body_graph: None`, but the load path
-        // ([`rebuild_body_graph`] in `load_all_ssa_bodies`)
+        // arrive with `body_graph: None`, but decoding
+        // ([`rebuild_body_graph`] in `EncodedBody::decode`)
         // synthesizes a proxy `Cfg` from `node_meta` so the taint
         // engine can index `cfg[inst.cfg_node]` uniformly.  A
         // body that still has neither a real graph nor any
