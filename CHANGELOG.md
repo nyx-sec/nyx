@@ -62,7 +62,7 @@ Security findings on 23 open-source repos drop by more than a third, almost all 
 ### Fixes
 
 - AST-pattern rules fire on both `.ts` and `.tsx` files. The two share a language slug but not a grammar, and the compiled query cache was keyed by slug only, so one of the two file types got no AST-rule hits.
-- A PHP file with a long chain of `@`, `!` or parenthesis wrappers no longer hangs the scan. The call search visited each level of the chain once per path to it, so the time grew exponentially with its length.
+- A PHP file with a long chain of `@`, unary operator or parenthesis wrappers no longer hangs the scan. The call search visited each level of the chain once per path to it, so the time grew exponentially with its length.
 - `nyx scan <file>` no longer fails with "triage sync failed: scan root is not a directory". A single-file scan reads the triage file of the enclosing project (nearest `.nyx/triage.json`, stopping at the repository root).
 
 ### Dependencies

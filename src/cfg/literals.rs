@@ -76,13 +76,12 @@ pub(super) fn find_call_node<'a>(n: Node<'a>, lang: &str) -> Option<Node<'a>> {
             // Recurse one more level (handles `expression_statement > variable_declarator > call`)
             let mut cursor2 = n.walk();
             for c in n.children(&mut cursor2) {
-                // The loop above already searched below await and PHP value
-                // wrappers and found nothing.  Searching their children again
-                // would visit every level of a nested wrapper chain (`@@@..f()`)
-                // once per path to it, which grows exponentially with depth.
-                if matches!(lookup_node(lang, c), Kind::AwaitForward)
-                    || is_php_value_wrapper(lang, c)
-                {
+                // The loop above already ran the full search on wrapper
+                // children, which covers every grandchild check below.
+                // Searching their grandchildren again re-enters each nested
+                // wrapper twice per level, so a PHP `~~~...~$x` chain cost
+                // grew exponentially with its depth.
+                if lookup_node(lang, c) == Kind::AwaitForward || is_php_value_wrapper(lang, c) {
                     continue;
                 }
                 let mut cursor3 = c.walk();

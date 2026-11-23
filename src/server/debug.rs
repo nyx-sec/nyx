@@ -1732,7 +1732,9 @@ fn format_condition_expr(cond: &ConditionExpr) -> String {
                 format!("typeof v{} !== \"{}\"", var.0, type_name)
             }
         }
-        ConditionExpr::BoolTest { var } => format!("v{}", var.0),
+        ConditionExpr::BoolTest { var, negated } => {
+            format!("{}v{}", if *negated { "!" } else { "" }, var.0)
+        }
         ConditionExpr::Unknown => "?".to_string(),
     }
 }

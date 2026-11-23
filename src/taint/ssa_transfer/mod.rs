@@ -2258,7 +2258,7 @@ fn apply_membership_result_narrowing(
         return;
     };
     let result_val = match condition {
-        Some(constraint::ConditionExpr::BoolTest { var }) => Some(*var),
+        Some(constraint::ConditionExpr::BoolTest { var, .. }) => Some(*var),
         _ => reaching_def_at_block_end(result_name, ssa, block),
     };
     let Some(def) = result_val.and_then(|v| ssa.value_defs.get(v.0 as usize)) else {

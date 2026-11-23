@@ -14,7 +14,7 @@
 //! so they are safe for the default test job.  Keep file sizes modest so
 //! CI runners with limited RAM/disk are not penalised.
 
-use nyx_scanner::ast::run_rules_on_bytes;
+use nyx_scanner::ast::{extract_summaries_from_bytes, run_rules_on_bytes};
 use nyx_scanner::utils::config::{AnalysisMode, Config};
 use std::path::Path;
 use std::thread;
@@ -337,6 +337,58 @@ fn nested_php_error_suppression_is_linear() {
             run_rules_on_bytes(s.as_bytes(), path, &cfg, None, None)
                 .expect("nested error suppression should parse")
         });
+    });
+}
+
+/// PHP unary operators, parentheses and `@` wrap a call without hiding it,
+/// so the CFG builder searches through them for the call.  A chain of them
+/// used to be searched once as a child and again as a grandchild at every
+/// level, which doubles the work per pair of levels: the fuzzer found a
+/// 430-byte `~~~...~j` input that ran for minutes.  The search must stay
+/// linear in the nesting depth.
+#[test]
+fn deeply_nested_php_unary_wrappers_stay_linear() {
+    run_on_prod_stack(|| {
+        const DEPTH: usize = 200;
+        let cfg = hostile_cfg();
+        for (label, open, close) in [("tilde", "~", ""), ("parens", "(", ")"), ("at", "@", "")] {
+            let mut s = String::from("<?php\n$data = ");
+            for _ in 0..DEPTH {
+                s.push_str(open);
+            }
+            s.push_str("$j");
+            for _ in 0..DEPTH {
+                s.push_str(close);
+            }
+            s.push_str(";\n");
+
+            let path = Path::new("deep_unary.php");
+            let _ = with_time_budget(Duration::from_secs(10), label, || {
+                run_rules_on_bytes(s.as_bytes(), path, &cfg, None, None)
+                    .expect("deeply nested PHP wrappers should parse")
+            });
+        }
+
+        // Inputs the fuzzers timed out on (PHP selector byte stripped), each
+        // run through both pass-1 summary extraction (`extract_summaries`
+        // target) and the full per-file pass (`scan_bytes` target).
+        let fuzz_inputs: [(&str, &[u8]); 2] = [
+            (
+                "scan_bytes input",
+                include_bytes!("fixtures/hostile/php_unary_chain_timeout.php"),
+            ),
+            (
+                "extract_summaries input",
+                include_bytes!("fixtures/hostile/php_unary_chain_timeout_summaries.php"),
+            ),
+        ];
+        let path = Path::new("fuzz_input.php");
+        for (label, bytes) in fuzz_inputs {
+            let _ = with_time_budget(Duration::from_secs(10), label, || {
+                let _ = extract_summaries_from_bytes(bytes, path, &cfg);
+                run_rules_on_bytes(bytes, path, &cfg, None, None)
+            });
+        }
     });
 }
 
