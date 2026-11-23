@@ -2431,8 +2431,8 @@ fn sink_args_summary_validated_safe(ctx: &AnalysisContext, sink: NodeIndex) -> b
     // fall back to GlobalSummaries when the per-file map isn't threaded
     // through (legacy callers).
     let local_map = ctx.ssa_summaries;
-    let global_map = ctx.global_summaries.map(|g| g.snapshot_ssa());
-    if local_map.is_none() && global_map.is_none() {
+    let global = ctx.global_summaries;
+    if local_map.is_none() && global.is_none() {
         return false;
     }
 
@@ -2497,13 +2497,12 @@ fn sink_args_summary_validated_safe(ctx: &AnalysisContext, sink: NodeIndex) -> b
                 }
             }
         }
-        if matches.is_empty() {
-            if let Some(map) = global_map {
-                for (key, sum) in map {
-                    if key.name == leaf || key.name == callee_text {
-                        matches.push(sum);
-                    }
-                }
+        if matches.is_empty()
+            && let Some(g) = global
+        {
+            matches.extend(g.ssa_named(leaf));
+            if callee_text != leaf {
+                matches.extend(g.ssa_named(callee_text));
             }
         }
         if matches.len() != 1 {

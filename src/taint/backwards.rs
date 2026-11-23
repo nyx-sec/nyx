@@ -647,12 +647,8 @@ fn resolve_callee_body<'a>(
             return Some(found);
         }
     }
-    if let Some(map) = ctx.global_summaries.and_then(|gs| gs.bodies_by_key()) {
-        if let Some(found) = best_candidate(map, leaf, ctx.lang) {
-            return Some(found);
-        }
-    }
-    None
+    ctx.global_summaries
+        .and_then(|gs| gs.body_by_leaf(ctx.lang, leaf, MAX_BACKWARDS_CALLEE_BLOCKS))
 }
 
 /// Attempt to infer the source kind of a reached source op by inspecting

@@ -1077,7 +1077,7 @@ fn ssa_summary_backward_compat_missing_return_abstract() {
 
 /// Helper: build a minimal CalleeSsaBody with a given number of blocks.
 #[allow(dead_code)] // used by tests below
-fn make_callee_body(
+pub(super) fn make_callee_body(
     num_blocks: usize,
     param_count: usize,
 ) -> crate::taint::ssa_transfer::CalleeSsaBody {
@@ -1400,6 +1400,69 @@ fn global_summaries_insert_body_exact_key_replacement() {
     // Second insert replaces (exact-key, no union)
     gs.insert_body(key.clone(), body2);
     assert_eq!(gs.get_body(&key).unwrap().ssa.blocks.len(), 5);
+}
+
+/// A body inserted in its stored form answers fingerprint reads, key
+/// reconciliation and leaf lookup like the same body inserted decoded,
+/// without being decoded until a reader asks for its contents.
+#[test]
+fn encoded_body_behaves_like_a_decoded_one() {
+    use deps::DepOracle;
+    let key = |name: &str, arity| {
+        FuncKey::from_parts(
+            crate::symbol::Lang::Python,
+            "helper.py",
+            String::new(),
+            name,
+            Some(arity),
+            None,
+            FuncKind::Function,
+        )
+    };
+    // The second `transform` collides with the first at a different
+    // parameter count, so reconciliation rekeys it.
+    let inserts = [
+        (key("transform", 2), make_callee_body(3, 2)),
+        (key("transform", 2), make_callee_body(4, 3)),
+        (key("other", 1), make_callee_body(2, 1)),
+    ];
+    let mut eager = GlobalSummaries::new();
+    let mut lazy = GlobalSummaries::new();
+    for (k, body) in &inserts {
+        eager.insert_body(k.clone(), body.clone());
+        lazy.insert_encoded_body(k.clone(), EncodedBody::encode(body).unwrap());
+    }
+    let mut keys: Vec<_> = eager.bodies_by_key.keys().cloned().collect();
+    keys.sort_by_key(ToString::to_string);
+    let mut lazy_keys: Vec<_> = lazy.bodies_by_key.keys().cloned().collect();
+    lazy_keys.sort_by_key(ToString::to_string);
+    assert_eq!(keys, lazy_keys);
+    assert_eq!(keys.len(), 3);
+
+    for k in &keys {
+        for kind in [KeyedRead::Body, KeyedRead::BodyShape] {
+            assert_eq!(
+                lazy.keyed_fp(kind, k),
+                eager.keyed_fp(kind, k),
+                "{kind:?} {k}"
+            );
+        }
+    }
+    let pick = |gs: &GlobalSummaries| {
+        let picked = gs.body_by_leaf(crate::symbol::Lang::Python, "transform", 3);
+        picked.map(|(b, k)| (b.ssa.blocks.len(), k))
+    };
+    assert!(
+        lazy.bodies_by_key.values().all(|e| !e.v.is_decoded()),
+        "fingerprints and leaf filtering must not decode"
+    );
+    assert_eq!(pick(&lazy), pick(&eager));
+    for k in &keys {
+        let (a, b) = (lazy.get_body(k).unwrap(), eager.get_body(k).unwrap());
+        assert_eq!(a.param_count, b.param_count);
+        assert_eq!(a.ssa.blocks.len(), b.ssa.blocks.len());
+        assert_eq!(deps::fp_value(a), deps::fp_value(b));
+    }
 }
 
 #[test]
@@ -5557,4 +5620,86 @@ mod resolve_callee_oracle_tests {
         // The owned view agrees with the borrowed one.
         assert_eq!(gs.lookup_same_lang(Lang::Java, "run").len(), 2);
     }
+}
+
+fn go_key(ns: &str, container: &str, name: &str) -> FuncKey {
+    let kind = if container.is_empty() {
+        FuncKind::Function
+    } else {
+        FuncKind::Method
+    };
+    FuncKey::from_parts(Lang::Go, ns, container, name, Some(0), None, kind)
+}
+
+#[test]
+fn name_index_order_ignores_insertion_order() {
+    let keys = [
+        go_key("b.go", "", "run"),
+        go_key("a.go", "T", "run"),
+        go_key("c.go", "", "run"),
+    ];
+    let mut fwd = GlobalSummaries::new();
+    for k in &keys {
+        fwd.insert(k.clone(), make("run", 0, 0, 0));
+    }
+    let mut rev = GlobalSummaries::new();
+    for k in keys.iter().rev() {
+        rev.insert(k.clone(), make("run", 0, 0, 0));
+    }
+    assert_eq!(
+        fwd.keys_same_lang(Lang::Go, "run"),
+        rev.keys_same_lang(Lang::Go, "run")
+    );
+    let files: Vec<&str> = fwd
+        .keys_same_lang(Lang::Go, "run")
+        .iter()
+        .map(|k| k.namespace.as_str())
+        .collect();
+    assert_eq!(files, ["a.go", "b.go", "c.go"]);
+}
+
+#[test]
+fn resolution_read_depends_on_its_outcome_only() {
+    let mut gs = GlobalSummaries::new();
+    gs.insert(go_key("io.go", "File", "Close"), make("Close", 0, 0, 0));
+    gs.insert(go_key("net.go", "Conn", "Close"), make("Close", 0, 0, 0));
+    let typed = CalleeQuery {
+        name: "Close",
+        caller_lang: Lang::Go,
+        caller_namespace: "main.go",
+        caller_container: None,
+        receiver_type: Some("File"),
+        namespace_qualifier: None,
+        receiver_var: None,
+        arity: Some(0),
+    };
+    let bare = CalleeQuery {
+        receiver_type: None,
+        caller_namespace: "util.go",
+        ..typed
+    };
+
+    let guard = deps::start_trace();
+    let resolved = gs.resolve_callee_unique(&typed);
+    let unresolved = gs.resolve_callee_unique(&bare);
+    let trace = guard.finish();
+    assert_eq!(resolved.map(|k| k.container), Some("File".to_string()));
+    assert_eq!(unresolved, None, "two methods, no same-file candidate");
+
+    let guard = deps::start_trace();
+    let _ = gs.resolve_callee_unique(&typed);
+    let typed_only = guard.finish();
+
+    // A new free `Close` in util.go: `f.Close()` on a File still resolves
+    // to File::Close, but a bare `Close()` inside util.go now resolves to
+    // the new function.
+    gs.insert(go_key("util.go", "", "Close"), make("Close", 0, 0, 0));
+    assert!(
+        typed_only.holds(&gs),
+        "a resolution the new function does not change stays valid"
+    );
+    assert!(
+        !trace.holds(&gs),
+        "a resolution the new function changes is invalidated"
+    );
 }

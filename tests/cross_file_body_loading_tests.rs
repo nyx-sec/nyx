@@ -1,10 +1,10 @@
 //! Smoke test: cross-file SSA bodies load into
-//! [`GlobalSummaries::bodies_by_key`] from the pass-1 fused pipeline.
+//! [`GlobalSummaries::bodies`] from the pass-1 fused pipeline.
 //!
 //! The body-loading path is pure plumbing: the taint engine carries a
 //! `cross_file_bodies` field on `SsaTaintTransfer` that the cross-file
 //! inline path consumes.  This test guards the *availability*
-//! invariant, if pass 1 stops populating `bodies_by_key`, the inline
+//! invariant, if pass 1 stops populating the body map, the inline
 //! path would silently fall back to summary resolution even when
 //! cross-file bodies could have given context-sensitive precision.
 //!
@@ -106,22 +106,17 @@ fn cross_file_body_loading_smoke_python_two_files() {
          (default) and that `analyse_file_fused` still returns `ssa_bodies`.",
         gs.bodies_len()
     );
-    let bodies_map = gs
-        .bodies_by_key()
-        .expect("bodies_by_key() must return Some when bodies_len >= 1");
-
     // Find the helper entry.  Python stores the enclosing file path as
     // the namespace; we just match on `(lang, name)` to stay robust to
     // path-normalisation tweaks.
-    let helper_entry = bodies_map
-        .iter()
+    let helper_entry = gs
+        .bodies()
         .find(|(k, _)| k.lang == Lang::Python && k.name == "helper")
         .unwrap_or_else(|| {
             panic!(
                 "no body entry for Python `helper`; keys = {:?}",
-                bodies_map
-                    .keys()
-                    .map(|k| format!("{}::{} ({})", k.namespace, k.name, k.lang.as_str()))
+                gs.bodies()
+                    .map(|(k, _)| format!("{}::{} ({})", k.namespace, k.name, k.lang.as_str()))
                     .collect::<Vec<_>>()
             )
         });
@@ -153,14 +148,13 @@ fn cross_file_body_loading_empty_without_callees() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
 
-    // Passing zero paths to `pass1` is what flips `bodies_len` to zero
-    // and exercises the `None` branch of `bodies_by_key()`.
+    // Passing zero paths to `pass1` is what flips `bodies_len` to zero.
     let cfg = test_config();
     let gs = pass1(root, &[], &cfg);
 
     assert_eq!(gs.bodies_len(), 0);
     assert!(
-        gs.bodies_by_key().is_none(),
-        "bodies_by_key() must return None when no bodies are loaded"
+        gs.bodies().next().is_none(),
+        "no bodies may be listed when none are loaded"
     );
 }

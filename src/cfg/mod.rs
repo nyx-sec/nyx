@@ -7641,11 +7641,15 @@ fn collect_numeric_confined_value_idents(
     let mut counts: std::collections::HashMap<String, (u32, u32)> =
         std::collections::HashMap::new();
     count_confined_idents_into(ast, lang, code, &mut counts);
-    counts
+    let mut idents: Vec<String> = counts
         .into_iter()
         .filter(|(_, (total, conf))| *total > 0 && total == conf)
         .map(|(k, _)| k)
-        .collect()
+        .collect();
+    // Consumers only test membership; sorting keeps the CFG (and the
+    // cross-file bodies built from it) the same in every process.
+    idents.sort_unstable();
+    idents
 }
 
 /// Per-identifier numeric-confinement tally for the confinement walk:

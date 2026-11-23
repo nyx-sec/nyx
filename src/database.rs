@@ -120,6 +120,10 @@ pub mod index {
             disambig INTEGER,
             kind TEXT NOT NULL DEFAULT 'fn',
             body BLOB NOT NULL,
+            param_count INTEGER NOT NULL DEFAULT 0,
+            block_count INTEGER NOT NULL DEFAULT 0,
+            body_fp INTEGER NOT NULL DEFAULT 0,
+            shape_fp INTEGER NOT NULL DEFAULT 0,
             updated_at INTEGER NOT NULL,
             UNIQUE(project, file_path, name, container, arity, disambig, kind)
         );
@@ -276,6 +280,27 @@ pub mod index {
             updated_at INTEGER NOT NULL
         );
 
+        -- Incremental pass 2: one row per analysis unit (a file, or a
+        -- recursive batch of files).  `payload` is opaque to this layer; see
+        -- `commands::incremental`.
+        CREATE TABLE IF NOT EXISTS pass2_units (
+            project TEXT NOT NULL,
+            unit_key TEXT NOT NULL,
+            payload BLOB NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (project, unit_key)
+        );
+
+        -- Per-file attack-surface probe results, reused while the file's
+        -- content hash is unchanged.
+        CREATE TABLE IF NOT EXISTS surface_probes (
+            project TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            file_hash BLOB NOT NULL,
+            payload BLOB NOT NULL,
+            PRIMARY KEY (project, file_path)
+        );
+
         -- Indexes on (project, file_path) for the per-file replace_* paths.
         -- Without these, every DELETE WHERE project=? AND file_path=? does a
         -- full table scan, which dominates indexing time as the cache grows.
@@ -310,6 +335,8 @@ pub mod index {
              DELETE FROM cross_package_imports;
              DELETE FROM caller_scope_edges;
              DELETE FROM router_facts;
+             DELETE FROM pass2_units;
+             DELETE FROM surface_probes;
              DELETE FROM files;",
         )?;
         Ok(())
@@ -353,7 +380,12 @@ pub mod index {
     /// * `6`, `ConditionExpr::BoolTest` gained a `negated` field so `if !x`
     ///   keeps its negation.  Cached `ssa_function_bodies` are bincode, which
     ///   cannot fill a missing field, so pre-bump bodies are rebuilt.
-    pub const SCHEMA_VERSION: &str = "6";
+    /// * `7`, `ssa_function_bodies` stores each body's parameter count,
+    ///   block count and fingerprints beside the encoding, so an indexed
+    ///   scan can hold bodies undecoded.  Pre-bump rows have no
+    ///   fingerprints and are rebuilt, and cached pass-2 units are dropped
+    ///   with them.
+    pub const SCHEMA_VERSION: &str = "7";
 
     /// A single issue row, ready for insertion.
     #[derive(Debug, Clone)]
@@ -399,6 +431,94 @@ pub mod index {
                 .send(Box::new(job))
                 .map_err(|_| NyxError::Msg("database writer stopped before accepting write".into()))
         }
+    }
+
+    /// One `ssa_function_bodies` row as the write paths take it:
+    /// `(name, arity, lang, namespace, container, disambig, kind, body)`.
+    pub type SsaBodyRow = (
+        String,
+        usize,
+        String,
+        String,
+        String,
+        Option<u32>,
+        crate::symbol::FuncKind,
+        crate::summary::EncodedBody,
+    );
+
+    /// Write rows for a file's extracted callee bodies.  Encoding and
+    /// fingerprinting happen here, on the calling pass-1 worker, instead
+    /// of on the single index writer thread.
+    pub fn encode_ssa_body_rows(
+        bodies: impl IntoIterator<
+            Item = (
+                crate::symbol::FuncKey,
+                crate::taint::ssa_transfer::CalleeSsaBody,
+            ),
+        >,
+    ) -> NyxResult<Vec<SsaBodyRow>> {
+        bodies
+            .into_iter()
+            .map(|(key, body)| {
+                let encoded = crate::summary::EncodedBody::encode(&body)
+                    .map_err(|e| NyxError::Msg(format!("SSA body serialise: {e}")))?;
+                Ok((
+                    key.name,
+                    key.arity.unwrap_or(0),
+                    key.lang.as_str().to_string(),
+                    key.namespace,
+                    key.container,
+                    key.disambig,
+                    key.kind,
+                    encoded,
+                ))
+            })
+            .collect()
+    }
+
+    /// A loaded `ssa_function_bodies` row:
+    /// `(file_path, name, lang, arity, namespace, container, disambig, kind, body)`.
+    pub type SsaBodyLoadRow<B> = (
+        String,
+        String,
+        String,
+        i64,
+        String,
+        String,
+        Option<u32>,
+        crate::symbol::FuncKind,
+        B,
+    );
+
+    /// Run the prepared `ssa_function_bodies` insert for one row.
+    fn insert_ssa_body_row(
+        stmt: &mut rusqlite::Statement<'_>,
+        project: &str,
+        path_str: &str,
+        file_hash: &[u8],
+        row: &SsaBodyRow,
+        now: i64,
+    ) -> NyxResult<()> {
+        let (name, arity, lang, namespace, container, disambig, kind, body) = row;
+        stmt.execute(params![
+            project,
+            path_str,
+            file_hash,
+            name,
+            *arity as i64,
+            lang,
+            namespace,
+            container,
+            disambig.map(|d| d as i64),
+            kind.as_str(),
+            body.bytes,
+            body.param_count as i64,
+            body.block_count as i64,
+            body.fp as i64,
+            body.shape_fp as i64,
+            now
+        ])?;
+        Ok(())
     }
 
     /// Single-writer queue for project index mutations.
@@ -669,7 +789,8 @@ pub mod index {
                 let body_ok = body_cols.contains("namespace")
                     && body_cols.contains("container")
                     && body_cols.contains("disambig")
-                    && body_cols.contains("kind");
+                    && body_cols.contains("kind")
+                    && body_cols.contains("body_fp");
 
                 if !body_ok {
                     tracing::info!("migrating ssa_function_bodies: recreating table");
@@ -877,7 +998,8 @@ pub mod index {
                          DELETE FROM files;
                          DROP TABLE IF EXISTS cross_package_imports;
                          DROP TABLE IF EXISTS caller_scope_edges;
-                         DROP TABLE IF EXISTS router_facts;",
+                         DROP TABLE IF EXISTS router_facts;
+                         DROP TABLE IF EXISTS pass2_units;",
                     )?;
                     conn.execute_batch(SCHEMA)?;
                     conn.execute(
@@ -1604,16 +1726,7 @@ pub mod index {
             &mut self,
             file_path: &Path,
             file_hash: &[u8],
-            bodies: &[(
-                String,
-                usize,
-                String,
-                String,
-                String,
-                Option<u32>,
-                crate::symbol::FuncKind,
-                crate::taint::ssa_transfer::CalleeSsaBody,
-            )],
+            bodies: &[SsaBodyRow],
         ) -> NyxResult<()> {
             let tx = self.conn.transaction()?;
             let path_str = file_path.to_string_lossy();
@@ -1628,28 +1741,14 @@ pub mod index {
                 let mut stmt = tx.prepare(
                     "INSERT OR REPLACE INTO ssa_function_bodies
                         (project, file_path, file_hash, name, arity, lang, namespace,
-                         container, disambig, kind, body, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                         container, disambig, kind, body, param_count, block_count,
+                         body_fp, shape_fp, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                             ?14, ?15, ?16)",
                 )?;
 
-                for (name, arity, lang, namespace, container, disambig, kind, body) in bodies {
-                    let blob = rmp_serde::to_vec_named(body)
-                        .map_err(|e| NyxError::Msg(format!("SSA body serialise: {e}")))?;
-                    let disambig_sql = disambig.map(|d| d as i64);
-                    stmt.execute(params![
-                        self.project,
-                        path_str,
-                        file_hash,
-                        name,
-                        *arity as i64,
-                        lang,
-                        namespace,
-                        container,
-                        disambig_sql,
-                        kind.as_str(),
-                        blob,
-                        now
-                    ])?;
+                for row in bodies {
+                    insert_ssa_body_row(&mut stmt, &self.project, &path_str, file_hash, row, now)?;
                 }
             }
 
@@ -1657,42 +1756,41 @@ pub mod index {
             Ok(())
         }
 
-        /// Load every SSA callee body for this project.
+        /// Load every SSA callee body for this project, decoded.
         ///
         /// Returns rows with full metadata for `FuncKey` reconstruction:
         /// `(file_path, name, lang, arity, namespace, container, disambig, kind, CalleeSsaBody)`.
+        /// Rows whose body does not decode are skipped with a warning.
         pub fn load_all_ssa_bodies(
             &self,
-        ) -> NyxResult<
-            Vec<(
-                String,
-                String,
-                String,
-                i64,
-                String,
-                String,
-                Option<u32>,
-                crate::symbol::FuncKind,
-                crate::taint::ssa_transfer::CalleeSsaBody,
-            )>,
-        > {
+        ) -> NyxResult<Vec<SsaBodyLoadRow<crate::taint::ssa_transfer::CalleeSsaBody>>> {
+            use rayon::prelude::*;
+            let rows = self.load_all_encoded_ssa_bodies()?;
+            Ok(rows
+                .into_par_iter()
+                .filter_map(
+                    |(fp, name, lang, arity, ns, container, disambig, kind, body)| {
+                        body.decode()
+                            .map_err(|e| tracing::warn!("failed to deserialize SSA body: {e}"))
+                            .ok()
+                            .map(|b| (fp, name, lang, arity, ns, container, disambig, kind, b))
+                    },
+                )
+                .collect())
+        }
+
+        /// Load every SSA callee body for this project without decoding
+        /// it, with the fingerprints and counts stored beside it.  Same row
+        /// shape as [`Self::load_all_ssa_bodies`].
+        pub fn load_all_encoded_ssa_bodies(
+            &self,
+        ) -> NyxResult<Vec<SsaBodyLoadRow<crate::summary::EncodedBody>>> {
             let mut stmt = self.c().prepare(
-                "SELECT file_path, name, lang, arity, namespace,
-                        container, disambig, kind, body
+                "SELECT file_path, name, lang, arity, namespace, container, disambig,
+                        kind, body, param_count, block_count, body_fp, shape_fp
                  FROM ssa_function_bodies WHERE project = ?1",
             )?;
-
-            let rows: Vec<(
-                String,
-                String,
-                String,
-                i64,
-                String,
-                String,
-                Option<i64>,
-                String,
-                Vec<u8>,
-            )> = stmt
+            let rows = stmt
                 .query_map([&self.project], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -1701,9 +1799,15 @@ pub mod index {
                         row.get::<_, i64>(3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
-                        row.get::<_, Option<i64>>(6)?,
-                        row.get::<_, String>(7)?,
-                        row.get::<_, Vec<u8>>(8)?,
+                        row.get::<_, Option<i64>>(6)?.map(|d| d as u32),
+                        crate::symbol::FuncKind::from_slug(&row.get::<_, String>(7)?),
+                        crate::summary::EncodedBody {
+                            bytes: row.get::<_, Vec<u8>>(8)?,
+                            param_count: row.get::<_, i64>(9)? as usize,
+                            block_count: row.get::<_, i64>(10)? as usize,
+                            fp: row.get::<_, i64>(11)? as u64,
+                            shape_fp: row.get::<_, i64>(12)? as u64,
+                        },
                     ))
                 })?
                 .filter_map(|r| match r {
@@ -1714,67 +1818,7 @@ pub mod index {
                     }
                 })
                 .collect();
-
-            if rows.len() > 256 {
-                use rayon::prelude::*;
-                let results: Vec<_> = rows
-                    .par_iter()
-                    .filter_map(
-                        |(fp, name, lang, arity, ns, container, disambig, kind, blob)| {
-                            rmp_serde::from_slice::<crate::taint::ssa_transfer::CalleeSsaBody>(blob)
-                                .map_err(|e| {
-                                    tracing::warn!("failed to deserialize SSA body: {e}");
-                                    e
-                                })
-                                .ok()
-                                .map(|mut b| {
-                                    // Rehydrate a proxy Cfg from node_meta so
-                                    // the taint engine's cross-file inline path can index
-                                    // `cfg[inst.cfg_node]` uniformly.  No-op for intra-file
-                                    // bodies that carry node_meta empty.
-                                    crate::taint::ssa_transfer::rebuild_body_graph(&mut b);
-                                    (
-                                        fp.clone(),
-                                        name.clone(),
-                                        lang.clone(),
-                                        *arity,
-                                        ns.clone(),
-                                        container.clone(),
-                                        disambig.map(|d| d as u32),
-                                        crate::symbol::FuncKind::from_slug(kind),
-                                        b,
-                                    )
-                                })
-                        },
-                    )
-                    .collect();
-                Ok(results)
-            } else {
-                let mut out = Vec::with_capacity(rows.len());
-                for (fp, name, lang, arity, ns, container, disambig, kind, blob) in &rows {
-                    match rmp_serde::from_slice::<crate::taint::ssa_transfer::CalleeSsaBody>(blob) {
-                        Ok(mut b) => {
-                            // See note in parallel branch above.
-                            crate::taint::ssa_transfer::rebuild_body_graph(&mut b);
-                            out.push((
-                                fp.clone(),
-                                name.clone(),
-                                lang.clone(),
-                                *arity,
-                                ns.clone(),
-                                container.clone(),
-                                disambig.map(|d| d as u32),
-                                crate::symbol::FuncKind::from_slug(kind),
-                                b,
-                            ));
-                        }
-                        Err(e) => {
-                            tracing::warn!("failed to deserialize SSA body: {e}");
-                        }
-                    }
-                }
-                Ok(out)
-            }
+            Ok(rows)
         }
 
         /// Atomically replace all `AuthCheckSummary` rows for a single file.
@@ -1878,16 +1922,7 @@ pub mod index {
                 crate::symbol::FuncKind,
                 crate::summary::ssa_summary::SsaFuncSummary,
             )],
-            ssa_bodies: &[(
-                String,
-                usize,
-                String,
-                String,
-                String,
-                Option<u32>,
-                crate::symbol::FuncKind,
-                crate::taint::ssa_transfer::CalleeSsaBody,
-            )],
+            ssa_bodies: &[SsaBodyRow],
             auth_summaries: &[(
                 String,
                 usize,
@@ -2003,27 +2038,13 @@ pub mod index {
                 let mut stmt = tx.prepare(
                     "INSERT OR REPLACE INTO ssa_function_bodies
                         (project, file_path, file_hash, name, arity, lang, namespace,
-                         container, disambig, kind, body, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                         container, disambig, kind, body, param_count, block_count,
+                         body_fp, shape_fp, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                             ?14, ?15, ?16)",
                 )?;
-                for (name, arity, lang, namespace, container, disambig, kind, body) in ssa_bodies {
-                    let blob = rmp_serde::to_vec_named(body)
-                        .map_err(|e| NyxError::Msg(format!("SSA body serialise: {e}")))?;
-                    let disambig_sql = disambig.map(|d| d as i64);
-                    stmt.execute(params![
-                        self.project,
-                        path_str,
-                        file_hash,
-                        name,
-                        *arity as i64,
-                        lang,
-                        namespace,
-                        container,
-                        disambig_sql,
-                        kind.as_str(),
-                        blob,
-                        now
-                    ])?;
+                for row in ssa_bodies {
+                    insert_ssa_body_row(&mut stmt, &self.project, &path_str, file_hash, row, now)?;
                 }
             }
 
@@ -2445,7 +2466,104 @@ pub mod index {
                 "DELETE FROM router_facts WHERE project = ?1 AND file_path = ?2",
                 params![self.project, path_str.as_ref()],
             )?;
+            tx.execute(
+                "DELETE FROM surface_probes WHERE project = ?1 AND file_path = ?2",
+                params![self.project, path_str.as_ref()],
+            )?;
 
+            tx.commit()?;
+            Ok(())
+        }
+
+        /// Every cached pass-2 unit of this project as `(unit_key, payload)`.
+        pub fn load_pass2_units(&self) -> NyxResult<Vec<(String, Vec<u8>)>> {
+            let mut stmt = self
+                .c()
+                .prepare("SELECT unit_key, payload FROM pass2_units WHERE project = ?1")?;
+            let rows = stmt.query_map(params![self.project], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        }
+
+        /// Write `upserts` and delete every cached unit whose key is not in
+        /// `keep`, in one transaction.
+        pub fn write_pass2_units(
+            &mut self,
+            upserts: &[(String, Vec<u8>)],
+            keep: &std::collections::HashSet<String>,
+        ) -> NyxResult<()> {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+            let tx = self.conn.transaction()?;
+            {
+                let mut put = tx.prepare(
+                    "INSERT OR REPLACE INTO pass2_units (project, unit_key, payload, updated_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                )?;
+                for (key, payload) in upserts {
+                    put.execute(params![self.project, key, payload, now])?;
+                }
+                let stale: Vec<String> = {
+                    let mut stmt =
+                        tx.prepare("SELECT unit_key FROM pass2_units WHERE project = ?1")?;
+                    let keys = stmt
+                        .query_map(params![self.project], |r| r.get::<_, String>(0))?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    keys.into_iter().filter(|k| !keep.contains(k)).collect()
+                };
+                let mut del =
+                    tx.prepare("DELETE FROM pass2_units WHERE project = ?1 AND unit_key = ?2")?;
+                for key in &stale {
+                    del.execute(params![self.project, key])?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        }
+
+        /// Drop every cached pass-2 unit of this project.
+        pub fn clear_pass2_units(&self) -> NyxResult<()> {
+            self.c().execute(
+                "DELETE FROM pass2_units WHERE project = ?1",
+                params![self.project],
+            )?;
+            Ok(())
+        }
+
+        /// Cached surface probe results as `path -> (content hash, payload)`.
+        pub fn load_surface_probes(
+            &self,
+        ) -> NyxResult<std::collections::HashMap<String, (Vec<u8>, Vec<u8>)>> {
+            let mut stmt = self.c().prepare(
+                "SELECT file_path, file_hash, payload FROM surface_probes WHERE project = ?1",
+            )?;
+            let rows = stmt.query_map(params![self.project], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    (r.get::<_, Vec<u8>>(1)?, r.get::<_, Vec<u8>>(2)?),
+                ))
+            })?;
+            Ok(rows.collect::<Result<std::collections::HashMap<_, _>, _>>()?)
+        }
+
+        /// Store surface probe results, one transaction for the batch.
+        pub fn write_surface_probes(
+            &mut self,
+            rows: &[(String, Vec<u8>, Vec<u8>)],
+        ) -> NyxResult<()> {
+            if rows.is_empty() {
+                return Ok(());
+            }
+            let tx = self.conn.transaction()?;
+            {
+                let mut put = tx.prepare(
+                    "INSERT OR REPLACE INTO surface_probes (project, file_path, file_hash, payload)
+                     VALUES (?1, ?2, ?3, ?4)",
+                )?;
+                for (path, hash, payload) in rows {
+                    put.execute(params![self.project, path, hash, payload])?;
+                }
+            }
             tx.commit()?;
             Ok(())
         }
@@ -3119,6 +3237,13 @@ pub mod index {
         DROP TABLE IF EXISTS files;
         DROP TABLE IF EXISTS function_summaries;
         DROP TABLE IF EXISTS ssa_function_summaries;
+        DROP TABLE IF EXISTS ssa_function_bodies;
+        DROP TABLE IF EXISTS auth_check_summaries;
+        DROP TABLE IF EXISTS cross_package_imports;
+        DROP TABLE IF EXISTS caller_scope_edges;
+        DROP TABLE IF EXISTS router_facts;
+        DROP TABLE IF EXISTS pass2_units;
+        DROP TABLE IF EXISTS surface_probes;
 
         PRAGMA foreign_keys = ON;
         VACUUM;
@@ -4045,6 +4170,38 @@ fn caller_scope_edges_round_trip_and_reproduce_the_fold() {
     assert!(idx.load_all_caller_scope_edges().unwrap().is_empty());
 }
 
+/// [`index::SsaBodyRow`] with the body still decoded.
+#[cfg(test)]
+type DecodedBodyRow = (
+    String,
+    usize,
+    String,
+    String,
+    String,
+    Option<u32>,
+    crate::symbol::FuncKind,
+    crate::taint::ssa_transfer::CalleeSsaBody,
+);
+
+/// Body rows in the stored form the write paths take.
+#[cfg(test)]
+fn encoded_body_rows(rows: &[DecodedBodyRow]) -> Vec<index::SsaBodyRow> {
+    rows.iter()
+        .map(|(n, a, l, ns, c, d, k, body)| {
+            (
+                n.clone(),
+                *a,
+                l.clone(),
+                ns.clone(),
+                c.clone(),
+                *d,
+                *k,
+                crate::summary::EncodedBody::encode(body).unwrap(),
+            )
+        })
+        .collect()
+}
+
 #[test]
 fn ssa_bodies_round_trip() {
     let td = tempfile::tempdir().unwrap();
@@ -4068,7 +4225,8 @@ fn ssa_bodies_round_trip() {
         body,
     )];
 
-    idx.replace_ssa_bodies_for_file(&f, &hash, &bodies).unwrap();
+    idx.replace_ssa_bodies_for_file(&f, &hash, &encoded_body_rows(&bodies))
+        .unwrap();
 
     let loaded = idx.load_all_ssa_bodies().unwrap();
     assert_eq!(loaded.len(), 1);
@@ -4081,6 +4239,50 @@ fn ssa_bodies_round_trip() {
     assert_eq!(ns, "helper.py");
     assert_eq!(loaded_body.param_count, 1);
     assert_eq!(loaded_body.ssa.blocks.len(), 3);
+}
+
+/// The encoded loader returns the stored bytes with the counts and
+/// fingerprints computed when the body was written, and those match the
+/// body read back.
+#[test]
+fn encoded_ssa_bodies_keep_their_stored_facts() {
+    let td = tempfile::tempdir().unwrap();
+    let db = td.path().join("nyx.sqlite");
+    let f = td.path().join("helper.py");
+    std::fs::write(&f, "def transform(val): return val").unwrap();
+    let pool = index::Indexer::init(&db).unwrap();
+    let mut idx = index::Indexer::from_pool("proj", &pool).unwrap();
+    let hash = index::Indexer::digest_bytes(b"def transform(val): return val");
+
+    let body = make_test_callee_body(4, 2);
+    let expected = crate::summary::EncodedBody::encode(&body).unwrap();
+    let bodies = vec![(
+        "transform".to_string(),
+        2_usize,
+        "python".to_string(),
+        "helper.py".to_string(),
+        String::new(),
+        Some(7),
+        crate::symbol::FuncKind::Function,
+        body,
+    )];
+    idx.replace_ssa_bodies_for_file(&f, &hash, &encoded_body_rows(&bodies))
+        .unwrap();
+
+    let loaded = idx.load_all_encoded_ssa_bodies().unwrap();
+    assert_eq!(loaded.len(), 1);
+    let (_, name, _, arity, _, _, disambig, _, enc) = &loaded[0];
+    assert_eq!(
+        (name.as_str(), *arity, *disambig),
+        ("transform", 2, Some(7))
+    );
+    assert_eq!(enc.bytes, expected.bytes);
+    assert_eq!(
+        (enc.param_count, enc.block_count, enc.fp, enc.shape_fp),
+        (2, 4, expected.fp, expected.shape_fp)
+    );
+    let back = enc.decode().unwrap();
+    assert_eq!(crate::summary::deps::fp_value(&back), enc.fp);
 }
 
 #[test]
@@ -4105,7 +4307,7 @@ fn ssa_bodies_replace_on_rescan() {
         crate::symbol::FuncKind::Function,
         make_test_callee_body(2, 1),
     )];
-    idx.replace_ssa_bodies_for_file(&f, &hash1, &bodies1)
+    idx.replace_ssa_bodies_for_file(&f, &hash1, &encoded_body_rows(&bodies1))
         .unwrap();
     assert_eq!(idx.load_all_ssa_bodies().unwrap().len(), 1);
     assert_eq!(idx.load_all_ssa_bodies().unwrap()[0].8.ssa.blocks.len(), 2);
@@ -4122,7 +4324,7 @@ fn ssa_bodies_replace_on_rescan() {
         crate::symbol::FuncKind::Function,
         make_test_callee_body(5, 1),
     )];
-    idx.replace_ssa_bodies_for_file(&f, &hash2, &bodies2)
+    idx.replace_ssa_bodies_for_file(&f, &hash2, &encoded_body_rows(&bodies2))
         .unwrap();
 
     let loaded = idx.load_all_ssa_bodies().unwrap();
@@ -4170,7 +4372,8 @@ fn ssa_bodies_with_node_meta_round_trip() {
         crate::symbol::FuncKind::Function,
         body,
     )];
-    idx.replace_ssa_bodies_for_file(&f, &hash, &bodies).unwrap();
+    idx.replace_ssa_bodies_for_file(&f, &hash, &encoded_body_rows(&bodies))
+        .unwrap();
 
     let loaded = idx.load_all_ssa_bodies().unwrap();
     assert_eq!(loaded.len(), 1);
@@ -4205,7 +4408,8 @@ fn ssa_bodies_removed_on_file_delete() {
         crate::symbol::FuncKind::Function,
         make_test_callee_body(1, 0),
     )];
-    idx.replace_ssa_bodies_for_file(&f, &hash, &bodies).unwrap();
+    idx.replace_ssa_bodies_for_file(&f, &hash, &encoded_body_rows(&bodies))
+        .unwrap();
     assert_eq!(idx.load_all_ssa_bodies().unwrap().len(), 1);
 
     // Delete file, should also remove bodies
@@ -4311,7 +4515,8 @@ fn populate_project(
         crate::symbol::FuncKind::Function,
         make_test_callee_body(1, 1),
     )];
-    idx.replace_ssa_bodies_for_file(&f, &hash, &bodies).unwrap();
+    idx.replace_ssa_bodies_for_file(&f, &hash, &encoded_body_rows(&bodies))
+        .unwrap();
 }
 
 // ── 1. Engine Version Tests ─────────────────────────────────────────────────

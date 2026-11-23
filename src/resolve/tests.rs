@@ -139,6 +139,80 @@ fn package_for_returns_innermost_match() {
     assert_eq!(web_pkg.name, "web-app");
 }
 
+/// `package_for` picks the deepest package root above the file, the same
+/// entry the scan over every package (longest root that is a prefix, last
+/// one on a tie) picks, including when overlapping scan roots list a
+/// package twice.
+#[test]
+fn package_for_matches_a_scan_over_all_packages() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let write_pkg = |dir: &Path, name: &str| {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("package.json"), format!("{{\"name\":\"{name}\"}}")).unwrap();
+    };
+    write_pkg(&root, "outer");
+    write_pkg(&root.join("packages/inner"), "inner");
+    write_pkg(&root.join("packages/inner/nested/deep"), "deep");
+    write_pkg(&root.join("packages/innerx"), "innerx");
+    std::fs::create_dir_all(root.join("packages/inner/nested/deep/src")).unwrap();
+    std::fs::create_dir_all(root.join("packages/innerx/src")).unwrap();
+    std::fs::create_dir_all(root.join("other")).unwrap();
+
+    let graph = build_module_graph(&[root.clone(), root.join("packages/inner")]);
+    let scan = |file: &Path| {
+        let canonical = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+        graph
+            .packages()
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| canonical.starts_with(&p.root))
+            .max_by_key(|(_, p)| p.root.as_os_str().len())
+            .map(|(i, _)| i)
+    };
+    let index_of = |p: Option<&PackageEntry>| {
+        p.map(|p| {
+            graph
+                .packages()
+                .iter()
+                .position(|q| std::ptr::eq(p, q))
+                .unwrap()
+        })
+    };
+    let files = [
+        root.join("index.ts"),
+        root.join("other"),
+        root.join("packages/inner/a.ts"),
+        root.join("packages/inner/nested/b.ts"),
+        root.join("packages/inner/nested/deep/src"),
+        root.join("packages/inner/nested/deep/src/c.ts"),
+        root.join("packages/innerx/src"),
+        tmp.path().parent().unwrap().join("outside.ts"),
+    ];
+    for file in &files {
+        assert_eq!(
+            index_of(graph.package_for(file)),
+            scan(file),
+            "{}",
+            file.display()
+        );
+    }
+    let names: Vec<_> = files[2..7]
+        .iter()
+        .map(|f| graph.package_for(f).map(|p| p.name.as_str()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            Some("inner"),
+            Some("inner"),
+            Some("deep"),
+            Some("deep"),
+            Some("innerx")
+        ]
+    );
+}
+
 #[test]
 fn project_namespace_prefixes_when_in_package() {
     let r = root();

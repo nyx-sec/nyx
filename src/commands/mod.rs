@@ -8,6 +8,7 @@
 
 pub mod clean;
 pub mod config;
+pub mod incremental;
 pub mod index;
 pub mod list;
 #[cfg(feature = "dynamic")]

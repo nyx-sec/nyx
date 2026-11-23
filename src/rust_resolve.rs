@@ -63,7 +63,10 @@ impl RustUseMap {
 fn find_crate_root(file_path: &Path, scan_root: Option<&Path>) -> Option<std::path::PathBuf> {
     let mut cur = file_path.parent()?;
     loop {
-        if cur.join("Cargo.toml").is_file() {
+        let manifest = cur.join("Cargo.toml");
+        let found = manifest.is_file();
+        crate::summary::deps::note_is_file(&manifest, found);
+        if found {
             return Some(cur.to_path_buf());
         }
         if let Some(root) = scan_root

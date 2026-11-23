@@ -7,9 +7,11 @@
 //! consulted so a probe with no SSRF cap (DNS resolver, SMTP sender)
 //! still surfaces as an external service.
 
+use super::leaf_match::LeafMatcher;
 use super::{ExternalService, ExternalServiceKind, SourceLocation, SurfaceNode, namespace_file};
 use crate::labels::Cap;
 use crate::summary::GlobalSummaries;
+use std::sync::LazyLock;
 
 struct ClientRule {
     leaf: &'static str,
@@ -415,19 +417,14 @@ fn container_for_ordinal(typed: &[(u32, String)], ordinal: u32) -> Option<&str> 
 }
 
 fn match_rule(callee: &str) -> Option<&'static ClientRule> {
-    let cl = callee.trim().to_ascii_lowercase();
-    let cl_segments = cl.replace("::", ".");
-    CLIENT_RULES.iter().find(|r| {
-        let rl = r.leaf.to_ascii_lowercase();
-        if r.leaf.contains('.') || r.leaf.contains("::") {
-            // Qualified pattern: substring on full callee text.
-            cl.contains(&rl)
-        } else {
-            // Bare leaf: whole-segment match only.  Stops `prefetch` from
-            // matching `fetch`, `Faraday` substrings, etc.
-            cl_segments.split('.').any(|seg| seg == rl)
-        }
-    })
+    match_rule_index(callee).map(|i| &CLIENT_RULES[i])
+}
+
+/// Index into [`CLIENT_RULES`] of the first rule matching `callee`.
+fn match_rule_index(callee: &str) -> Option<usize> {
+    static MATCHER: LazyLock<LeafMatcher> =
+        LazyLock::new(|| LeafMatcher::new(CLIENT_RULES.iter().map(|r| r.leaf)));
+    MATCHER.find(callee)
 }
 
 /// Source location of an external-service call site in the
@@ -447,6 +444,42 @@ fn call_site_location(file: &str, span: Option<(u32, u32)>) -> SourceLocation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The indexed matcher picks the same rule as scanning the table in
+    /// order, for every rule pattern and common variations of it.
+    #[test]
+    fn match_rule_agrees_with_an_in_order_scan() {
+        fn scan(callee: &str) -> Option<usize> {
+            let cl = callee.trim().to_ascii_lowercase();
+            let cl_segments = cl.replace("::", ".");
+            CLIENT_RULES.iter().position(|r| {
+                let rl = r.leaf.to_ascii_lowercase();
+                if r.leaf.contains('.') || r.leaf.contains("::") {
+                    cl.contains(&rl)
+                } else {
+                    cl_segments.split('.').any(|seg| seg == rl)
+                }
+            })
+        }
+        for rule in CLIENT_RULES {
+            let leaf = rule.leaf;
+            let variants = [
+                leaf.to_string(),
+                leaf.to_ascii_uppercase(),
+                format!("obj.{leaf}"),
+                format!("{leaf}.inner"),
+                format!("Pkg::{leaf}"),
+                format!("x{leaf}"),
+                format!("{leaf}x"),
+                format!("  {leaf} "),
+                leaf.replace('.', "::"),
+                leaf.replace("::", "."),
+            ];
+            for callee in &variants {
+                assert_eq!(match_rule_index(callee), scan(callee), "callee {callee:?}");
+            }
+        }
+    }
     use crate::summary::{CalleeSite, FuncSummary};
     use crate::symbol::{FuncKey, Lang};
 

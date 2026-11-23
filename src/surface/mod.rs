@@ -30,6 +30,7 @@ pub mod exposure;
 pub mod external;
 pub mod graph;
 pub mod lang;
+mod leaf_match;
 pub mod reachability;
 pub mod risk;
 

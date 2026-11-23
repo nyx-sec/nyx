@@ -4,7 +4,7 @@ All notable changes to Nyx are documented here. The format is based on [Keep a C
 
 ## [0.9.0] - 2026-11-22
 
-The accuracy and speed release. Pass 2 now analyses files in parallel, so large repos scan in a fraction of the time: keycloak goes from 660 s to about 30 s, Ghost from 304 s to about 20 s and strapi from 140 s to about 15 s, and gogs and roundcube no longer time out.
+The accuracy and speed release. Pass 2 now analyses files in parallel, so large repos scan in a fraction of the time: keycloak goes from 660 s to about 30 s, Ghost from 304 s to about 20 s and strapi from 140 s to about 15 s, and gogs and roundcube no longer time out. Indexed rescans re-analyse only what changed, so rescanning strapi after a one-file edit takes about 3 s.
 
 Security findings on 23 open-source repos drop by more than a third, almost all of them false positives, and every language gets recall fixes. The benchmark corpus grows from 674 to 1279 cases, including 23 new CVE pairs, and scores TP 655, FP 0, FN 0, TN 610.
 
@@ -22,7 +22,8 @@ Security findings on 23 open-source repos drop by more than a third, almost all 
 ### Performance
 
 - **Parallel pass 2.** Files are analysed by dependency level instead of one at a time, SCC batches converge cheaply, and false self-recursion no longer forces extra rounds.
-- **Less time on one core.** The surface-map build probes files in parallel, pass-2 files start largest first so one huge file no longer runs alone at the end, analysis options are read lock-free, long chained callee texts are normalised once, the Express route witness is computed once per file, and canonicalised paths are cached in the module graph.
+- **Incremental rescans.** An indexed rescan reuses the pass-2 result of every file whose contents are unchanged and whose cross-file lookups still return the same summaries. Only edited files and the callers whose inputs they changed are analysed again, and findings match a full `--index off` scan. A rescan with no edits drops from 9.7 s to 1.2 s on gitea and from 12.1 s to 1.6 s on strapi, and a one-file edit takes 1.2 to 1.8 s on gitea and 1.8 to 2.1 s on strapi. Cross-file callee bodies are stored with their fingerprints and stay encoded in memory until an analysed file reads one. An edit that leaves a function's summary unchanged, such as a comment, re-analyses only that file. So does an edit that only moves functions down their file, unless a caller's finding points inside one of them, and a new function whose name other functions already use, unless it changes what an existing call resolves to. The first indexed scan no longer runs a separate index build, and surface-map probes are cached by file hash. The index database grows by 10 to 45% to hold the cache. `NYX_INCREMENTAL_VERIFY=1` re-analyses every reused file and logs any difference from the cached result, and `NYX_INCREMENTAL_EXPLAIN=1` logs which lookups changed for each file analysed again.
+- **Less time on one core.** The surface-map build probes files in parallel, pass-2 files start largest first so one huge file no longer runs alone at the end, analysis options are read lock-free, long chained callee texts are normalised once, the Express route witness is computed once per file, canonicalised paths are cached in the module graph, data-store and external-service rules are matched through a prebuilt index instead of lowercasing every rule for every callee, and a file's package is found by walking up its folders instead of testing every package root.
 - **Per-node work.** Constant propagation runs over per-instruction use lists, post-dominators are built once per body without copying the CFG, callee resolution reuses candidate lists and callee facts across a run, engine option scalars are resolved once instead of per call, and closure children a parameter never reaches are skipped.
 - **Tree-sitter calls.** The CFG builder reads node kinds and their classes from a per-file table indexed by `kind_id()` instead of converting the grammar's C string on every call, walks call-argument nesting with one top-down cursor descent instead of `parent()`, and the label suffix matcher is always inlined.
 
@@ -61,6 +62,7 @@ Security findings on 23 open-source repos drop by more than a third, almost all 
 ### Fixes
 
 - AST-pattern rules fire on both `.ts` and `.tsx` files. The two share a language slug but not a grammar, and the compiled query cache was keyed by slug only, so one of the two file types got no AST-rule hits.
+- A PHP file with a long chain of `@`, unary operator or parenthesis wrappers no longer hangs the scan. The call search visited each level of the chain once per path to it, so the time grew exponentially with its length.
 - `nyx scan <file>` no longer fails with "triage sync failed: scan root is not a directory". A single-file scan reads the triage file of the enclosing project (nearest `.nyx/triage.json`, stopping at the repository root).
 
 ### Dependencies

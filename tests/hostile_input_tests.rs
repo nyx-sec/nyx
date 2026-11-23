@@ -319,6 +319,27 @@ fn deeply_nested_parens_do_not_stack_overflow() {
     });
 }
 
+/// A chain of PHP error-suppression operators (`@@@..$x`) nests one
+/// `error_suppression_expression` per `@`.  The call-node search once
+/// visited each level along two paths, so the work doubled about every
+/// 1.4 levels and 100 operators never finished (found by the
+/// `cross_file_taint` fuzz target).
+#[test]
+fn nested_php_error_suppression_is_linear() {
+    run_on_prod_stack(|| {
+        let mut s = String::from("<?php\n$");
+        s.push_str(&"@".repeat(100));
+        s.push_str("data = $_POST['data'];\necho $obj;\n");
+
+        let path = Path::new("nested_suppress.php");
+        let cfg = hostile_cfg();
+        let _ = with_time_budget(Duration::from_secs(10), "nested @ parse", || {
+            run_rules_on_bytes(s.as_bytes(), path, &cfg, None, None)
+                .expect("nested error suppression should parse")
+        });
+    });
+}
+
 /// PHP unary operators, parentheses and `@` wrap a call without hiding it,
 /// so the CFG builder searches through them for the call.  A chain of them
 /// used to be searched once as a child and again as a grandchild at every

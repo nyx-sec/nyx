@@ -519,7 +519,7 @@ pub struct SsaBody {
     ///
     /// `#[serde(default)]` for backward compatibility with summary blobs
     /// produced before this field existed.
-    #[serde(default)]
+    #[serde(default, serialize_with = "crate::summary::deps::sorted_set")]
     pub synthetic_externals: FxHashSet<SsaValue>,
     /// SSA values whose [`SsaOp::Assign`] is a slot-scoped binding from a
     /// bare-array destructure rewrite (see `bare_array_ops` in
@@ -535,7 +535,7 @@ pub struct SsaBody {
     ///
     /// Empty by default; only the per-slot kill arm in the bare-array
     /// destructure lowering populates this set.
-    #[serde(default)]
+    #[serde(default, serialize_with = "crate::summary::deps::sorted_set")]
     pub slot_scoped_assigns: FxHashSet<SsaValue>,
 }
 
