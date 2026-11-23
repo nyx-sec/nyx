@@ -136,10 +136,11 @@ impl ConstValues {
     /// Iterate `(SsaValue, &ConstLattice)` over every dense slot in ascending
     /// index order.  The old `HashMap` path inserted **every** value
     /// `0..num_values` (including `Top`/`Varying`), so this visits the same
-    /// entry set; the two consumers that iterate (`SymbolicState::
-    /// seed_from_const_values`, `PathEnv::seed_from_optimization`) apply an
-    /// order-independent per-value keyed update, so ascending order is
-    /// output-equivalent to the old nondeterministic map order.
+    /// entry set.  `SymbolicState::seed_from_const_values` applies an
+    /// order-independent per-value keyed update.  `PathEnv::
+    /// seed_from_optimization` does not: its fact table is capped and drops
+    /// late arrivals, so it relies on this ascending order to keep the
+    /// admitted set stable across runs.
     pub fn iter(&self) -> impl Iterator<Item = (SsaValue, &ConstLattice)> {
         self.0
             .iter()

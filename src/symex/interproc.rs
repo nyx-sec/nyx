@@ -567,6 +567,32 @@ impl<'a> Drop for ReentryGuard<'a> {
 
 //  Core execution
 
+/// Look up an intra-file callee body by leaf name, optionally requiring an
+/// exact arity.
+///
+/// Several keys can share a leaf name (methods on different receivers,
+/// duplicate definitions).  The smallest key by `(namespace, container,
+/// arity, disambig)` wins, the same tie-break `taint::backwards` uses, so
+/// the chosen body does not follow the map's per-process hash order.
+fn intra_file_body_by_leaf<'b>(
+    bodies: &'b HashMap<crate::symbol::FuncKey, CalleeSsaBody>,
+    leaf: &str,
+    arity: Option<usize>,
+) -> Option<&'b CalleeSsaBody> {
+    bodies
+        .iter()
+        .filter(|(k, _)| k.name == leaf && (arity.is_none() || k.arity == arity))
+        .min_by(|(a, _), (b, _)| {
+            (&a.namespace, &a.container, &a.arity, &a.disambig).cmp(&(
+                &b.namespace,
+                &b.container,
+                &b.arity,
+                &b.disambig,
+            ))
+        })
+        .map(|(_, body)| body)
+}
+
 /// Execute a callee's SSA body interprocedurally.
 ///
 /// Returns `None` only if the feature is disabled or the callee has no body.
@@ -629,17 +655,13 @@ pub fn execute_callee(
         }
     }
 
-    // Resolve callee by leaf name, finds first FuncKey with matching name
-    // (optionally agreeing on arity). Symex preserves its existing leaf-name
-    // semantics; disambiguation happens upstream in the taint engine.
+    // Resolve callee by leaf name, preferring a key that agrees on arity.
+    // Symex preserves its existing leaf-name semantics; disambiguation
+    // happens upstream in the taint engine.
     let normalized = callee_leaf_name(callee_name);
     let arity_hint = arg_values.len();
-    let intra_match = ctx
-        .callee_bodies
-        .iter()
-        .find(|(k, _)| k.name == normalized && k.arity == Some(arity_hint))
-        .or_else(|| ctx.callee_bodies.iter().find(|(k, _)| k.name == normalized))
-        .map(|(_, v)| v);
+    let intra_match = intra_file_body_by_leaf(ctx.callee_bodies, normalized, Some(arity_hint))
+        .or_else(|| intra_file_body_by_leaf(ctx.callee_bodies, normalized, None));
     let (body, is_cross_file) = match intra_match {
         Some(b) => (b, false),
         None => {
@@ -703,11 +725,13 @@ pub fn execute_callee(
                 .map(|(_, &count)| count)
                 .sum();
             if scc_total >= ctx.max_scc_reentry {
-                let scc_funcs: Vec<String> = scc_map
+                let mut scc_funcs: Vec<String> = scc_map
                     .iter()
                     .filter(|(_, idx)| **idx == callee_scc)
                     .map(|(name, _)| name.clone())
                     .collect();
+                // The list is rendered into the cutoff note, so fix its order.
+                scc_funcs.sort_unstable();
                 let mut s = ctx.stats.get();
                 s.cutoffs += 1;
                 ctx.stats.set(s);
@@ -1673,5 +1697,93 @@ mod tests {
         // Nested cross-file from an already-cross-file frame keeps climbing.
         let xfile2 = xfile.child_for_nested(true);
         assert_eq!(xfile2.cross_file_depth, 2);
+    }
+
+    /// Empty callee body whose `param_count` carries `tag`, so a test can
+    /// tell which body a lookup returned.
+    fn tagged_body(tag: usize) -> CalleeSsaBody {
+        let cfg = Cfg::new();
+        let mut ssa = crate::ssa::ir::SsaBody {
+            blocks: vec![crate::ssa::ir::SsaBlock {
+                id: BlockId(0),
+                phis: vec![],
+                body: vec![],
+                terminator: Terminator::Return(None),
+                preds: SmallVec::new(),
+                succs: SmallVec::new(),
+            }],
+            entry: BlockId(0),
+            value_defs: vec![],
+            cfg_node_map: Default::default(),
+            exception_edges: Vec::new(),
+            field_interner: Default::default(),
+            field_writes: Default::default(),
+            synthetic_externals: Default::default(),
+            slot_scoped_assigns: Default::default(),
+        };
+        let opt = crate::ssa::optimize_ssa(&mut ssa, &cfg, Some(Lang::Go));
+        CalleeSsaBody {
+            ssa,
+            opt,
+            param_count: tag,
+            node_meta: HashMap::new(),
+            body_graph: None,
+            cross_package_imports: std::sync::Arc::new(HashMap::new()),
+        }
+    }
+
+    #[test]
+    fn intra_file_leaf_lookup_ignores_map_order() {
+        // Same-leaf siblings (Go methods on different receivers, duplicate
+        // definitions).  The pick must follow the structural tie-break, not
+        // the map's `RandomState`, which differs for every fresh `HashMap`.
+        use crate::symbol::{FuncKey, FuncKind};
+        let key = |container: &str, arity: usize, disambig: u32| {
+            FuncKey::from_parts(
+                Lang::Go,
+                "cmd/serv.go",
+                container,
+                "run",
+                Some(arity),
+                Some(disambig),
+                FuncKind::Method,
+            )
+        };
+        let entries = [
+            (key("Zeta", 1, 10), 1),
+            (key("Alpha", 1, 40), 2),
+            (key("Alpha", 1, 20), 3),
+            (key("Alpha", 2, 5), 4),
+            (key("", 3, 7), 5),
+        ];
+        for round in 0..16 {
+            let mut bodies: HashMap<crate::symbol::FuncKey, CalleeSsaBody> = HashMap::new();
+            let ordered: Vec<_> = if round % 2 == 0 {
+                entries.iter().collect()
+            } else {
+                entries.iter().rev().collect()
+            };
+            for (k, tag) in ordered {
+                bodies.insert(k.clone(), tagged_body(*tag));
+            }
+            let pick =
+                |arity| intra_file_body_by_leaf(&bodies, "run", arity).map(|b| b.param_count);
+            assert_eq!(
+                pick(Some(1)),
+                Some(3),
+                "round {round}: Alpha/20 beats Alpha/40 and Zeta"
+            );
+            assert_eq!(pick(Some(2)), Some(4), "round {round}");
+            assert_eq!(
+                pick(None),
+                Some(5),
+                "round {round}: empty container sorts first"
+            );
+            assert_eq!(pick(Some(9)), None, "round {round}");
+            assert_eq!(
+                intra_file_body_by_leaf(&bodies, "missing", None).map(|b| b.param_count),
+                None
+            );
+        }
     }
 }

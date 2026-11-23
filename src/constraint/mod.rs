@@ -23,8 +23,9 @@
 //!   detection walks at most 4 hops. Longer chains are missed (conservative).
 //! - **No cast/conversion modeling.** `parseInt`, `int()`, `parseFloat`
 //!   etc. yield Top for the result's ValueFact.
-//! - **BoolTest is conservative.** Does not infer NonNull from truthiness
-//!   unless value is known boolean-typed.
+//! - **BoolTest is conservative.** Refines only known boolean-typed values:
+//!   a truthy test gives `true` and non-null, a falsy test gives `false`
+//!   only when the value cannot be null.
 //! - **Variable resolution approximation.** Reaching definitions resolved
 //!   via value_defs scan; may be imprecise in complex CFG shapes without
 //!   full dominator tree walk.

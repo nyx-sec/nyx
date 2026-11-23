@@ -75,19 +75,26 @@ fn apply_condition(env: &mut PathEnv, cond: &ConditionExpr) {
             // Unknown type name → no refinement (conservative)
         }
 
-        ConditionExpr::BoolTest { var } => {
-            // Conservative: only refine NonNull for known boolean-typed values.
+        ConditionExpr::BoolTest { var, negated } => {
+            // Conservative: only refine known boolean-typed values.
             // Truthiness is language-specific (0, "", empty containers are
             // falsy in some languages). Over-constraining would be unsound.
-            //
-            // We check the existing fact: if the value is already known
-            // boolean-typed, we can safely refine to True.
             let existing = env.get(*var);
-            if existing.types == TypeSet::singleton(&TypeKind::Bool) {
+            if existing.types.is_singleton_of(&TypeKind::Bool) {
                 let mut fact = ValueFact::top();
-                fact.bool_state = BoolState::True;
-                fact.null = Nullability::NonNull;
-                env.refine(*var, &fact);
+                if !negated {
+                    // Truthy: the value is `true`, and so not null, in
+                    // every language.
+                    fact.bool_state = BoolState::True;
+                    fact.null = Nullability::NonNull;
+                    env.refine(*var, &fact);
+                } else if !existing.types.contains(&TypeKind::Null) {
+                    // Falsy and provably not null: the value is `false`.
+                    // A value that may be null is falsy when null too, so
+                    // it gets no refinement.
+                    fact.bool_state = BoolState::False;
+                    env.refine(*var, &fact);
+                }
             }
             // Otherwise: no refinement (conservative)
         }

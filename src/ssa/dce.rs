@@ -78,7 +78,7 @@ fn terminator_used_values(term: &Terminator) -> Vec<SsaValue> {
         Terminator::Return(Some(rv)) => vec![*rv],
         Terminator::Return(None) => Vec::new(),
         Terminator::Branch { condition, .. } => match condition.as_deref() {
-            Some(ConditionExpr::BoolTest { var }) => vec![*var],
+            Some(ConditionExpr::BoolTest { var, .. }) => vec![*var],
             Some(ConditionExpr::NullCheck { var, .. }) => vec![*var],
             Some(ConditionExpr::TypeCheck { var, .. }) => vec![*var],
             Some(ConditionExpr::Comparison { lhs, rhs, .. }) => {

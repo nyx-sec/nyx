@@ -1346,7 +1346,10 @@ fn callee_body_serde_with_branch_terminator() {
         cond: petgraph::graph::NodeIndex::new(0),
         true_blk: BlockId(1),
         false_blk: BlockId(2),
-        condition: Some(Box::new(ConditionExpr::BoolTest { var: SsaValue(0) })),
+        condition: Some(Box::new(ConditionExpr::BoolTest {
+            var: SsaValue(0),
+            negated: false,
+        })),
     };
 
     let json = serde_json::to_string(&body).unwrap();
@@ -1363,7 +1366,7 @@ fn callee_body_serde_with_branch_terminator() {
             assert_eq!(*false_blk, BlockId(2));
             assert!(condition.is_some());
             match condition.as_deref() {
-                Some(ConditionExpr::BoolTest { var }) => {
+                Some(ConditionExpr::BoolTest { var, .. }) => {
                     assert_eq!(*var, SsaValue(0));
                 }
                 other => panic!("expected BoolTest, got {:?}", other),

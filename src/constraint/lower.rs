@@ -94,8 +94,8 @@ pub enum ConditionExpr {
         type_name: String,
         positive: bool,
     },
-    /// Boolean truthiness test: `if (x)`.
-    BoolTest { var: SsaValue },
+    /// Boolean truthiness test: `if (x)`, or `if (!x)` when `negated`.
+    BoolTest { var: SsaValue, negated: bool },
     /// Could not parse or resolve, conservatively no refinement.
     Unknown,
 }
@@ -122,8 +122,11 @@ impl ConditionExpr {
                 type_name: type_name.clone(),
                 positive: !positive,
             },
-            // BoolTest negation: handled by the solver using polarity
-            Self::BoolTest { .. } | Self::Unknown => self.clone(),
+            Self::BoolTest { var, negated } => Self::BoolTest {
+                var: *var,
+                negated: !negated,
+            },
+            Self::Unknown => Self::Unknown,
         }
     }
 }
@@ -183,7 +186,10 @@ pub fn lower_condition(
         .unwrap_or_else(|| {
             // Fallback: if exactly one condition_var, treat as BoolTest
             if resolved.len() == 1 {
-                ConditionExpr::BoolTest { var: resolved[0].1 }
+                ConditionExpr::BoolTest {
+                    var: resolved[0].1,
+                    negated: false,
+                }
             } else {
                 ConditionExpr::Unknown
             }
@@ -251,7 +257,10 @@ pub fn lower_condition_with_stacks(
         .or_else(|| try_lower_comparison(text, &var_lookup, &const_lookup))
         .unwrap_or_else(|| {
             if resolved.len() == 1 {
-                ConditionExpr::BoolTest { var: resolved[0].1 }
+                ConditionExpr::BoolTest {
+                    var: resolved[0].1,
+                    negated: false,
+                }
             } else {
                 ConditionExpr::Unknown
             }

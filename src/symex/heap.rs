@@ -44,6 +44,13 @@ pub struct HeapKey {
     pub field: FieldSlot,
 }
 
+/// Total order on heap keys: allocation site first, then [`FieldSlot`]'s
+/// `Ord`.  Used wherever heap contents are walked in sequence (fingerprints,
+/// callee heap deltas) so the walk is independent of `HashMap` order.
+fn heap_key_order(a: &HeapKey, b: &HeapKey) -> std::cmp::Ordering {
+    a.object.cmp(&b.object).then_with(|| a.field.cmp(&b.field))
+}
+
 /// Distinguishes named object fields, per-index array slots, and the
 /// element-insensitive fallback.
 ///
@@ -217,9 +224,15 @@ impl SymbolicHeap {
         false
     }
 
-    /// Iterate over all heap entries (key → value).
-    pub fn entries(&self) -> impl Iterator<Item = (&HeapKey, &SymbolicValue)> {
-        self.fields.iter()
+    /// All heap entries (key → value), ordered by allocation site, then field.
+    ///
+    /// Callers replay these entries through [`Self::store`], whose entry
+    /// caps drop whatever arrives after the heap is full, so the order must
+    /// not depend on the backing `HashMap`'s per-process hash seed.
+    pub fn entries(&self) -> Vec<(&HeapKey, &SymbolicValue)> {
+        let mut entries: Vec<(&HeapKey, &SymbolicValue)> = self.fields.iter().collect();
+        entries.sort_by(|(a, _), (b, _)| heap_key_order(a, b));
+        entries
     }
 
     /// Record a field access for witness generation.
@@ -240,13 +253,8 @@ impl SymbolicHeap {
         if self.fields.is_empty() {
             return 0;
         }
-        // Sort keys deterministically using FieldSlot::Ord.
         let mut keys: Vec<&HeapKey> = self.fields.keys().collect();
-        keys.sort_by(|a, b| {
-            let obj_a = (a.object.0).0;
-            let obj_b = (b.object.0).0;
-            obj_a.cmp(&obj_b).then_with(|| a.field.cmp(&b.field))
-        });
+        keys.sort_by(|a, b| heap_key_order(a, b));
 
         let mut h: u64 = 0;
         for key in keys {
@@ -483,6 +491,49 @@ mod tests {
         // Overwrite with non-tainted value
         heap.store(key.clone(), SymbolicValue::Concrete(42), false);
         assert!(!heap.is_tainted(&key));
+    }
+
+    #[test]
+    fn entries_replay_into_capped_heap_is_order_independent() {
+        // `compute_heap_delta` replays `entries()` into the caller heap, whose
+        // entry cap drops late arrivals, so the walk order decides which
+        // callee writes survive.  Each fresh heap has its own `RandomState`,
+        // so rebuilding it exercises different `HashMap` iteration orders.
+        let build = || {
+            let mut heap = SymbolicHeap::new();
+            for i in (0..MAX_HEAP_ENTRIES as u32).rev() {
+                heap.store(named_key(i, "f"), SymbolicValue::Concrete(i as i64), false);
+            }
+            heap
+        };
+        let replay = |src: &SymbolicHeap| {
+            let mut dst = SymbolicHeap::new();
+            for i in 0..(MAX_HEAP_ENTRIES / 2) as u32 {
+                dst.store(named_key(1000 + i, "g"), SymbolicValue::Unknown, false);
+            }
+            for (key, value) in src.entries() {
+                dst.store(key.clone(), value.clone(), false);
+            }
+            let mut kept: Vec<HeapKey> = dst.fields.keys().cloned().collect();
+            kept.sort_by(heap_key_order);
+            kept
+        };
+
+        let walked: Vec<HeapKey> = build()
+            .entries()
+            .into_iter()
+            .map(|(k, _)| k.clone())
+            .collect();
+        let mut sorted = walked.clone();
+        sorted.sort_by(heap_key_order);
+        assert_eq!(walked, sorted, "entries() walks keys in heap_key_order");
+
+        let expected = replay(&build());
+        assert!(expected.contains(&named_key(0, "f")));
+        assert!(!expected.contains(&named_key(MAX_HEAP_ENTRIES as u32 - 1, "f")));
+        for _ in 0..16 {
+            assert_eq!(replay(&build()), expected);
+        }
     }
 
     #[test]

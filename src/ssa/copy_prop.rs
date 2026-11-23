@@ -172,7 +172,7 @@ fn rewrite_terminator_uses(term: &mut Terminator, resolved: &HashMap<SsaValue, S
         Terminator::Return(Some(v)) => fix(v),
         Terminator::Switch { scrutinee, .. } => fix(scrutinee),
         Terminator::Branch { condition, .. } => match condition.as_deref_mut() {
-            Some(ConditionExpr::BoolTest { var })
+            Some(ConditionExpr::BoolTest { var, .. })
             | Some(ConditionExpr::NullCheck { var, .. })
             | Some(ConditionExpr::TypeCheck { var, .. }) => fix(var),
             Some(ConditionExpr::Comparison { lhs, rhs, .. }) => {
