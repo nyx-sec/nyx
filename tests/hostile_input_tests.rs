@@ -319,6 +319,44 @@ fn deeply_nested_parens_do_not_stack_overflow() {
     });
 }
 
+/// PHP unary operators, parentheses and `@` wrap a call without hiding it,
+/// so the CFG builder searches through them for the call.  A chain of them
+/// used to be searched once as a child and again as a grandchild at every
+/// level, which doubles the work per pair of levels: the fuzzer found a
+/// 430-byte `~~~...~j` input that ran for minutes.  The search must stay
+/// linear in the nesting depth.
+#[test]
+fn deeply_nested_php_unary_wrappers_stay_linear() {
+    run_on_prod_stack(|| {
+        const DEPTH: usize = 200;
+        let cfg = hostile_cfg();
+        for (label, open, close) in [("tilde", "~", ""), ("parens", "(", ")"), ("at", "@", "")] {
+            let mut s = String::from("<?php\n$data = ");
+            for _ in 0..DEPTH {
+                s.push_str(open);
+            }
+            s.push_str("$j");
+            for _ in 0..DEPTH {
+                s.push_str(close);
+            }
+            s.push_str(";\n");
+
+            let path = Path::new("deep_unary.php");
+            let _ = with_time_budget(Duration::from_secs(10), label, || {
+                run_rules_on_bytes(s.as_bytes(), path, &cfg, None, None)
+                    .expect("deeply nested PHP wrappers should parse")
+            });
+        }
+
+        // The fuzzer's input itself (`scan_bytes` target, PHP selector byte
+        // stripped): invalid UTF-8 and two `~` runs of about 100 each.
+        let fuzz_input = include_bytes!("fixtures/hostile/php_unary_chain_timeout.php");
+        let _ = with_time_budget(Duration::from_secs(10), "fuzz input", || {
+            run_rules_on_bytes(fuzz_input, Path::new("fuzz_input.php"), &cfg, None, None)
+        });
+    });
+}
+
 /// Deeply-nested `if` statements are the classical stress case for the CFG
 /// builder.  Each `if` frame in `build_sub` is ~10 KiB on debug builds, so
 /// 100 levels fits comfortably inside the production 8 MiB stack with room
