@@ -695,7 +695,10 @@ fn refine_booltest_conservative() {
     // BoolTest should NOT add NonNull for non-boolean-typed values
     let mut env = PathEnv::empty();
     let v = SsaValue(0);
-    let cond = ConditionExpr::BoolTest { var: v };
+    let cond = ConditionExpr::BoolTest {
+        var: v,
+        negated: false,
+    };
     env = refine_env(&env, &cond, true);
     // Since v has no known type, BoolTest should be conservative
     assert_eq!(env.get(v).null, Nullability::Unknown);
@@ -713,10 +716,127 @@ fn refine_booltest_boolean_typed() {
         f
     });
     // Now BoolTest should refine to True + NonNull
-    let cond = ConditionExpr::BoolTest { var: v };
+    let cond = ConditionExpr::BoolTest {
+        var: v,
+        negated: false,
+    };
     env = refine_env(&env, &cond, true);
     assert_eq!(env.get(v).bool_state, BoolState::True);
     assert_eq!(env.get(v).null, Nullability::NonNull);
+}
+
+/// Environment where `SsaValue(0)` is the boolean constant `value`.
+fn env_with_bool_const(value: bool) -> PathEnv {
+    let const_values: crate::ssa::const_prop::ConstValues =
+        [(SsaValue(0), ConstLattice::Bool(value))]
+            .into_iter()
+            .collect();
+    let mut env = PathEnv::empty();
+    env.seed_from_optimization(
+        &const_values,
+        &crate::ssa::type_facts::TypeFactResult {
+            facts: HashMap::new(),
+        },
+    );
+    env
+}
+
+#[test]
+fn refine_booltest_false_branch_of_false_flag_is_feasible() {
+    // `debug := false; if debug { .. } else { sink }`: the else branch is
+    // the one that runs, so it must not be refined as `debug == true`.
+    let env = env_with_bool_const(false);
+    let cond = ConditionExpr::BoolTest {
+        var: SsaValue(0),
+        negated: false,
+    };
+    assert!(refine_env(&env, &cond, true).is_unsat(), "then-branch");
+    assert!(!refine_env(&env, &cond, false).is_unsat(), "else-branch");
+    assert_eq!(
+        refine_env(&env, &cond, false).get(SsaValue(0)).bool_state,
+        BoolState::False
+    );
+}
+
+#[test]
+fn refine_negated_booltest_follows_the_bang() {
+    // `if !flag`: the then-branch is where `flag` is false.
+    let cond = ConditionExpr::BoolTest {
+        var: SsaValue(0),
+        negated: true,
+    };
+    let t = env_with_bool_const(true);
+    assert!(refine_env(&t, &cond, true).is_unsat(), "!true then-branch");
+    assert!(
+        !refine_env(&t, &cond, false).is_unsat(),
+        "!true else-branch"
+    );
+    let f = env_with_bool_const(false);
+    assert!(
+        !refine_env(&f, &cond, true).is_unsat(),
+        "!false then-branch"
+    );
+    assert!(
+        refine_env(&f, &cond, false).is_unsat(),
+        "!false else-branch"
+    );
+}
+
+#[test]
+fn booltest_negate_round_trips() {
+    let cond = ConditionExpr::BoolTest {
+        var: SsaValue(3),
+        negated: false,
+    };
+    assert_eq!(
+        cond.negate(),
+        ConditionExpr::BoolTest {
+            var: SsaValue(3),
+            negated: true,
+        }
+    );
+    assert_eq!(cond.negate().negate(), cond);
+}
+
+#[test]
+fn refine_falsy_booltest_on_maybe_null_bool_learns_nothing() {
+    // A `Boolean`/`bool`-typed value that may be null is falsy when null,
+    // so the falsy branch cannot conclude `false`.  The truthy branch can
+    // conclude `true` and non-null.
+    use crate::ssa::type_facts::TypeKind;
+    let env = env_with_typed_value(TypeKind::Bool);
+    let cond = ConditionExpr::BoolTest {
+        var: SsaValue(0),
+        negated: false,
+    };
+    let falsy = refine_env(&env, &cond, false);
+    assert!(!falsy.is_unsat());
+    assert_eq!(falsy.get(SsaValue(0)).bool_state, BoolState::Unknown);
+    let truthy = refine_env(&env, &cond, true);
+    assert_eq!(truthy.get(SsaValue(0)).bool_state, BoolState::True);
+    assert_eq!(truthy.get(SsaValue(0)).null, Nullability::NonNull);
+}
+
+#[test]
+fn lower_condition_negated_bare_var_sets_booltest_negated() {
+    // `if !flag` reaches the lowering with `condition_negated` set; the
+    // resulting BoolTest must carry the negation instead of dropping it.
+    use crate::cfg::NodeInfo;
+    let info = NodeInfo {
+        condition_text: Some("flag".into()),
+        condition_vars: vec!["flag".into()],
+        condition_negated: true,
+        ..Default::default()
+    };
+    let mut stacks = rustc_hash::FxHashMap::default();
+    stacks.insert("flag".to_string(), vec![SsaValue(4)]);
+    assert_eq!(
+        lower_condition_with_stacks(&info, &stacks),
+        ConditionExpr::BoolTest {
+            var: SsaValue(4),
+            negated: true,
+        }
+    );
 }
 
 #[test]
@@ -805,9 +925,121 @@ fn pathenv_seed_from_optimization() {
     let f0 = env.get(v0);
     assert_eq!(f0.exact, Some(ConstValue::Int(42)));
     assert_eq!(f0.null, Nullability::NonNull);
+    // A type fact names the type but proves nothing about nullness, even
+    // with `nullable: false`: the set keeps the `Null` bit and the value's
+    // nullability stays unknown.
     let f1 = env.get(v1);
     assert!(f1.types.contains(&TypeKind::String));
-    assert_eq!(f1.null, Nullability::NonNull);
+    assert!(f1.types.contains(&TypeKind::Null));
+    assert_eq!(f1.types.as_singleton(), Some(TypeKind::String));
+    assert_eq!(f1.null, Nullability::Unknown);
+}
+
+/// Seed an environment with one non-nullable type fact on `SsaValue(0)`.
+fn env_with_typed_value(kind: crate::ssa::type_facts::TypeKind) -> PathEnv {
+    use crate::ssa::type_facts::{TypeFact, TypeFactResult};
+    let mut type_facts = TypeFactResult {
+        facts: HashMap::new(),
+    };
+    type_facts.facts.insert(
+        SsaValue(0),
+        TypeFact {
+            kind,
+            nullable: false,
+        },
+    );
+    let mut env = PathEnv::empty();
+    env.seed_from_optimization(&crate::ssa::const_prop::ConstValues::default(), &type_facts);
+    env
+}
+
+#[test]
+fn pathenv_seed_typed_value_keeps_both_nil_branches() {
+    // gitea `cmd/serv.go`: `if _, err := os.Stat(p); err != nil` and
+    // `if command == nil` where `var command *exec.Cmd`.  Both values are
+    // known only by type; either branch of the nil check is reachable.
+    use crate::ssa::type_facts::TypeKind;
+    for kind in [TypeKind::Object, TypeKind::String, TypeKind::Int] {
+        let env = env_with_typed_value(kind.clone());
+        let check = ConditionExpr::NullCheck {
+            var: SsaValue(0),
+            is_null: true,
+        };
+        let is_nil = refine_env(&env, &check, true);
+        let not_nil = refine_env(&env, &check, false);
+        assert!(
+            !is_nil.is_unsat(),
+            "{kind:?}: `x == nil` must stay feasible"
+        );
+        assert!(
+            !not_nil.is_unsat(),
+            "{kind:?}: `x != nil` must stay feasible"
+        );
+        assert_eq!(is_nil.get(SsaValue(0)).null, Nullability::Null);
+        assert_eq!(not_nil.get(SsaValue(0)).null, Nullability::NonNull);
+    }
+}
+
+#[test]
+fn pathenv_seed_typed_value_negated_type_check_allows_null() {
+    // `!(s instanceof String)` holds when `s` is null, so it is feasible for a
+    // value typed `String`; the positive check is feasible too.
+    use crate::ssa::type_facts::TypeKind;
+    let env = env_with_typed_value(TypeKind::String);
+    let check = ConditionExpr::TypeCheck {
+        var: SsaValue(0),
+        type_name: "String".into(),
+        positive: true,
+    };
+    assert!(!refine_env(&env, &check, true).is_unsat());
+    let negated = refine_env(&env, &check, false);
+    assert!(!negated.is_unsat());
+    assert_eq!(
+        negated.get(SsaValue(0)).types,
+        TypeSet::singleton(&TypeKind::Null)
+    );
+}
+
+#[test]
+fn pathenv_seed_null_type_fact_contradicts_non_null_branch() {
+    use crate::ssa::type_facts::TypeKind;
+    let env = env_with_typed_value(TypeKind::Null);
+    assert_eq!(env.get(SsaValue(0)).null, Nullability::Null);
+    let check = ConditionExpr::NullCheck {
+        var: SsaValue(0),
+        is_null: true,
+    };
+    assert!(!refine_env(&env, &check, true).is_unsat());
+    assert!(refine_env(&env, &check, false).is_unsat());
+}
+
+#[test]
+fn pathenv_seed_skips_unknown_type_facts() {
+    // An `Unknown` fact says nothing, so it must not take a slot in the
+    // capped table (nor constrain the value).
+    use crate::ssa::type_facts::TypeKind;
+    let env = env_with_typed_value(TypeKind::Unknown);
+    assert_eq!(env.fact_count(), 0);
+    assert!(env.get(SsaValue(0)).is_top());
+}
+
+#[test]
+fn typeset_singleton_queries_ignore_null_bit() {
+    use crate::ssa::type_facts::TypeKind;
+    let maybe_null_str = TypeSet::singleton(&TypeKind::String).with_null();
+    assert!(maybe_null_str.is_singleton_of(&TypeKind::String));
+    assert!(!maybe_null_str.is_singleton_of(&TypeKind::Null));
+    assert_eq!(maybe_null_str.as_singleton(), Some(TypeKind::String));
+
+    let null_only = TypeSet::singleton(&TypeKind::Null);
+    assert!(null_only.is_singleton_of(&TypeKind::Null));
+    assert_eq!(null_only.as_singleton(), Some(TypeKind::Null));
+
+    let str_or_int = TypeSet::singleton(&TypeKind::String)
+        .join(TypeSet::singleton(&TypeKind::Int))
+        .with_null();
+    assert_eq!(str_or_int.as_singleton(), None);
+    assert!(!str_or_int.is_singleton_of(&TypeKind::String));
 }
 
 #[test]
@@ -833,6 +1065,47 @@ fn pathenv_seed_unknown_type_does_not_contradict_const() {
     env.seed_from_optimization(&const_values, &type_facts);
     assert!(!env.is_unsat());
     assert_eq!(env.get(v0).exact, Some(ConstValue::Int(0)));
+}
+
+#[test]
+fn pathenv_seed_overflowing_type_facts_is_order_independent() {
+    // More type facts than the environment can hold.  Which ones are kept
+    // decides what the symex explorer can later prove unsatisfiable, so the
+    // admitted set must not depend on the type-fact map's iteration order.
+    // Every `HashMap::new()` draws fresh `RandomState` keys, so rebuilding
+    // the map (in both insertion orders) exercises many iteration orders.
+    use crate::ssa::type_facts::{TypeFact, TypeFactResult, TypeKind};
+    let total = MAX_PATH_ENV_ENTRIES + 32;
+    let const_values = crate::ssa::const_prop::ConstValues::default();
+    let seed = |reverse: bool| {
+        let mut type_facts = TypeFactResult {
+            facts: HashMap::new(),
+        };
+        let mut ids: Vec<u32> = (0..total as u32).collect();
+        if reverse {
+            ids.reverse();
+        }
+        for id in ids {
+            type_facts.facts.insert(
+                SsaValue(id),
+                TypeFact {
+                    kind: TypeKind::String,
+                    nullable: false,
+                },
+            );
+        }
+        let mut env = PathEnv::empty();
+        env.seed_from_optimization(&const_values, &type_facts);
+        env
+    };
+
+    let reference = seed(false);
+    let kept: Vec<SsaValue> = reference.facts().iter().map(|(v, _)| *v).collect();
+    let expected: Vec<SsaValue> = (0..MAX_PATH_ENV_ENTRIES as u32).map(SsaValue).collect();
+    assert_eq!(kept, expected, "the lowest SsaValues fill the capped table");
+    for round in 0..16 {
+        assert_eq!(seed(round % 2 == 1), reference, "round {round}");
+    }
 }
 
 // ── Relational constraint tests ────────────────────────────────────────

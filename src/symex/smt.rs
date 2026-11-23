@@ -432,11 +432,12 @@ fn assert_path_constraint(
             }
             // If either operand can't be translated, skip (conservative).
         }
-        ConditionExpr::BoolTest { var } => {
-            // Model as var != 0 if var is known int.
+        ConditionExpr::BoolTest { var, negated } => {
+            // Model as var != 0 if var is known int.  `if !x` holds when the
+            // truthiness test fails, so `negated` flips the polarity.
             if let Some(z_var) = ensure_int_var(var_map, *var, env) {
                 let test = z_var.ne(&Z3Int::from_i64(0));
-                if pc.polarity {
+                if pc.polarity != *negated {
                     solver.assert(&test);
                 } else {
                     solver.assert(&test.not());
@@ -684,7 +685,10 @@ mod tests {
     fn escalation_skips_non_comparison() {
         let constraints = vec![PathConstraint {
             block: BlockId(0),
-            condition: ConditionExpr::BoolTest { var: SsaValue(0) },
+            condition: ConditionExpr::BoolTest {
+                var: SsaValue(0),
+                negated: false,
+            },
             polarity: true,
         }];
         assert!(!should_escalate(&constraints));
@@ -826,7 +830,10 @@ mod tests {
         // The constraint is effectively ignored, so result should be Sat.
         let constraints = vec![PathConstraint {
             block: BlockId(0),
-            condition: ConditionExpr::BoolTest { var: SsaValue(99) },
+            condition: ConditionExpr::BoolTest {
+                var: SsaValue(99),
+                negated: false,
+            },
             polarity: true,
         }];
         let mut ctx = SmtContext::new();

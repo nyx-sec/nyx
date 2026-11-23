@@ -10,7 +10,7 @@
 
 use crate::ssa::const_prop::{ConstLattice, ConstValues};
 use crate::ssa::ir::SsaValue;
-use crate::ssa::type_facts::{TypeFactResult, TypeKind};
+use crate::ssa::type_facts::{TypeFact, TypeFactResult, TypeKind};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -113,6 +113,12 @@ impl ConstValue {
 // ── TypeSet ─────────────────────────────────────────────────────────────
 
 /// Bitset over [`TypeKind`] variants (19 bits used of u32).
+///
+/// The `Null` bit means "may be null".  A value known only by its static
+/// type (`String`, `HttpClient`, ...) carries that kind plus `Null`, so a
+/// `x == null` branch stays satisfiable.  [`Self::as_singleton`] and
+/// [`Self::is_singleton_of`] report the non-null kind and ignore the `Null`
+/// bit unless it is the only one set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TypeSet(u32);
 
@@ -153,15 +159,29 @@ impl TypeSet {
         Self(!self.0 & Self::TOP.0)
     }
 
-    /// Check if this set contains exactly one type matching the given kind.
-    pub fn is_singleton_of(&self, kind: &TypeKind) -> bool {
-        self.0 != 0 && self.0 == (1u32 << type_kind_index(kind))
+    /// This set plus the `Null` bit: the value has this type or is null.
+    pub fn with_null(self) -> Self {
+        self.join(Self::singleton(&TypeKind::Null))
     }
 
-    /// Return the TypeKind if this is a singleton set (exactly one type).
+    /// Bits naming the non-null type: the `Null` bit is dropped unless it
+    /// is the only one set (a value known to be null).
+    fn non_null_bits(self) -> u32 {
+        let null = Self::singleton(&TypeKind::Null).0;
+        if self.0 == null { null } else { self.0 & !null }
+    }
+
+    /// Check if the non-null part of this set is exactly `kind`.
+    pub fn is_singleton_of(&self, kind: &TypeKind) -> bool {
+        let bits = self.non_null_bits();
+        bits != 0 && bits == (1u32 << type_kind_index(kind))
+    }
+
+    /// Return the TypeKind if the non-null part of this set is one type.
     pub fn as_singleton(&self) -> Option<TypeKind> {
-        if self.0 != 0 && self.0.count_ones() == 1 {
-            type_kind_from_index(self.0.trailing_zeros())
+        let bits = self.non_null_bits();
+        if bits != 0 && bits.count_ones() == 1 {
+            type_kind_from_index(bits.trailing_zeros())
         } else {
             None
         }
@@ -1300,6 +1320,15 @@ impl PathEnv {
     }
 
     /// Seed facts from constant propagation and type analysis results.
+    ///
+    /// The environment holds at most [`MAX_PATH_ENV_ENTRIES`] facts and a
+    /// value that arrives after the table is full is dropped, so the seed
+    /// order decides which values the explorer can later prove unsatisfiable.
+    /// Both sources are therefore visited in ascending `SsaValue` order:
+    /// `ConstValues` iterates its dense slots that way, and the type facts
+    /// (a std `HashMap`) are sorted here first.  Walking the map directly let
+    /// the per-process hash seed pick the surviving facts, which flipped
+    /// symex verdicts between identical runs.
     pub fn seed_from_optimization(
         &mut self,
         const_values: &ConstValues,
@@ -1337,18 +1366,34 @@ impl PathEnv {
                 self.refine_single(v, &fact);
             }
         }
-        for (v, tf) in &type_facts.facts {
+        let mut typed: Vec<(&SsaValue, &TypeFact)> = type_facts.facts.iter().collect();
+        typed.sort_unstable_by_key(|(v, _)| **v);
+        for (v, tf) in typed {
+            // A type fact names the value's type, never its nullness.
+            // `TypeFact::nullable == false` only means the type pass saw no
+            // null flowing in: call results (`err` from a Go call), `var x
+            // *T` declarations, boxed Java parameters and sources can all
+            // still be null.  Seeding `NonNull` from it made `x == nil`
+            // branches look unsatisfiable, so symex reported real paths as
+            // infeasible.  The type set therefore keeps the `Null` bit next
+            // to the named kind; `TypeSet::as_singleton` and
+            // `is_singleton_of` ignore that bit, so type-driven consumers
+            // still see the kind.
             let mut fact = ValueFact::top();
-            // `Unknown` means the type pass found nothing, so it must not
-            // narrow the type set: `{Unknown}` met with the `{Int}` of a
-            // constant fact on the same value (a loop counter whose phi
-            // folded to `0` because `i++` is not a definition) is empty and
-            // would mark the whole entry environment unsatisfiable.
-            if tf.kind != TypeKind::Unknown {
-                fact.types = TypeSet::singleton(&tf.kind);
-            }
-            if !tf.nullable && tf.kind != TypeKind::Null {
-                fact.null = Nullability::NonNull;
+            match tf.kind {
+                // `Unknown` means the type pass found nothing.  It must not
+                // narrow the type set (`{Unknown}` met with the `{Int}` of a
+                // constant on the same value, a loop counter whose phi
+                // folded to `0`, is empty), and a Top fact would only take a
+                // slot in the capped table.
+                TypeKind::Unknown => continue,
+                TypeKind::Null => {
+                    fact.types = TypeSet::singleton(&TypeKind::Null);
+                    fact.null = Nullability::Null;
+                }
+                ref kind => {
+                    fact.types = TypeSet::singleton(kind).with_null();
+                }
             }
             self.refine_single(*v, &fact);
         }

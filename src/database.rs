@@ -350,7 +350,10 @@ pub mod index {
     ///   the tables would stay empty forever.  Only the schema-version wipe
     ///   clears `files` and forces the one full re-extract that populates
     ///   them.
-    pub const SCHEMA_VERSION: &str = "5";
+    /// * `6`, `ConditionExpr::BoolTest` gained a `negated` field so `if !x`
+    ///   keeps its negation.  Cached `ssa_function_bodies` are bincode, which
+    ///   cannot fill a missing field, so pre-bump bodies are rebuilt.
+    pub const SCHEMA_VERSION: &str = "6";
 
     /// A single issue row, ready for insertion.
     #[derive(Debug, Clone)]
