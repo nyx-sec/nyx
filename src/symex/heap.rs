@@ -224,7 +224,7 @@ impl SymbolicHeap {
         false
     }
 
-    /// All heap entries (key → value), ordered by [`heap_key_order`].
+    /// All heap entries (key → value), ordered by allocation site, then field.
     ///
     /// Callers replay these entries through [`Self::store`], whose entry
     /// caps drop whatever arrives after the heap is full, so the order must

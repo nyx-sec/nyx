@@ -14,7 +14,7 @@
 //! so they are safe for the default test job.  Keep file sizes modest so
 //! CI runners with limited RAM/disk are not penalised.
 
-use nyx_scanner::ast::run_rules_on_bytes;
+use nyx_scanner::ast::{extract_summaries_from_bytes, run_rules_on_bytes};
 use nyx_scanner::utils::config::{AnalysisMode, Config};
 use std::path::Path;
 use std::thread;
@@ -348,12 +348,26 @@ fn deeply_nested_php_unary_wrappers_stay_linear() {
             });
         }
 
-        // The fuzzer's input itself (`scan_bytes` target, PHP selector byte
-        // stripped): invalid UTF-8 and two `~` runs of about 100 each.
-        let fuzz_input = include_bytes!("fixtures/hostile/php_unary_chain_timeout.php");
-        let _ = with_time_budget(Duration::from_secs(10), "fuzz input", || {
-            run_rules_on_bytes(fuzz_input, Path::new("fuzz_input.php"), &cfg, None, None)
-        });
+        // Inputs the fuzzers timed out on (PHP selector byte stripped), each
+        // run through both pass-1 summary extraction (`extract_summaries`
+        // target) and the full per-file pass (`scan_bytes` target).
+        let fuzz_inputs: [(&str, &[u8]); 2] = [
+            (
+                "scan_bytes input",
+                include_bytes!("fixtures/hostile/php_unary_chain_timeout.php"),
+            ),
+            (
+                "extract_summaries input",
+                include_bytes!("fixtures/hostile/php_unary_chain_timeout_summaries.php"),
+            ),
+        ];
+        let path = Path::new("fuzz_input.php");
+        for (label, bytes) in fuzz_inputs {
+            let _ = with_time_budget(Duration::from_secs(10), label, || {
+                let _ = extract_summaries_from_bytes(bytes, path, &cfg);
+                run_rules_on_bytes(bytes, path, &cfg, None, None)
+            });
+        }
     });
 }
 
