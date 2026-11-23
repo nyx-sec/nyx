@@ -276,6 +276,27 @@ pub mod index {
             updated_at INTEGER NOT NULL
         );
 
+        -- Incremental pass 2: one row per analysis unit (a file, or a
+        -- recursive batch of files).  `payload` is opaque to this layer; see
+        -- `commands::incremental`.
+        CREATE TABLE IF NOT EXISTS pass2_units (
+            project TEXT NOT NULL,
+            unit_key TEXT NOT NULL,
+            payload BLOB NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (project, unit_key)
+        );
+
+        -- Per-file attack-surface probe results, reused while the file's
+        -- content hash is unchanged.
+        CREATE TABLE IF NOT EXISTS surface_probes (
+            project TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            file_hash BLOB NOT NULL,
+            payload BLOB NOT NULL,
+            PRIMARY KEY (project, file_path)
+        );
+
         -- Indexes on (project, file_path) for the per-file replace_* paths.
         -- Without these, every DELETE WHERE project=? AND file_path=? does a
         -- full table scan, which dominates indexing time as the cache grows.
@@ -310,6 +331,8 @@ pub mod index {
              DELETE FROM cross_package_imports;
              DELETE FROM caller_scope_edges;
              DELETE FROM router_facts;
+             DELETE FROM pass2_units;
+             DELETE FROM surface_probes;
              DELETE FROM files;",
         )?;
         Ok(())
@@ -2442,7 +2465,104 @@ pub mod index {
                 "DELETE FROM router_facts WHERE project = ?1 AND file_path = ?2",
                 params![self.project, path_str.as_ref()],
             )?;
+            tx.execute(
+                "DELETE FROM surface_probes WHERE project = ?1 AND file_path = ?2",
+                params![self.project, path_str.as_ref()],
+            )?;
 
+            tx.commit()?;
+            Ok(())
+        }
+
+        /// Every cached pass-2 unit of this project as `(unit_key, payload)`.
+        pub fn load_pass2_units(&self) -> NyxResult<Vec<(String, Vec<u8>)>> {
+            let mut stmt = self
+                .c()
+                .prepare("SELECT unit_key, payload FROM pass2_units WHERE project = ?1")?;
+            let rows = stmt.query_map(params![self.project], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        }
+
+        /// Write `upserts` and delete every cached unit whose key is not in
+        /// `keep`, in one transaction.
+        pub fn write_pass2_units(
+            &mut self,
+            upserts: &[(String, Vec<u8>)],
+            keep: &std::collections::HashSet<String>,
+        ) -> NyxResult<()> {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+            let tx = self.conn.transaction()?;
+            {
+                let mut put = tx.prepare(
+                    "INSERT OR REPLACE INTO pass2_units (project, unit_key, payload, updated_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                )?;
+                for (key, payload) in upserts {
+                    put.execute(params![self.project, key, payload, now])?;
+                }
+                let stale: Vec<String> = {
+                    let mut stmt =
+                        tx.prepare("SELECT unit_key FROM pass2_units WHERE project = ?1")?;
+                    let keys = stmt
+                        .query_map(params![self.project], |r| r.get::<_, String>(0))?
+                        .collect::<Result<Vec<_>, _>>()?;
+                    keys.into_iter().filter(|k| !keep.contains(k)).collect()
+                };
+                let mut del =
+                    tx.prepare("DELETE FROM pass2_units WHERE project = ?1 AND unit_key = ?2")?;
+                for key in &stale {
+                    del.execute(params![self.project, key])?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        }
+
+        /// Drop every cached pass-2 unit of this project.
+        pub fn clear_pass2_units(&self) -> NyxResult<()> {
+            self.c().execute(
+                "DELETE FROM pass2_units WHERE project = ?1",
+                params![self.project],
+            )?;
+            Ok(())
+        }
+
+        /// Cached surface probe results as `path -> (content hash, payload)`.
+        pub fn load_surface_probes(
+            &self,
+        ) -> NyxResult<std::collections::HashMap<String, (Vec<u8>, Vec<u8>)>> {
+            let mut stmt = self.c().prepare(
+                "SELECT file_path, file_hash, payload FROM surface_probes WHERE project = ?1",
+            )?;
+            let rows = stmt.query_map(params![self.project], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    (r.get::<_, Vec<u8>>(1)?, r.get::<_, Vec<u8>>(2)?),
+                ))
+            })?;
+            Ok(rows.collect::<Result<std::collections::HashMap<_, _>, _>>()?)
+        }
+
+        /// Store surface probe results, one transaction for the batch.
+        pub fn write_surface_probes(
+            &mut self,
+            rows: &[(String, Vec<u8>, Vec<u8>)],
+        ) -> NyxResult<()> {
+            if rows.is_empty() {
+                return Ok(());
+            }
+            let tx = self.conn.transaction()?;
+            {
+                let mut put = tx.prepare(
+                    "INSERT OR REPLACE INTO surface_probes (project, file_path, file_hash, payload)
+                     VALUES (?1, ?2, ?3, ?4)",
+                )?;
+                for (path, hash, payload) in rows {
+                    put.execute(params![self.project, path, hash, payload])?;
+                }
+            }
             tx.commit()?;
             Ok(())
         }
@@ -3116,6 +3236,13 @@ pub mod index {
         DROP TABLE IF EXISTS files;
         DROP TABLE IF EXISTS function_summaries;
         DROP TABLE IF EXISTS ssa_function_summaries;
+        DROP TABLE IF EXISTS ssa_function_bodies;
+        DROP TABLE IF EXISTS auth_check_summaries;
+        DROP TABLE IF EXISTS cross_package_imports;
+        DROP TABLE IF EXISTS caller_scope_edges;
+        DROP TABLE IF EXISTS router_facts;
+        DROP TABLE IF EXISTS pass2_units;
+        DROP TABLE IF EXISTS surface_probes;
 
         PRAGMA foreign_keys = ON;
         VACUUM;

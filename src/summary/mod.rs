@@ -15,10 +15,12 @@
 //! Same-name collisions across files are merged conservatively: capabilities
 //! are unioned and booleans are OR-ed so no true positive is silently dropped.
 
+pub mod deps;
 pub mod points_to;
 pub mod ssa_summary;
 
 use crate::labels::Cap;
+use crate::summary::deps::{Fp, KeyedRead, MapId, NamedRead};
 use crate::summary::ssa_summary::SsaFuncSummary;
 use crate::symbol::{FuncKey, FuncKind, Lang, normalize_namespace};
 use rustc_hash::FxHashMap;
@@ -671,7 +673,7 @@ impl SummaryChangeLog {
         self.caps_before
             .iter()
             .filter(|(k, before)| {
-                let now = gs.by_key.get(*k).map(caps_fingerprint);
+                let now = gs.by_key.get(*k).map(|e| caps_fingerprint(&e.v));
                 now != **before
             })
             .map(|(k, _)| k.clone())
@@ -683,13 +685,13 @@ impl SummaryChangeLog {
     pub fn changed_ssa_keys(&self, gs: &GlobalSummaries) -> std::collections::HashSet<FuncKey> {
         self.ssa_before
             .iter()
-            .filter(
-                |(k, before)| match (gs.ssa_by_key.get(*k), Option::as_ref(*before)) {
+            .filter(|(k, before)| {
+                match (gs.ssa_by_key.get(*k).map(|e| &e.v), Option::as_ref(*before)) {
                     (Some(now), Some(before)) => !now.same_facts(before),
                     (None, None) => false,
                     _ => true,
-                },
-            )
+                }
+            })
             .map(|(k, _)| k.clone())
             .collect()
     }
@@ -710,14 +712,58 @@ impl SummaryChangeLog {
     ) -> (Option<CapsFingerprint>, Option<&'a SsaFuncSummary>) {
         let caps = match self.caps_before.get(key) {
             Some(before) => before.clone(),
-            None => gs.by_key.get(key).map(caps_fingerprint),
+            None => gs.by_key.get(key).map(|e| caps_fingerprint(&e.v)),
         };
         let ssa = match self.ssa_before.get(key) {
             Some(before) => before.as_ref(),
-            None => gs.ssa_by_key.get(key),
+            None => gs.ssa_by_key.get(key).map(|e| &e.v),
         };
         (caps, ssa)
     }
+
+    /// Every key written through this log, coarse and SSA.
+    pub fn written_keys(&self) -> impl Iterator<Item = &FuncKey> {
+        self.caps_before.keys().chain(self.ssa_before.keys())
+    }
+}
+
+/// A stored summary plus its content fingerprint, computed on first use.
+///
+/// The fingerprint is only needed while incremental pass 2 records or
+/// replays reads, so it is computed lazily and reset on every write.
+#[derive(Debug)]
+struct Stored<T> {
+    v: T,
+    fp: std::sync::OnceLock<Fp>,
+}
+
+impl<T> Stored<T> {
+    fn new(v: T) -> Self {
+        Stored {
+            v,
+            fp: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn into_inner(self) -> T {
+        self.v
+    }
+
+    /// Mutable access; drops the cached fingerprint.
+    fn get_mut(&mut self) -> &mut T {
+        self.fp = std::sync::OnceLock::new();
+        &mut self.v
+    }
+}
+
+impl<T: Serialize> Stored<T> {
+    fn fp(&self) -> Fp {
+        *self.fp.get_or_init(|| deps::fp_value(&self.v))
+    }
+}
+
+fn stored_fp<T: Serialize>(e: Option<&Stored<T>>) -> Fp {
+    e.map_or(deps::ABSENT, Stored::fp)
 }
 
 // ── Lookup map used by the taint engine ─────────────────────────────────
@@ -762,7 +808,7 @@ pub struct GlobalSummaries {
     /// hasher; FxHash is ~5x faster than SipHash on this workload.  Seed
     /// is fixed (no DoS hardening), which is fine for an in-process index
     /// keyed by static program-derived names.
-    by_key: FxHashMap<FuncKey, FuncSummary>,
+    by_key: FxHashMap<FuncKey, Stored<FuncSummary>>,
     /// Bare leaf-name index, kept for compatibility with callers that only
     /// see an unqualified call string.  A single name may map to many keys
     /// across containers / files / arities.
@@ -781,7 +827,7 @@ pub struct GlobalSummaries {
     by_rust_module: FxHashMap<(String, String), Vec<FuncKey>>,
     /// Precise SSA-derived per-parameter summaries, keyed by `FuncKey`.
     /// These take precedence over `FuncSummary` during callee resolution.
-    ssa_by_key: HashMap<FuncKey, SsaFuncSummary>,
+    ssa_by_key: HashMap<FuncKey, Stored<SsaFuncSummary>>,
     /// Sibling index over [`Self::ssa_by_key`] keyed by
     /// `(lang, namespace, name)`.  Populated in lockstep with `ssa_by_key`
     /// (every `insert_ssa` / `merge` adds the key).  Used by the
@@ -804,13 +850,13 @@ pub struct GlobalSummaries {
     ssa_by_lang_ns_name: HashMap<(Lang, String, String), Vec<FuncKey>>,
     /// Cross-file callee bodies for interprocedural symbolic execution.
     /// Keyed by `FuncKey` (same identity model as SSA summaries).
-    bodies_by_key: HashMap<FuncKey, crate::taint::ssa_transfer::CalleeSsaBody>,
+    bodies_by_key: HashMap<FuncKey, Stored<crate::taint::ssa_transfer::CalleeSsaBody>>,
     /// Per-function auth-check summaries for cross-file helper lifting.
     /// Keyed by `FuncKey` so a call-site resolver can go from a resolved
     /// callee name to the helper's auth-check signature.  Populated in
     /// pass 1 and consumed by
     /// [`crate::auth_analysis::run_auth_analysis`] during pass 2.
-    auth_by_key: HashMap<FuncKey, crate::auth_analysis::model::AuthCheckSummary>,
+    auth_by_key: HashMap<FuncKey, Stored<crate::auth_analysis::model::AuthCheckSummary>>,
     /// Per-Python-file router declarations + `include_router` edges,
     /// keyed by `module_id_for_storage(file_path)` (basename without
     /// `.py`, or `parent_dir::__init__` for `__init__.py`).  Populated
@@ -888,7 +934,7 @@ impl GlobalSummaries {
     fn reconcile_func_summary_key(&self, mut key: FuncKey, summary: &FuncSummary) -> FuncKey {
         let mut probe: u32 = 0;
         loop {
-            match self.by_key.get(&key) {
+            match self.by_key.get(&key).map(|e| &e.v) {
                 Some(existing) if !summaries_compatible(existing, summary) => {
                     let synth = synthesize_disambig(summary).wrapping_add(probe);
                     key.set_disambig(Some(
@@ -923,7 +969,7 @@ impl GlobalSummaries {
     fn reconcile_ssa_summary_key(&self, mut key: FuncKey, summary: &SsaFuncSummary) -> FuncKey {
         let mut probe: u32 = 0;
         loop {
-            let conflict = match self.ssa_by_key.get(&key) {
+            let conflict = match self.ssa_by_key.get(&key).map(|e| &e.v) {
                 Some(existing) => !ssa_summaries_compatible(existing, summary, key.arity),
                 None => !ssa_summary_fits_arity(summary, key.arity),
             };
@@ -958,7 +1004,7 @@ impl GlobalSummaries {
     ) -> FuncKey {
         let mut probe: u32 = 0;
         loop {
-            let conflict = match self.bodies_by_key.get(&key) {
+            let conflict = match self.bodies_by_key.get(&key).map(|e| &e.v) {
                 Some(existing) => existing.param_count != body.param_count,
                 None => match key.arity {
                     Some(a) => a != body.param_count,
@@ -1021,7 +1067,7 @@ impl GlobalSummaries {
     ) {
         let key = self.reconcile_func_summary_key(key, &summary);
         if !log.caps_before.contains_key(&key) {
-            let before = self.by_key.get(&key).map(caps_fingerprint);
+            let before = self.by_key.get(&key).map(|e| caps_fingerprint(&e.v));
             log.caps_before.insert(key.clone(), before);
         }
         self.insert_reconciled(key, summary);
@@ -1039,7 +1085,8 @@ impl GlobalSummaries {
 
         self.by_key
             .entry(key.clone())
-            .and_modify(|existing| {
+            .and_modify(|stored| {
+                let existing = stored.get_mut();
                 existing.source_caps |= summary.source_caps;
                 existing.sanitizer_caps |= summary.sanitizer_caps;
                 existing.sink_caps |= summary.sink_caps;
@@ -1067,7 +1114,7 @@ impl GlobalSummaries {
                     }
                 }
             })
-            .or_insert(summary);
+            .or_insert_with(|| Stored::new(summary));
 
         self.by_lang_name.insert_unique(lang, name, &key);
         self.by_lang_qualified.insert_unique(lang, qualified, &key);
@@ -1085,7 +1132,9 @@ impl GlobalSummaries {
 
     /// Exact lookup by fully-qualified key.
     pub fn get(&self, key: &FuncKey) -> Option<&FuncSummary> {
-        self.by_key.get(key)
+        let e = self.by_key.get(key);
+        deps::note_keyed(KeyedRead::Func, key, || stored_fp(e));
+        e.map(|e| &e.v)
     }
 
     /// Interop / external-edge lookup: tolerant of `disambig` being `None`.
@@ -1097,12 +1146,19 @@ impl GlobalSummaries {
     /// arity, kind)`.  If exactly one matches it is returned; otherwise we
     /// return `None` to preserve determinism (ambiguity is treated as unknown).
     pub fn get_for_interop(&self, key: &FuncKey) -> Option<&FuncSummary> {
-        if let Some(hit) = self.by_key.get(key) {
+        if let Some(hit) = self.get(key) {
             return Some(hit);
         }
         if key.disambig.is_some() {
             return None;
         }
+        deps::note_keyed(KeyedRead::Interop, key, || self.interop_fp(key));
+        self.interop_scan(key).map(|e| &e.v)
+    }
+
+    /// The single entry `get_for_interop` falls back to for a key without
+    /// `disambig`.
+    fn interop_scan(&self, key: &FuncKey) -> Option<&Stored<FuncSummary>> {
         let mut matches = self.by_key.iter().filter(|(k, _)| {
             k.lang == key.lang
                 && k.namespace == key.namespace
@@ -1119,11 +1175,16 @@ impl GlobalSummaries {
         }
     }
 
+    fn interop_fp(&self, key: &FuncKey) -> Fp {
+        let _quiet = deps::Suppress::new();
+        stored_fp(self.interop_scan(key))
+    }
+
     /// All same-language matches for a bare function name.
     pub fn lookup_same_lang(&self, lang: Lang, name: &str) -> Vec<(&FuncKey, &FuncSummary)> {
         self.keys_same_lang(lang, name)
             .iter()
-            .filter_map(|k| self.by_key.get(k).map(|v| (k, v)))
+            .filter_map(|k| self.get(k).map(|v| (k, v)))
             .collect()
     }
 
@@ -1131,7 +1192,12 @@ impl GlobalSummaries {
     /// order. Borrows the index: no allocation and no summary lookup, for the
     /// resolver, which only needs the keys.
     pub fn keys_same_lang(&self, lang: Lang, name: &str) -> &[FuncKey] {
-        self.by_lang_name.get(lang, name)
+        let keys = self.by_lang_name.get(lang, name);
+        deps::note_named(
+            || NamedRead::LangName(lang, name.to_string()),
+            || deps::fp_keys(keys),
+        );
+        keys
     }
 
     /// Rust-only lookup by `(module_path, name)`.
@@ -1145,14 +1211,19 @@ impl GlobalSummaries {
         module_path: &str,
         name: &str,
     ) -> Vec<(&FuncKey, &FuncSummary)> {
-        self.by_rust_module
-            .get(&(module_path.to_string(), name.to_string()))
-            .map(|keys| {
-                keys.iter()
-                    .filter_map(|k| self.by_key.get(k).map(|v| (k, v)))
-                    .collect()
-            })
-            .unwrap_or_default()
+        let keys = self
+            .by_rust_module
+            .get(&(module_path.to_string(), name.to_string()));
+        deps::note_named(
+            || NamedRead::RustModule(module_path.to_string(), name.to_string()),
+            || deps::fp_keys(keys.into_iter().flatten()),
+        );
+        keys.map(|keys| {
+            keys.iter()
+                .filter_map(|k| self.get(k).map(|v| (k, v)))
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
     /// Container-qualified lookup.  `qualified` should be
@@ -1160,14 +1231,19 @@ impl GlobalSummaries {
     pub fn lookup_qualified(&self, lang: Lang, qualified: &str) -> Vec<(&FuncKey, &FuncSummary)> {
         self.keys_qualified(lang, qualified)
             .iter()
-            .filter_map(|k| self.by_key.get(k).map(|v| (k, v)))
+            .filter_map(|k| self.get(k).map(|v| (k, v)))
             .collect()
     }
 
     /// Keys indexed under `"Container::name"` (or `"name"`), in insertion
     /// order. Borrowing counterpart of [`Self::lookup_qualified`].
     pub fn keys_qualified(&self, lang: Lang, qualified: &str) -> &[FuncKey] {
-        self.by_lang_qualified.get(lang, qualified)
+        let keys = self.by_lang_qualified.get(lang, qualified);
+        deps::note_named(
+            || NamedRead::Qualified(lang, qualified.to_string()),
+            || deps::fp_keys(keys),
+        );
+        keys
     }
 
     /// Merge another `GlobalSummaries` into this one (for parallel fold/reduce).
@@ -1176,7 +1252,7 @@ impl GlobalSummaries {
         // by_rust_module) from the summary itself, so we do not need to copy
         // `other.by_rust_module` explicitly, draining `other.by_key` is enough.
         for (key, summary) in other.by_key {
-            self.insert(key, summary);
+            self.insert(key, summary.into_inner());
         }
         // SSA summaries: last-writer-wins (exact-key replacement, no unioning)
         for (key, ssa_sum) in other.ssa_by_key {
@@ -1251,7 +1327,7 @@ impl GlobalSummaries {
     pub fn insert_ssa(&mut self, key: FuncKey, summary: SsaFuncSummary) {
         let key = self.ssa_insert_key(key, &summary);
         self.index_ssa_key(&key);
-        self.ssa_by_key.insert(key, summary);
+        self.ssa_by_key.insert(key, Stored::new(summary));
     }
 
     /// [`Self::insert_ssa`] that also records in `log` the summary the
@@ -1265,7 +1341,10 @@ impl GlobalSummaries {
     ) {
         let key = self.ssa_insert_key(key, &summary);
         self.index_ssa_key(&key);
-        let before = self.ssa_by_key.insert(key.clone(), summary);
+        let before = self
+            .ssa_by_key
+            .insert(key.clone(), Stored::new(summary))
+            .map(Stored::into_inner);
         log.ssa_before.entry(key).or_insert(before);
     }
 
@@ -1311,7 +1390,7 @@ impl GlobalSummaries {
             let existing_also_overflows = self
                 .ssa_by_key
                 .get(&key)
-                .is_some_and(|existing| !ssa_summary_fits_arity(existing, key.arity));
+                .is_some_and(|existing| !ssa_summary_fits_arity(&existing.v, key.arity));
             let existing_present = self.ssa_by_key.contains_key(&key);
             if !existing_present || existing_also_overflows {
                 key
@@ -1348,15 +1427,50 @@ impl GlobalSummaries {
         // Profile-light: this runs once per cross-package callee and
         // both string clones are short (namespace path + leaf name).
         let probe = (lang, namespace.to_string(), name.to_string());
-        self.ssa_by_lang_ns_name
+        let keys = self
+            .ssa_by_lang_ns_name
             .get(&probe)
             .map(|v| v.as_slice())
-            .unwrap_or(&[])
+            .unwrap_or(&[]);
+        deps::note_named(
+            || NamedRead::SsaTriple(probe.0, probe.1.clone(), probe.2.clone()),
+            || deps::fp_keys(keys),
+        );
+        keys
     }
 
     /// Exact lookup of an SSA summary by fully-qualified key.
     pub fn get_ssa(&self, key: &FuncKey) -> Option<&SsaFuncSummary> {
-        self.ssa_by_key.get(key)
+        let e = self.ssa_by_key.get(key);
+        deps::note_keyed(KeyedRead::Ssa, key, || stored_fp(e));
+        e.map(|e| &e.v)
+    }
+
+    /// SSA summaries of every function named exactly `name`, in any
+    /// language or namespace.  Order is unspecified.
+    pub fn ssa_named(&self, name: &str) -> Vec<&SsaFuncSummary> {
+        let found = self.ssa_named_uncached(name);
+        deps::note_named(
+            || NamedRead::SsaByName(name.to_string()),
+            || ssa_named_fp(&found),
+        );
+        found.into_iter().map(|(_, s)| &s.v).collect()
+    }
+
+    fn ssa_named_uncached(&self, name: &str) -> Vec<(&FuncKey, &Stored<SsaFuncSummary>)> {
+        self.ssa_by_key
+            .iter()
+            .filter(|(k, _)| k.name == name)
+            .collect()
+    }
+
+    /// Number of stored SSA summaries.
+    pub fn ssa_len(&self) -> usize {
+        deps::note_named(
+            || NamedRead::MapLen(MapId::Ssa),
+            || deps::fp_usize(self.ssa_by_key.len()),
+        );
+        self.ssa_by_key.len()
     }
 
     /// Insert an `AuthCheckSummary` for cross-file helper lifting.
@@ -1370,7 +1484,7 @@ impl GlobalSummaries {
         key: FuncKey,
         summary: crate::auth_analysis::model::AuthCheckSummary,
     ) {
-        self.auth_by_key.insert(key, summary);
+        self.auth_by_key.insert(key, Stored::new(summary));
     }
 
     /// Exact lookup of an `AuthCheckSummary` by fully-qualified key.
@@ -1378,24 +1492,28 @@ impl GlobalSummaries {
         &self,
         key: &FuncKey,
     ) -> Option<&crate::auth_analysis::model::AuthCheckSummary> {
-        self.auth_by_key.get(key)
+        let e = self.auth_by_key.get(key);
+        deps::note_keyed(KeyedRead::Auth, key, || stored_fp(e));
+        e.map(|e| &e.v)
     }
 
-    /// Direct access to the auth-summary map.  `None` when empty so
-    /// callers can distinguish "no cross-file auth summaries loaded"
-    /// from "some were loaded but none matched the call site".
-    pub fn auth_by_key(
-        &self,
-    ) -> Option<&HashMap<FuncKey, crate::auth_analysis::model::AuthCheckSummary>> {
-        if self.auth_by_key.is_empty() {
-            None
-        } else {
-            Some(&self.auth_by_key)
-        }
+    /// Whether any cross-file auth summary is loaded, which tells "none
+    /// loaded" apart from "some were loaded but none matched the call site".
+    pub fn has_auth_summaries(&self) -> bool {
+        let any = !self.auth_by_key.is_empty();
+        deps::note_named(
+            || NamedRead::MapNonEmpty(MapId::Auth),
+            || deps::fp_bool(any),
+        );
+        any
     }
 
     /// Count of cross-file auth summaries currently loaded.
     pub fn auth_len(&self) -> usize {
+        deps::note_named(
+            || NamedRead::MapLen(MapId::Auth),
+            || deps::fp_usize(self.auth_by_key.len()),
+        );
         self.auth_by_key.len()
     }
 
@@ -1432,11 +1550,21 @@ impl GlobalSummaries {
         // but `(Lang, String)` keys can't be borrowed as `(Lang, &str)`,
         // so fall back to a cheap owned probe.  Caller-scope lookups run
         // once per helper unit at pass 2, not per instruction.
-        self.caller_scope_by_callee.get(&(lang, leaf.to_string()))
+        let probe = (lang, leaf.to_string());
+        let acc = self.caller_scope_by_callee.get(&probe);
+        deps::note_named(
+            || NamedRead::CallerScope(probe.0, probe.1.clone()),
+            || acc.map_or(deps::ABSENT, deps::fp_debug),
+        );
+        acc
     }
 
     /// Count of distinct `(Lang, callee_leaf)` caller-scope entries.
     pub fn caller_scope_len(&self) -> usize {
+        deps::note_named(
+            || NamedRead::MapLen(MapId::CallerScope),
+            || deps::fp_usize(self.caller_scope_by_callee.len()),
+        );
         self.caller_scope_by_callee.len()
     }
 
@@ -1487,6 +1615,18 @@ impl GlobalSummaries {
     /// Returns an empty map when `child_module_id` matches no edges or
     /// when the index is empty.
     pub fn resolve_cross_file_router_deps(
+        &self,
+        child_module_id: &str,
+    ) -> HashMap<String, Vec<(crate::auth_analysis::model::CallSite, bool)>> {
+        let out = self.router_deps_uncached(child_module_id);
+        deps::note_named(
+            || NamedRead::RouterDeps(child_module_id.to_string()),
+            || router_deps_fp(&out),
+        );
+        out
+    }
+
+    fn router_deps_uncached(
         &self,
         child_module_id: &str,
     ) -> HashMap<String, Vec<(crate::auth_analysis::model::CallSite, bool)>> {
@@ -1590,6 +1730,10 @@ impl GlobalSummaries {
     /// Count of files that contributed router facts to the index.
     /// Exposed for `tracing::debug!` observability.
     pub fn router_facts_len(&self) -> usize {
+        deps::note_named(
+            || NamedRead::MapLen(MapId::RouterFacts),
+            || deps::fp_usize(self.router_facts_by_module.len()),
+        );
         self.router_facts_by_module.len()
     }
 
@@ -1617,11 +1761,20 @@ impl GlobalSummaries {
         &self,
         namespace: &str,
     ) -> Option<&std::sync::Arc<HashMap<String, FuncKey>>> {
-        self.cross_package_imports_by_namespace.get(namespace)
+        let map = self.cross_package_imports_by_namespace.get(namespace);
+        deps::note_named(
+            || NamedRead::CrossPackageImports(namespace.to_string()),
+            || map.map_or(deps::ABSENT, |m| deps::fp_value(&**m)),
+        );
+        map
     }
 
     /// Count of files that contributed cross-package import maps.
     pub fn cross_package_imports_len(&self) -> usize {
+        deps::note_named(
+            || NamedRead::MapLen(MapId::CrossPackageImports),
+            || deps::fp_usize(self.cross_package_imports_by_namespace.len()),
+        );
         self.cross_package_imports_by_namespace.len()
     }
 
@@ -1633,36 +1786,79 @@ impl GlobalSummaries {
     /// cannot be the same function and is always rekeyed.
     pub fn insert_body(&mut self, key: FuncKey, body: crate::taint::ssa_transfer::CalleeSsaBody) {
         let key = self.reconcile_body_key(key, &body);
-        self.bodies_by_key.insert(key, body);
+        self.bodies_by_key.insert(key, Stored::new(body));
     }
 
     /// Exact lookup of a cross-file callee body by fully-qualified key.
     pub fn get_body(&self, key: &FuncKey) -> Option<&crate::taint::ssa_transfer::CalleeSsaBody> {
-        self.bodies_by_key.get(key)
-    }
-
-    /// Direct access to the cross-file body map.
-    ///
-    /// Returns `None` when no cross-file bodies were loaded (empty map).
-    /// The taint engine uses this to thread bodies through
-    /// [`crate::taint::ssa_transfer::SsaTaintTransfer::cross_file_bodies`]
-    /// and `resolve_callee` for context-sensitive cross-file inline
-    /// analysis.
-    pub fn bodies_by_key(
-        &self,
-    ) -> Option<&HashMap<FuncKey, crate::taint::ssa_transfer::CalleeSsaBody>> {
-        if self.bodies_by_key.is_empty() {
-            None
-        } else {
-            Some(&self.bodies_by_key)
-        }
+        let e = self.bodies_by_key.get(key);
+        deps::note_keyed(KeyedRead::Body, key, || stored_fp(e));
+        e.map(|e| &e.v)
     }
 
     /// Count of cross-file bodies currently loaded.  Exposed for
     /// `tracing::debug!` observability, lets callers distinguish "no
     /// bodies available" from "bodies available but inline didn't fire".
     pub fn bodies_len(&self) -> usize {
+        deps::note_named(
+            || NamedRead::MapLen(MapId::Bodies),
+            || deps::fp_usize(self.bodies_by_key.len()),
+        );
         self.bodies_by_key.len()
+    }
+
+    /// Every stored callee body.  Whole-map read: a trace that sees it
+    /// can never be replayed.
+    pub fn bodies(
+        &self,
+    ) -> impl Iterator<Item = (&FuncKey, &crate::taint::ssa_transfer::CalleeSsaBody)> {
+        deps::note_opaque();
+        self.bodies_by_key.iter().map(|(k, e)| (k, &e.v))
+    }
+
+    /// The cross-file body backwards analysis uses for a call to `leaf`:
+    /// among same-language bodies named `leaf` with at most `max_blocks`
+    /// blocks, the one with the smallest `(namespace, container, arity,
+    /// disambig)`.
+    pub fn body_by_leaf(
+        &self,
+        lang: Lang,
+        leaf: &str,
+        max_blocks: usize,
+    ) -> Option<(&crate::taint::ssa_transfer::CalleeSsaBody, FuncKey)> {
+        let found = self.body_by_leaf_uncached(lang, leaf, max_blocks);
+        deps::note_named(
+            || NamedRead::BodyByLeaf(lang, leaf.to_string(), max_blocks),
+            || body_pick_fp(found),
+        );
+        found.map(|(stored, key)| (&stored.v, key.clone()))
+    }
+
+    fn body_by_leaf_uncached(
+        &self,
+        lang: Lang,
+        leaf: &str,
+        max_blocks: usize,
+    ) -> Option<(&Stored<crate::taint::ssa_transfer::CalleeSsaBody>, &FuncKey)> {
+        let mut best: Option<(&FuncKey, &Stored<crate::taint::ssa_transfer::CalleeSsaBody>)> = None;
+        for (key, body) in &self.bodies_by_key {
+            if key.name != leaf || key.lang != lang || body.v.ssa.blocks.len() > max_blocks {
+                continue;
+            }
+            let better = match best {
+                None => true,
+                // Smallest by the structural fields that tell same-leaf
+                // siblings apart, so the pick does not depend on map order.
+                Some((bk, _)) => {
+                    (&key.namespace, &key.container, &key.arity, &key.disambig)
+                        < (&bk.namespace, &bk.container, &bk.arity, &bk.disambig)
+                }
+            };
+            if better {
+                best = Some((key, body));
+            }
+        }
+        best.map(|(k, b)| (b, k))
     }
 
     /// Resolve a bare callee name to a cross-file body.
@@ -1677,7 +1873,7 @@ impl GlobalSummaries {
         caller_namespace: &str,
     ) -> Option<&crate::taint::ssa_transfer::CalleeSsaBody> {
         match self.resolve_callee_key(name, lang, caller_namespace, arity_hint) {
-            CalleeResolution::Resolved(key) => self.bodies_by_key.get(&key),
+            CalleeResolution::Resolved(key) => self.get_body(&key),
             CalleeResolution::NotFound | CalleeResolution::Ambiguous(_) => None,
         }
     }
@@ -1695,11 +1891,16 @@ impl GlobalSummaries {
 
     /// Iterate over all (key, summary) pairs.
     pub fn iter(&self) -> impl Iterator<Item = (&FuncKey, &FuncSummary)> {
-        self.by_key.iter()
+        deps::note_opaque();
+        self.by_key.iter().map(|(k, e)| (k, &e.v))
     }
 
     /// Number of coarse [`FuncSummary`] entries.
     pub fn func_count(&self) -> usize {
+        deps::note_named(
+            || NamedRead::MapLen(MapId::Funcs),
+            || deps::fp_usize(self.by_key.len()),
+        );
         self.by_key.len()
     }
 
@@ -1709,15 +1910,27 @@ impl GlobalSummaries {
     /// tracks changes per write through [`SummaryChangeLog`] instead, since
     /// a whole-map snapshot per iteration costs O(functions in the repo).
     pub fn snapshot_caps(&self) -> HashMap<FuncKey, CapsFingerprint> {
+        deps::note_opaque();
         self.by_key
             .iter()
-            .map(|(k, s)| (k.clone(), caps_fingerprint(s)))
+            .map(|(k, s)| (k.clone(), caps_fingerprint(&s.v)))
             .collect()
     }
 
-    /// Borrow every SSA summary.
-    pub fn snapshot_ssa(&self) -> &HashMap<FuncKey, SsaFuncSummary> {
-        &self.ssa_by_key
+    /// Every SSA summary.  Whole-map read: a trace that sees it can never
+    /// be replayed.
+    pub fn ssa_entries(&self) -> impl Iterator<Item = (&FuncKey, &SsaFuncSummary)> {
+        deps::note_opaque();
+        self.ssa_by_key.iter().map(|(k, e)| (k, &e.v))
+    }
+
+    /// Copy of every SSA summary.
+    pub fn snapshot_ssa(&self) -> HashMap<FuncKey, SsaFuncSummary> {
+        deps::note_opaque();
+        self.ssa_by_key
+            .iter()
+            .map(|(k, s)| (k.clone(), s.v.clone()))
+            .collect()
     }
 
     /// Rust-only resolution that consults the caller's `use` map before
@@ -2158,7 +2371,32 @@ impl GlobalSummaries {
 
     /// Borrow the installed hierarchy index, if any.
     pub fn hierarchy(&self) -> Option<&crate::callgraph::TypeHierarchyIndex> {
+        deps::note_opaque();
         self.hierarchy.as_ref()
+    }
+
+    fn supers_list(&self, lang: Lang, container: &str) -> &[String] {
+        let list = self
+            .hierarchy
+            .as_ref()
+            .map_or(&[][..], |h| h.supers_of(lang, container));
+        deps::note_named(
+            || NamedRead::Supers(lang, container.to_string()),
+            || deps::fp_strs(list),
+        );
+        list
+    }
+
+    fn subs_list(&self, lang: Lang, container: &str) -> &[String] {
+        let list = self
+            .hierarchy
+            .as_ref()
+            .map_or(&[][..], |h| h.subs_of(lang, container));
+        deps::note_named(
+            || NamedRead::Subs(lang, container.to_string()),
+            || deps::fp_strs(list),
+        );
+        list
     }
 
     /// Every recorded supertype of `container`, nearest first (direct
@@ -2169,14 +2407,14 @@ impl GlobalSummaries {
         /// Bound on the inheritance depth walked; real chains are short and
         /// the visited set already stops cycles.
         const MAX_SUPERTYPES: usize = 32;
-        let Some(h) = self.hierarchy.as_ref() else {
+        if self.hierarchy.is_none() {
             return Vec::new();
-        };
+        }
         let mut out: Vec<String> = Vec::new();
         let mut next = 0;
         let mut current = container.to_string();
         loop {
-            for sup in h.supers_of(lang, &current) {
+            for sup in self.supers_list(lang, &current) {
                 if sup != container && !out.contains(sup) && out.len() < MAX_SUPERTYPES {
                     out.push(sup.clone());
                 }
@@ -2217,7 +2455,9 @@ impl GlobalSummaries {
     /// Whether the installed call graph shows a caller of `key` outside
     /// `key` itself and outside test files.
     pub fn has_known_caller(&self, key: &FuncKey) -> bool {
-        self.called_keys.contains(key)
+        let called = self.called_keys.contains(key);
+        deps::note_keyed(KeyedRead::Called, key, || deps::fp_bool(called));
+        called
     }
 
     /// Hard cap on hierarchy fan-out from a single call site, see
@@ -2272,10 +2512,10 @@ impl GlobalSummaries {
         let Some(rt) = q.receiver_type.filter(|s| !s.is_empty()) else {
             return single_fallback();
         };
-        let Some(h) = self.hierarchy.as_ref() else {
+        if self.hierarchy.is_none() {
             return single_fallback();
-        };
-        let subs = h.subs_of(q.caller_lang, rt);
+        }
+        let subs = self.subs_list(q.caller_lang, rt);
         if subs.is_empty() {
             return single_fallback();
         }
@@ -2338,6 +2578,106 @@ impl GlobalSummaries {
         }
 
         out
+    }
+}
+
+/// Order-independent fingerprint of a set of `(key, SSA summary)` pairs.
+fn ssa_named_fp(found: &[(&FuncKey, &Stored<SsaFuncSummary>)]) -> Fp {
+    let mut sum: u64 = 0;
+    for (k, s) in found {
+        sum = sum.wrapping_add(deps::fp_value(&(
+            deps::fp_keys(std::iter::once(*k)),
+            s.fp(),
+        )));
+    }
+    deps::fp_value(&(sum, found.len()))
+}
+
+/// Fingerprint of the backwards-analysis body pick: the body and its key.
+fn body_pick_fp(
+    found: Option<(&Stored<crate::taint::ssa_transfer::CalleeSsaBody>, &FuncKey)>,
+) -> Fp {
+    match found {
+        Some((stored, key)) => deps::fp_value(&(stored.fp(), deps::fp_keys(std::iter::once(key)))),
+        None => deps::ABSENT,
+    }
+}
+
+/// Fingerprint of a `resolve_cross_file_router_deps` result.  `CallSite`
+/// has no `Serialize`, and its `Debug` rendering is deterministic, so the
+/// entries are sorted by child variable and rendered.
+fn router_deps_fp(out: &HashMap<String, Vec<(crate::auth_analysis::model::CallSite, bool)>>) -> Fp {
+    let mut entries: Vec<_> = out.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    deps::fp_debug(&entries)
+}
+
+impl deps::DepOracle for GlobalSummaries {
+    fn keyed_fp(&self, kind: KeyedRead, key: &FuncKey) -> Fp {
+        match kind {
+            KeyedRead::Func => stored_fp(self.by_key.get(key)),
+            KeyedRead::Ssa => stored_fp(self.ssa_by_key.get(key)),
+            KeyedRead::Body => stored_fp(self.bodies_by_key.get(key)),
+            KeyedRead::Auth => stored_fp(self.auth_by_key.get(key)),
+            KeyedRead::Called => deps::fp_bool(self.called_keys.contains(key)),
+            KeyedRead::Interop => self.interop_fp(key),
+        }
+    }
+
+    fn named_fp(&self, read: &NamedRead) -> Fp {
+        match read {
+            NamedRead::LangName(lang, name) => deps::fp_keys(self.by_lang_name.get(*lang, name)),
+            NamedRead::Qualified(lang, q) => deps::fp_keys(self.by_lang_qualified.get(*lang, q)),
+            NamedRead::RustModule(module_path, name) => deps::fp_keys(
+                self.by_rust_module
+                    .get(&(module_path.clone(), name.clone()))
+                    .into_iter()
+                    .flatten(),
+            ),
+            NamedRead::SsaTriple(lang, ns, name) => deps::fp_keys(
+                self.ssa_by_lang_ns_name
+                    .get(&(*lang, ns.clone(), name.clone()))
+                    .into_iter()
+                    .flatten(),
+            ),
+            NamedRead::CallerScope(lang, leaf) => self
+                .caller_scope_by_callee
+                .get(&(*lang, leaf.clone()))
+                .map_or(deps::ABSENT, deps::fp_debug),
+            NamedRead::CrossPackageImports(ns) => self
+                .cross_package_imports_by_namespace
+                .get(ns)
+                .map_or(deps::ABSENT, |m| deps::fp_value(&**m)),
+            NamedRead::Supers(lang, c) => deps::fp_strs(
+                self.hierarchy
+                    .as_ref()
+                    .map_or(&[][..], |h| h.supers_of(*lang, c)),
+            ),
+            NamedRead::Subs(lang, c) => deps::fp_strs(
+                self.hierarchy
+                    .as_ref()
+                    .map_or(&[][..], |h| h.subs_of(*lang, c)),
+            ),
+            NamedRead::RouterDeps(child) => router_deps_fp(&self.router_deps_uncached(child)),
+            NamedRead::BodyByLeaf(lang, leaf, max_blocks) => {
+                body_pick_fp(self.body_by_leaf_uncached(*lang, leaf, *max_blocks))
+            }
+            NamedRead::MapNonEmpty(MapId::Auth) => deps::fp_bool(!self.auth_by_key.is_empty()),
+            NamedRead::MapNonEmpty(id) => {
+                deps::fp_bool(self.named_fp(&NamedRead::MapLen(*id)) != deps::fp_usize(0))
+            }
+            NamedRead::SsaByName(name) => ssa_named_fp(&self.ssa_named_uncached(name)),
+            NamedRead::MapLen(id) => deps::fp_usize(match id {
+                MapId::Funcs => self.by_key.len(),
+                MapId::Ssa => self.ssa_by_key.len(),
+                MapId::Bodies => self.bodies_by_key.len(),
+                MapId::Auth => self.auth_by_key.len(),
+                MapId::RouterFacts => self.router_facts_by_module.len(),
+                MapId::CrossPackageImports => self.cross_package_imports_by_namespace.len(),
+                MapId::CallerScope => self.caller_scope_by_callee.len(),
+            }),
+            NamedRead::IsFile(path) => deps::fp_bool(std::path::Path::new(path).is_file()),
+        }
     }
 }
 

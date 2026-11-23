@@ -70,8 +70,7 @@ fn find_ssa<'a>(
     name: &str,
     container: &str,
 ) -> Option<&'a SsaFuncSummary> {
-    gs.snapshot_ssa()
-        .iter()
+    gs.ssa_entries()
         .find(|(k, _)| k.name == name && k.container == container)
         .map(|(_, s)| s)
 }

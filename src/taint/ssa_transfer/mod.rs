@@ -209,7 +209,7 @@ pub struct SsaTaintTransfer<'a> {
     /// same way `callee_bodies` enables it intra-file.  `None` preserves
     /// non-cross-file behaviour for unit tests and non-cross-file
     /// construction sites.
-    pub cross_file_bodies: Option<&'a HashMap<FuncKey, CalleeSsaBody>>,
+    pub cross_file_bodies: Option<&'a crate::summary::GlobalSummaries>,
     /// per-body field-sensitive points-to facts.
     /// Populated only when [`crate::pointer::is_enabled()`].  When
     /// present, [`SsaOp::FieldProj`] reads consult
@@ -4405,7 +4405,7 @@ fn inline_analyse_callee_with_seeds(
         };
         let key = gs.resolve_callee_unique(&query)?;
         let xfile_bodies = transfer.cross_file_bodies?;
-        let body = xfile_bodies.get(&key)?;
+        let body = xfile_bodies.get_body(&key)?;
         // Indexed-scan bodies deserialized from SQLite
         // arrive with `body_graph: None`, but the load path
         // ([`rebuild_body_graph`] in `load_all_ssa_bodies`)

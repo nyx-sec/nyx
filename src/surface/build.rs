@@ -85,11 +85,82 @@ pub fn build_surface_map(inputs: &SurfaceBuildInputs<'_>) -> SurfaceMap {
     build_surface_map_with_coverage(inputs).0
 }
 
+/// One stored probe result: `(path, content hash, payload)`.
+pub type SurfaceProbeRow = (String, Vec<u8>, Vec<u8>);
+
+/// Per-file probe results from an earlier scan, reused for files whose
+/// content hash is unchanged.  A probe depends only on the file's path and
+/// bytes, so a matching hash means the stored result is current.
+pub struct SurfaceProbeCache<'a> {
+    stored: std::collections::HashMap<String, (Vec<u8>, Vec<u8>)>,
+    hashes: &'a std::collections::HashMap<PathBuf, Vec<u8>>,
+    fresh: std::sync::Mutex<Vec<SurfaceProbeRow>>,
+}
+
+impl<'a> SurfaceProbeCache<'a> {
+    /// `stored` maps a path to `(content hash, payload)` as written by
+    /// [`Self::into_fresh`]; `hashes` holds this scan's content hashes.
+    pub fn new(
+        stored: std::collections::HashMap<String, (Vec<u8>, Vec<u8>)>,
+        hashes: &'a std::collections::HashMap<PathBuf, Vec<u8>>,
+    ) -> Self {
+        SurfaceProbeCache {
+            stored,
+            hashes,
+            fresh: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Probe results computed this scan, as `(path, hash, payload)` rows.
+    pub fn into_fresh(self) -> Vec<SurfaceProbeRow> {
+        self.fresh.into_inner().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn probe(&self, parsers: &mut Parsers, path: &Path, scan_root: Option<&Path>) -> FileOutcome {
+        let key = path.to_string_lossy();
+        let hash = self.hashes.get(path);
+        if let Some(h) = hash
+            && let Some((stored_hash, payload)) = self.stored.get(key.as_ref())
+            && stored_hash == h
+            && let Ok(outcome) = serde_json::from_slice::<FileOutcome>(payload)
+        {
+            return outcome;
+        }
+        let outcome = probe_file(parsers, path, scan_root);
+        if let Some(h) = hash
+            && !matches!(outcome, FileOutcome::Unreadable)
+            && let Ok(payload) = serde_json::to_vec(&outcome)
+        {
+            self.fresh.lock().unwrap_or_else(|e| e.into_inner()).push((
+                key.into_owned(),
+                h.clone(),
+                payload,
+            ));
+        }
+        outcome
+    }
+}
+
+/// [`build_surface_map`] that reuses per-file probe results from `cache`.
+pub fn build_surface_map_cached(
+    inputs: &SurfaceBuildInputs<'_>,
+    cache: &SurfaceProbeCache<'_>,
+) -> SurfaceMap {
+    build_surface_map_inner(inputs, Some(cache)).0
+}
+
 /// Build a [`SurfaceMap`] and report [`SurfaceCoverage`].  The `nyx
 /// surface` CLI uses this variant so parse / unsupported skips become a
 /// visible number instead of being silently swallowed.
 pub fn build_surface_map_with_coverage(
     inputs: &SurfaceBuildInputs<'_>,
+) -> (SurfaceMap, SurfaceCoverage) {
+    build_surface_map_inner(inputs, None)
+}
+
+fn build_surface_map_inner(
+    inputs: &SurfaceBuildInputs<'_>,
+    cache: Option<&SurfaceProbeCache<'_>>,
 ) -> (SurfaceMap, SurfaceCoverage) {
     let mut map = SurfaceMap::new();
     let _ = inputs.config;
@@ -105,8 +176,9 @@ pub fn build_surface_map_with_coverage(
     let outcomes: Vec<FileOutcome> = inputs
         .files
         .par_iter()
-        .map_init(Parsers::new, |parsers, path| {
-            probe_file(parsers, path, inputs.scan_root)
+        .map_init(Parsers::new, |parsers, path| match cache {
+            Some(c) => c.probe(parsers, path, inputs.scan_root),
+            None => probe_file(parsers, path, inputs.scan_root),
         })
         .collect();
     for outcome in outcomes {
@@ -324,6 +396,7 @@ fn upgrade_auth_required_from_summaries(map: &mut SurfaceMap, summaries: &Global
 }
 
 /// Result of probing one file.
+#[derive(serde::Serialize, serde::Deserialize)]
 enum FileOutcome {
     Unreadable,
     Unsupported,

@@ -13,6 +13,9 @@ pub(crate) use crate::ast::{
 };
 use crate::callgraph::{CallGraph, FileBatch};
 use crate::cli::{IndexMode, OutputFormat};
+use crate::commands::incremental::{
+    self, GsOp, Pass2Cache, UnitKind, UnitOutputs, UnitOutputsView,
+};
 use crate::database::index::{IndexWriteQueue, Indexer, IssueRow};
 use crate::errors::NyxResult;
 use crate::patterns::{FindingCategory, Severity, SeverityFilter};
@@ -723,18 +726,13 @@ pub fn handle(
                 Some(&chain_reach_slot),
             )?
         } else {
-            if index_mode == IndexMode::Rebuild || !db_path.exists() {
-                tracing::debug!("Scanning filesystem index filesystem");
-                crate::commands::index::build_index(
-                    &project_name,
-                    &scan_path,
-                    &db_path,
-                    config,
-                    show_progress,
-                )?;
-            }
-
+            // A missing database needs no separate build: the indexed scan's
+            // pass 1 extracts and stores every file it has no row for.
             let pool = Indexer::init(&db_path)?;
+            if index_mode == IndexMode::Rebuild {
+                tracing::debug!("Clearing the index before a rebuild");
+                Indexer::from_pool(&project_name, &pool)?.clear()?;
+            }
             if config.database.vacuum_on_startup {
                 let idx = Indexer::from_pool(&project_name, &pool)?;
                 idx.vacuum()?;
@@ -1599,6 +1597,30 @@ where
         .collect()
 }
 
+/// The findings of a non-recursive pass-2 analysis plus its summary writes,
+/// in the order the batch merge applies them: coarse summaries, SSA
+/// summaries, callee bodies, auth summaries.
+fn refined_outputs(
+    r: crate::ast::FusedResult,
+    root: Option<&str>,
+    mg: Option<&crate::resolve::ModuleGraph>,
+) -> UnitOutputs {
+    let mut ops = Vec::with_capacity(
+        r.summaries.len() + r.ssa_summaries.len() + r.ssa_bodies.len() + r.auth_summaries.len(),
+    );
+    for s in r.summaries {
+        let key = s.func_key_with_resolver(root, mg);
+        ops.push(GsOp::Func(key, s));
+    }
+    ops.extend(r.ssa_summaries.into_iter().map(|(k, s)| GsOp::Ssa(k, s)));
+    ops.extend(r.ssa_bodies.into_iter().map(|(k, b)| GsOp::Body(k, b)));
+    ops.extend(r.auth_summaries.into_iter().map(|(k, a)| GsOp::Auth(k, a)));
+    UnitOutputs {
+        diags: r.diags,
+        ops,
+    }
+}
+
 /// Run pass 2 analysis on a sequence of topo-ordered file batches.
 ///
 /// Batches come from [`crate::callgraph::scc_file_batches_with_metadata`],
@@ -1632,6 +1654,7 @@ fn run_topo_batches(
     pb: &ProgressBar,
     progress: Option<&Arc<ScanProgress>>,
     logs: Option<&Arc<ScanLogCollector>>,
+    incr: Option<&Pass2Cache>,
 ) -> Vec<Diag> {
     let root_str = scan_root.map(|r| r.to_string_lossy());
     let root_str_ref = root_str.as_deref();
@@ -1646,6 +1669,43 @@ fn run_topo_batches(
 
     for (batch_idx, batch) in batches.iter().enumerate() {
         if batch.has_mutual_recursion {
+            // A recursive batch is cached as one unit: reuse replays every
+            // summary write its fixed-point loop made, in order.
+            let unit = incr.map(|c| {
+                (
+                    c,
+                    incremental::unit_key(UnitKind::Batch, &batch.files),
+                    incremental::batch_shape(batch, call_graph, scan_root, cfg),
+                )
+            });
+            let mut verify_against: Option<UnitOutputs> = None;
+            if let Some((c, key, shape)) = &unit
+                && let Some(hit) =
+                    c.lookup(key, UnitKind::Batch, &batch.files, *shape, global_summaries)
+            {
+                if c.verify() {
+                    verify_against = Some(hit.outputs);
+                } else {
+                    LAST_SCC_MAX_ITERATIONS.fetch_max(hit.iterations, Ordering::Relaxed);
+                    let UnitOutputs { diags, ops } = hit.outputs;
+                    for op in ops {
+                        op.apply(global_summaries);
+                    }
+                    pb.inc(batch.files.len() as u64);
+                    if let Some(p) = progress {
+                        p.inc_analyzed(batch.files.len() as u64);
+                        p.inc_batches_completed(1);
+                    }
+                    result.extend(diags);
+                    continue;
+                }
+            }
+            let mut batch_trace = crate::summary::deps::DepTrace::default();
+            let mut batch_ops: Vec<GsOp> = Vec::new();
+            let mut batch_written: rustc_hash::FxHashSet<crate::symbol::FuncKey> =
+                rustc_hash::FxHashSet::default();
+            let mut batch_complete = true;
+
             // SCC fixed-point: iterate until summaries converge (snapshot
             // equality) or we hit the safety cap.
             //
@@ -1720,6 +1780,7 @@ fn run_topo_batches(
                     .copied()
                     .collect();
 
+                #[allow(clippy::type_complexity)]
                 let batch_results: Vec<(
                     std::path::PathBuf,
                     // `false` when this file's read or analysis failed this
@@ -1738,6 +1799,7 @@ fn run_topo_batches(
                         crate::symbol::FuncKey,
                         crate::taint::ssa_transfer::CalleeSsaBody,
                     )>,
+                    crate::summary::deps::DepTrace,
                 )> = par_map_largest_first(&iter_files, |path| {
                     if let Some(p) = progress {
                         p.set_current_file(&path.to_string_lossy());
@@ -1757,15 +1819,23 @@ fn run_topo_batches(
                                     None,
                                 );
                             }
-                            return (path.to_path_buf(), false, vec![], vec![], vec![], vec![]);
+                            return (
+                                path.to_path_buf(),
+                                false,
+                                vec![],
+                                vec![],
+                                vec![],
+                                vec![],
+                                Default::default(),
+                            );
                         }
                     };
-                    match recover_or_propagate(
-                        cfg.scanner.enable_panic_recovery,
-                        path,
-                        logs,
-                        || analyse_file_fused(&bytes, path, cfg, Some(global_summaries), scan_root),
-                    ) {
+                    let (res, trace) = incremental::traced(incr, || {
+                        recover_or_propagate(cfg.scanner.enable_panic_recovery, path, logs, || {
+                            analyse_file_fused(&bytes, path, cfg, Some(global_summaries), scan_root)
+                        })
+                    });
+                    match res {
                         Ok(r) => {
                             pb.inc(0); // don't double-count iterations in progress bar
                             (
@@ -1775,6 +1845,7 @@ fn run_topo_batches(
                                 r.summaries,
                                 r.ssa_summaries,
                                 r.ssa_bodies,
+                                trace,
                             )
                         }
                         Err(e) => {
@@ -1786,16 +1857,28 @@ fn run_topo_batches(
                                     None,
                                 );
                             }
-                            (path.to_path_buf(), false, vec![], vec![], vec![], vec![])
+                            (
+                                path.to_path_buf(),
+                                false,
+                                vec![],
+                                vec![],
+                                vec![],
+                                vec![],
+                                Default::default(),
+                            )
                         }
                     }
                 });
 
                 let mut ssa_count: usize = 0;
                 let mg = cfg.module_graph.as_deref();
-                for (path, analysis_ok, diags, summaries, ssa_summaries, _ssa_bodies) in
+                for (path, analysis_ok, diags, summaries, ssa_summaries, _ssa_bodies, trace) in
                     batch_results
                 {
+                    if unit.is_some() {
+                        batch_complete &= analysis_ok;
+                        batch_trace.merge(trace);
+                    }
                     // Phase-B: replace (not append) this file's diags
                     // so the cache always reflects the latest
                     // iteration's output.  Clean files skipped this
@@ -1813,13 +1896,22 @@ fn run_topo_batches(
 
                     for s in summaries {
                         let key = s.func_key_with_resolver(root_str_ref, mg);
+                        if unit.is_some() {
+                            batch_ops.push(GsOp::Func(key.clone(), s.clone()));
+                        }
                         global_summaries.insert_tracked(key, s, &mut change_log);
                     }
 
                     for (key, ssa_sum) in ssa_summaries {
+                        if unit.is_some() {
+                            batch_ops.push(GsOp::Ssa(key.clone(), ssa_sum.clone()));
+                        }
                         global_summaries.insert_ssa_tracked(key, ssa_sum, &mut change_log);
                         ssa_count += 1;
                     }
+                }
+                if unit.is_some() {
+                    batch_written.extend(change_log.written_keys().cloned());
                 }
 
                 // Phase-B: collect the exact set of FuncKeys whose
@@ -1843,7 +1935,7 @@ fn run_topo_batches(
                             iteration = iter,
                             key = %k,
                             before = ?change_log.ssa_before(k),
-                            after = ?global_summaries.snapshot_ssa().get(k),
+                            after = ?global_summaries.get_ssa(k),
                             "SCC SSA summary changed"
                         );
                     }
@@ -2073,6 +2165,34 @@ fn run_topo_batches(
                 p.inc_analyzed(batch.files.len() as u64);
                 p.inc_batches_completed(1);
             }
+            if let Some((c, key, shape)) = &unit {
+                let outputs = UnitOutputs {
+                    diags: iteration_diags,
+                    ops: batch_ops,
+                };
+                let view = UnitOutputsView::all(&outputs);
+                let matches = verify_against
+                    .as_ref()
+                    .is_some_and(|cached| c.check(key, cached, &view));
+                // A file that failed to read or analyse keeps the batch out of
+                // the cache, so the next scan retries it.
+                if batch_complete
+                    && !matches
+                    && let Some(bytes) = incremental::encode_outputs(&view)
+                {
+                    batch_trace.retain_external(&batch_written);
+                    c.store(
+                        key,
+                        UnitKind::Batch,
+                        &batch.files,
+                        *shape,
+                        iters_used,
+                        batch_trace,
+                        &bytes,
+                    );
+                }
+                iteration_diags = outputs.diags;
+            }
             result.extend(iteration_diags);
         } else if refine_nonrecursive {
             // Non-recursive batch with cross-batch refinement.
@@ -2090,26 +2210,24 @@ fn run_topo_batches(
             // Opt out via `NYX_TOPO_REFINE=0` if a precision regression
             // surfaces; the legacy `run_rules_on_file` branch stays
             // available for triage.
-            #[allow(clippy::type_complexity)]
-            let batch_results: Vec<(
-                std::path::PathBuf,
-                Vec<Diag>,
-                Vec<crate::summary::FuncSummary>,
-                Vec<(
-                    crate::symbol::FuncKey,
-                    crate::summary::ssa_summary::SsaFuncSummary,
-                )>,
-                Vec<(
-                    crate::symbol::FuncKey,
-                    crate::taint::ssa_transfer::CalleeSsaBody,
-                )>,
-                Vec<(
-                    crate::symbol::FuncKey,
-                    crate::auth_analysis::model::AuthCheckSummary,
-                )>,
-            )> = par_map_largest_first(&batch.files, |path| {
+            let mg = cfg.module_graph.as_deref();
+            let batch_results: Vec<UnitOutputs> = par_map_largest_first(&batch.files, |path| {
                 if let Some(p) = progress {
                     p.set_current_file(&path.to_string_lossy());
+                }
+                let unit = incr.map(|c| (c, incremental::unit_key(UnitKind::File, &[*path])));
+                let mut verify_against: Option<UnitOutputs> = None;
+                if let Some((c, key)) = &unit
+                    && let Some(hit) = c.lookup(key, UnitKind::File, &[*path], 0, global_summaries)
+                {
+                    if !c.verify() {
+                        pb.inc(1);
+                        if let Some(p) = progress {
+                            p.inc_analyzed(1);
+                        }
+                        return hit.outputs;
+                    }
+                    verify_against = Some(hit.outputs);
                 }
                 let bytes = match std::fs::read(path) {
                     Ok(b) => b,
@@ -2129,25 +2247,31 @@ fn run_topo_batches(
                         if let Some(p) = progress {
                             p.inc_analyzed(1);
                         }
-                        return (path.to_path_buf(), vec![], vec![], vec![], vec![], vec![]);
+                        return UnitOutputs::default();
                     }
                 };
-                match recover_or_propagate(cfg.scanner.enable_panic_recovery, path, logs, || {
-                    analyse_file_fused(&bytes, path, cfg, Some(global_summaries), scan_root)
-                }) {
+                let (res, trace) = incremental::traced(incr, || {
+                    recover_or_propagate(cfg.scanner.enable_panic_recovery, path, logs, || {
+                        analyse_file_fused(&bytes, path, cfg, Some(global_summaries), scan_root)
+                    })
+                });
+                match res {
                     Ok(r) => {
                         pb.inc(1);
                         if let Some(p) = progress {
                             p.inc_analyzed(1);
                         }
-                        (
-                            path.to_path_buf(),
-                            r.diags,
-                            r.summaries,
-                            r.ssa_summaries,
-                            r.ssa_bodies,
-                            r.auth_summaries,
-                        )
+                        let outputs = refined_outputs(r, root_str_ref, mg);
+                        if let Some((c, key)) = &unit {
+                            let view = UnitOutputsView::without_noops(&outputs, global_summaries);
+                            let matches = verify_against
+                                .as_ref()
+                                .is_some_and(|cached| c.check(key, cached, &view));
+                            if !matches && let Some(bytes) = incremental::encode_outputs(&view) {
+                                c.store(key, UnitKind::File, &[*path], 0, 0, trace, &bytes);
+                            }
+                        }
+                        outputs
                     }
                     Err(e) => {
                         tracing::warn!("pass 2 (non-recursive): {}: {e}", path.display());
@@ -2162,7 +2286,7 @@ fn run_topo_batches(
                         if let Some(p) = progress {
                             p.inc_analyzed(1);
                         }
-                        (path.to_path_buf(), vec![], vec![], vec![], vec![], vec![])
+                        UnitOutputs::default()
                     }
                 }
             });
@@ -2174,27 +2298,16 @@ fn run_topo_batches(
             let mut refined_ssa: usize = 0;
             let mut refined_bodies: usize = 0;
             let mut refined_auth: usize = 0;
-            let mg = cfg.module_graph.as_deref();
-            for (_path, diags, summaries, ssa_summaries, ssa_bodies, auth_summaries) in
-                batch_results
-            {
-                batch_diags.extend(diags);
-                for s in summaries {
-                    let key = s.func_key_with_resolver(root_str_ref, mg);
-                    global_summaries.insert(key, s);
-                    refined_summaries += 1;
-                }
-                for (key, ssa_sum) in ssa_summaries {
-                    global_summaries.insert_ssa(key, ssa_sum);
-                    refined_ssa += 1;
-                }
-                for (key, body) in ssa_bodies {
-                    global_summaries.insert_body(key, body);
-                    refined_bodies += 1;
-                }
-                for (key, auth_sum) in auth_summaries {
-                    global_summaries.insert_auth(key, auth_sum);
-                    refined_auth += 1;
+            for outputs in batch_results {
+                batch_diags.extend(outputs.diags);
+                for op in outputs.ops {
+                    match op {
+                        GsOp::Func(..) => refined_summaries += 1,
+                        GsOp::Ssa(..) => refined_ssa += 1,
+                        GsOp::Body(..) => refined_bodies += 1,
+                        GsOp::Auth(..) => refined_auth += 1,
+                    }
+                    op.apply(global_summaries);
                 }
             }
             let total_refinements = refined_summaries + refined_ssa + refined_bodies + refined_auth;
@@ -2269,23 +2382,56 @@ fn run_topo_batches(
             if let Some(p) = progress {
                 p.set_current_file(&path.to_string_lossy());
             }
-            let d =
-                match recover_or_propagate(cfg.scanner.enable_panic_recovery, path, logs, || {
-                    run_rules_on_file(path, cfg, Some(global_summaries), scan_root)
-                }) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        tracing::warn!("pass 2: {}: {e}", path.display());
-                        if let Some(l) = logs {
-                            l.warn(
-                                format!("Pass 2 analysis failed: {e}"),
-                                Some(path.display().to_string()),
-                                None,
-                            );
-                        }
-                        vec![]
+            let unit = incr.map(|c| (c, incremental::unit_key(UnitKind::Orphan, &[*path])));
+            let mut verify_against: Option<UnitOutputs> = None;
+            if let Some((c, key)) = &unit
+                && let Some(hit) = c.lookup(key, UnitKind::Orphan, &[*path], 0, global_summaries)
+            {
+                if !c.verify() {
+                    pb.inc(1);
+                    if let Some(p) = progress {
+                        p.inc_analyzed(1);
                     }
-                };
+                    return hit.outputs.diags;
+                }
+                verify_against = Some(hit.outputs);
+            }
+            let (res, trace) = incremental::traced(incr, || {
+                recover_or_propagate(cfg.scanner.enable_panic_recovery, path, logs, || {
+                    run_rules_on_file(path, cfg, Some(global_summaries), scan_root)
+                })
+            });
+            let d = match res {
+                Ok(d) => {
+                    if let Some((c, key)) = &unit {
+                        let outputs = UnitOutputs {
+                            diags: d,
+                            ops: Vec::new(),
+                        };
+                        let view = UnitOutputsView::all(&outputs);
+                        let matches = verify_against
+                            .as_ref()
+                            .is_some_and(|cached| c.check(key, cached, &view));
+                        if !matches && let Some(bytes) = incremental::encode_outputs(&view) {
+                            c.store(key, UnitKind::Orphan, &[*path], 0, 0, trace, &bytes);
+                        }
+                        outputs.diags
+                    } else {
+                        d
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("pass 2: {}: {e}", path.display());
+                    if let Some(l) = logs {
+                        l.warn(
+                            format!("Pass 2 analysis failed: {e}"),
+                            Some(path.display().to_string()),
+                            None,
+                        );
+                    }
+                    vec![]
+                }
+            };
             pb.inc(1);
             if let Some(p) = progress {
                 p.inc_analyzed(1);
@@ -2766,6 +2912,7 @@ pub(crate) fn scan_filesystem_with_observer(
             &pb,
             progress,
             logs,
+            None,
         );
 
         pb.finish_and_clear();
@@ -3677,6 +3824,15 @@ pub fn scan_with_index_parallel_observer(
         show_progress,
     );
 
+    let safe_hashes = pass1_safe_hashes
+        .lock()
+        .map(|m| m.clone())
+        .unwrap_or_default();
+    let pass2_cache = {
+        let idx = Indexer::from_pool(project, &pool)?;
+        let key = incremental::cache_key(cfg, scan_root, topo_refine_enabled());
+        Pass2Cache::load(&idx, &key, safe_hashes.clone())?
+    };
     let topo_diags = run_topo_batches(
         &batches,
         &orphans,
@@ -3687,8 +3843,35 @@ pub fn scan_with_index_parallel_observer(
         &pb2,
         progress,
         logs,
+        Some(&pass2_cache),
     );
     pb2.finish_and_clear();
+    let rewritten = pass2_cache.analysed_paths();
+    let pass2_stats = {
+        let mut idx = Indexer::from_pool(project, &pool)?;
+        pass2_cache.finish(&mut idx)?
+    };
+    tracing::info!(
+        reused = pass2_stats.units_reused,
+        analysed = pass2_stats.units_analysed,
+        verify_mismatches = pass2_stats.verify_mismatches,
+        "incremental pass 2"
+    );
+    if let Some(l) = logs {
+        l.info(
+            format!(
+                "Pass 2 reused {} cached units and analysed {}",
+                pass2_stats.units_reused, pass2_stats.units_analysed
+            ),
+            None,
+        );
+    }
+    if pass2_stats.verify_mismatches > 0 {
+        tracing::warn!(
+            mismatches = pass2_stats.verify_mismatches,
+            "incremental pass 2 verification found reused units that differ from a fresh analysis"
+        );
+    }
     if let Some(p) = progress {
         p.record_pass2_ms(pass2_start.elapsed().as_millis() as u64);
         p.set_stage(ScanStage::PostProcessing);
@@ -3704,20 +3887,21 @@ pub fn scan_with_index_parallel_observer(
         );
     }
 
-    // Persist issues to DB after topo analysis, grouped by file.
+    // Persist issues to DB after topo analysis, grouped by file.  A file
+    // whose pass-2 unit was reused has the same findings as last time, so
+    // only files pass 2 analysed again are rewritten.
     {
         let mut by_file: HashMap<&str, Vec<&Diag>> = HashMap::new();
         for d in &topo_diags {
             by_file.entry(&d.path).or_default().push(d);
         }
-        let safe_hashes = pass1_safe_hashes
-            .lock()
-            .map(|m| m.clone())
-            .unwrap_or_default();
         let mut idx = Indexer::from_pool(project, &pool)?;
         for path in &files {
             if !path.exists() {
                 idx.remove_file_and_related(path)?;
+                continue;
+            }
+            if !rewritten.contains(path) {
                 continue;
             }
 
@@ -3766,15 +3950,26 @@ pub fn scan_with_index_parallel_observer(
     // view.  Errors here are logged but not propagated — the surface
     // map is an additive Phase F deliverable, not a scan gate.
     {
-        let surface_map =
-            crate::surface::build::build_surface_map(&crate::surface::build::SurfaceBuildInputs {
+        let mut idx = Indexer::from_pool(project, &pool)?;
+        let stored_probes = idx.load_surface_probes().unwrap_or_else(|e| {
+            tracing::warn!("failed to load surface probes: {e}");
+            HashMap::new()
+        });
+        let probe_cache =
+            crate::surface::build::SurfaceProbeCache::new(stored_probes, &safe_hashes);
+        let surface_map = crate::surface::build::build_surface_map_cached(
+            &crate::surface::build::SurfaceBuildInputs {
                 files: &files,
                 scan_root: Some(scan_root),
                 global_summaries: &global_summaries,
                 call_graph: &call_graph,
                 config: cfg,
-            });
-        let mut idx = Indexer::from_pool(project, &pool)?;
+            },
+            &probe_cache,
+        );
+        if let Err(e) = idx.write_surface_probes(&probe_cache.into_fresh()) {
+            tracing::warn!("failed to persist surface probes: {e}");
+        }
         if let Err(e) = idx.replace_surface_map(&surface_map) {
             tracing::warn!("failed to persist surface_map: {e}");
         } else if let Some(l) = logs {

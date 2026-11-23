@@ -378,8 +378,8 @@ fn passthrough_callee_gets_identity_transfer() {
     let cfg = test_config();
     let gs = pass1(root, std::slice::from_ref(&a_py), &cfg);
 
-    let (_, summary) = gs
-        .snapshot_ssa()
+    let ssa = gs.snapshot_ssa();
+    let (_, summary) = ssa
         .iter()
         .find(|(k, _)| k.lang == Lang::Python && k.name == "passthrough")
         .expect("SSA summary for passthrough");

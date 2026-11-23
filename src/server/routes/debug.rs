@@ -138,9 +138,7 @@ async fn get_taint(
     // Try to load global summaries from DB for cross-file context
     let global = load_global_summaries(&state);
     let cross_file_context = global.as_ref().is_some_and(|g| !g.is_empty());
-    let ssa_summaries_available = global
-        .as_ref()
-        .is_some_and(|g| !g.snapshot_ssa().is_empty());
+    let ssa_summaries_available = global.as_ref().is_some_and(|g| g.ssa_len() > 0);
 
     let (events, _entry_states, exit_states) = debug::analyse_function_taint(
         &ssa,
@@ -472,7 +470,7 @@ mod tests {
             load_global_summaries_from_pool(&scan_root, &pool).expect("should load summaries");
 
         let cross_file_context = !global.is_empty();
-        let ssa_summaries_available = !global.snapshot_ssa().is_empty();
+        let ssa_summaries_available = global.ssa_len() > 0;
 
         assert!(
             cross_file_context,
@@ -497,9 +495,7 @@ mod tests {
         let global = load_global_summaries_from_pool(&scan_root, &pool);
 
         let cross_file_context = global.as_ref().is_some_and(|g| !g.is_empty());
-        let ssa_summaries_available = global
-            .as_ref()
-            .is_some_and(|g| !g.snapshot_ssa().is_empty());
+        let ssa_summaries_available = global.as_ref().is_some_and(|g| g.ssa_len() > 0);
 
         assert!(
             !cross_file_context,

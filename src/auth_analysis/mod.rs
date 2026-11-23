@@ -593,7 +593,7 @@ fn apply_helper_lifting(
         let summaries = build_helper_summaries(model);
         let have_same_file = !summaries.is_empty();
         let have_cross_file =
-            global_summaries.is_some_and(|gs| gs.auth_by_key().is_some()) && caller_lang.is_some();
+            global_summaries.is_some_and(|gs| gs.has_auth_summaries()) && caller_lang.is_some();
         if !have_same_file && !have_cross_file {
             return;
         }

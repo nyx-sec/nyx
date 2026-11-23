@@ -1574,7 +1574,7 @@ pub fn analyse_function_taint(
         },
         static_map: None,
         auto_seed_handler_params: matches!(lang, Lang::JavaScript | Lang::TypeScript),
-        cross_file_bodies: global_summaries.and_then(|gs| gs.bodies_by_key()),
+        cross_file_bodies: global_summaries,
         pointer_facts: None,
         cross_package_imports: None,
         entry_kind: None,
@@ -1926,7 +1926,7 @@ function consume() {
         );
 
         let cross_file = !global.is_empty();
-        let ssa_avail = !global.snapshot_ssa().is_empty();
+        let ssa_avail = global.ssa_len() > 0;
 
         let (events, _entry_states, exit_states) = analyse_function_taint(
             &ssa,

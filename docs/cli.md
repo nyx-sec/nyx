@@ -46,6 +46,8 @@ nyx scan [PATH] [OPTIONS]
 | `off` | Skip indexing, scan filesystem directly |
 | `rebuild` | Force rebuild index before scanning |
 
+With the index, a rescan only re-analyses what changed. Pass 1 skips files whose bytes are unchanged, and pass 2 reuses a file's result when its bytes and every cross-file summary it looked up are unchanged. An edit that leaves a function's summary as it was re-analyses only the edited file. Set `NYX_INCREMENTAL_VERIFY=1` to re-analyse reused files anyway and log any difference from the cached result; it costs a full pass 2 and is meant for debugging.
+
 **Deprecated aliases**: `--no-index` (use `--index off`), `--rebuild-index` (use `--index rebuild`).
 
 ### Output

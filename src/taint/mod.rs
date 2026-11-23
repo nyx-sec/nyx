@@ -667,10 +667,13 @@ fn analyse_file_with_lowered_inner(
     // Cross-file bodies come from GlobalSummaries. Threaded through the
     // transfer for context-sensitive resolution; plumbing only when no
     // reader is configured, preserving prior behaviour byte-for-byte.
-    let cross_file_bodies_ref = global_summaries.and_then(|gs| gs.bodies_by_key());
-    if let Some(map) = cross_file_bodies_ref {
+    let cross_file_bodies_ref = global_summaries;
+    if let Some(gs) = cross_file_bodies_ref
+        && tracing::enabled!(tracing::Level::DEBUG)
+    {
+        let _quiet = crate::summary::deps::Suppress::new();
         tracing::debug!(
-            cross_file_bodies = map.len(),
+            cross_file_bodies = gs.bodies_len(),
             file = %caller_namespace,
             "taint: cross-file bodies available for pass 2"
         );
@@ -1121,7 +1124,7 @@ fn analyse_body_with_seed(
     inline_cache: Option<&std::cell::RefCell<ssa_transfer::InlineCache>>,
     seed: Option<&HashMap<ssa_transfer::BindingKey, crate::taint::domain::VarTaint>>,
     import_bindings: Option<&crate::cfg::ImportBindings>,
-    cross_file_bodies: Option<&std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>>,
+    cross_file_bodies: Option<&GlobalSummaries>,
     parent_var_types: Option<&HashMap<String, crate::ssa::type_facts::TypeKind>>,
     cross_package_imports: Option<&std::collections::HashMap<String, FuncKey>>,
     has_known_caller: bool,
@@ -1584,7 +1587,7 @@ fn analyse_multi_body(
     inline_cache: Option<&std::cell::RefCell<ssa_transfer::InlineCache>>,
     max_iterations: usize,
     import_bindings: Option<&crate::cfg::ImportBindings>,
-    cross_file_bodies: Option<&std::collections::HashMap<FuncKey, ssa_transfer::CalleeSsaBody>>,
+    cross_file_bodies: Option<&GlobalSummaries>,
     cross_package_imports: Option<&std::collections::HashMap<String, FuncKey>>,
 ) -> Vec<Finding> {
     // Every body of the file is analysed against the same summary map.
