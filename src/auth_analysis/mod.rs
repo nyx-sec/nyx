@@ -1059,9 +1059,10 @@ fn synthesise_cross_file_checks_for_unit(
         }
 
         let arity_hint = Some(call.args.len());
-        let key = match gs.resolve_callee_key(last, caller_lang, caller_namespace, arity_hint) {
-            crate::summary::CalleeResolution::Resolved(key) => key,
-            _ => continue,
+        let Some(key) =
+            gs.resolve_callee_key_unique(last, caller_lang, caller_namespace, arity_hint)
+        else {
+            continue;
         };
         // Auth summaries are persisted with a canonical key:
         // `disambig=None`, `container=""`, `kind=Function`.  Normalise

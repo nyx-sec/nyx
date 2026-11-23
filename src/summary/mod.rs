@@ -735,6 +735,9 @@ impl SummaryChangeLog {
 struct Stored<T> {
     v: T,
     fp: std::sync::OnceLock<Fp>,
+    /// Fingerprint with positions rebased (see [`deps::fp_value_rebased`]),
+    /// computed on first use.  Only bodies are read this way.
+    shape: std::sync::OnceLock<Fp>,
 }
 
 impl<T> Stored<T> {
@@ -742,6 +745,7 @@ impl<T> Stored<T> {
         Stored {
             v,
             fp: std::sync::OnceLock::new(),
+            shape: std::sync::OnceLock::new(),
         }
     }
 
@@ -752,6 +756,7 @@ impl<T> Stored<T> {
     /// Mutable access; drops the cached fingerprint.
     fn get_mut(&mut self) -> &mut T {
         self.fp = std::sync::OnceLock::new();
+        self.shape = std::sync::OnceLock::new();
         &mut self.v
     }
 }
@@ -759,6 +764,12 @@ impl<T> Stored<T> {
 impl<T: Serialize> Stored<T> {
     fn fp(&self) -> Fp {
         *self.fp.get_or_init(|| deps::fp_value(&self.v))
+    }
+
+    fn shape_fp(&self) -> Fp {
+        *self
+            .shape
+            .get_or_init(|| deps::fp_value_rebased(&self.v, deps::POSITION_FIELDS))
     }
 }
 
@@ -786,10 +797,47 @@ impl LangIndex {
     }
 
     fn insert_unique(&mut self, lang: Lang, name: String, key: &FuncKey) {
-        let keys = self.0.entry(lang).or_default().entry(name).or_default();
-        if !keys.contains(key) {
-            keys.push(key.clone());
-        }
+        insert_canonical(
+            self.0.entry(lang).or_default().entry(name).or_default(),
+            key,
+        );
+    }
+}
+
+/// Total order on key identity used inside every name-index bucket.
+fn canonical_key_order(a: &FuncKey, b: &FuncKey) -> std::cmp::Ordering {
+    type Rank<'k> = (
+        &'k str,
+        &'k str,
+        &'k str,
+        Option<usize>,
+        Option<u32>,
+        u8,
+        u8,
+    );
+    fn rank(k: &FuncKey) -> Rank<'_> {
+        (
+            k.namespace.as_str(),
+            k.container.as_str(),
+            k.name.as_str(),
+            k.arity,
+            k.disambig,
+            k.kind as u8,
+            k.lang as u8,
+        )
+    }
+    rank(a).cmp(&rank(b))
+}
+
+/// Add `key` to a name-index bucket unless present, keeping the bucket
+/// sorted by [`canonical_key_order`].  The order of a bucket is then a
+/// function of its contents alone: a full scan and an indexed rescan that
+/// inserted the same keys in a different order see the same list, and a
+/// recorded read of the bucket stays valid when an unchanged file's keys are
+/// re-inserted.
+fn insert_canonical(keys: &mut Vec<FuncKey>, key: &FuncKey) {
+    if let Err(pos) = keys.binary_search_by(|k| canonical_key_order(k, key)) {
+        keys.insert(pos, key.clone());
     }
 }
 
@@ -1124,9 +1172,7 @@ impl GlobalSummaries {
                 .by_rust_module
                 .entry((mp, key.name.clone()))
                 .or_default();
-            if !mk.contains(&key) {
-                mk.push(key);
-            }
+            insert_canonical(mk, &key);
         }
     }
 
@@ -1407,10 +1453,7 @@ impl GlobalSummaries {
     /// the key in the candidate vector.
     fn index_ssa_key(&mut self, key: &FuncKey) {
         let triple = (key.lang, key.namespace.clone(), key.name.clone());
-        let bucket = self.ssa_by_lang_ns_name.entry(triple).or_default();
-        if !bucket.contains(key) {
-            bucket.push(key.clone());
-        }
+        insert_canonical(self.ssa_by_lang_ns_name.entry(triple).or_default(), key);
     }
 
     /// Look up SSA summary `FuncKey`s by `(lang, namespace, name)`.
@@ -1796,6 +1839,30 @@ impl GlobalSummaries {
         e.map(|e| &e.v)
     }
 
+    /// [`Self::get_body`] for a reader whose results do not depend on where
+    /// the body sits in its file.  The read records the body with positions
+    /// rebased, so moving the function (an edit above it) keeps the read
+    /// valid.  A reader that does carry one of the body's absolute positions
+    /// into its results must also call [`Self::note_body_positions`].
+    pub fn get_body_shape(
+        &self,
+        key: &FuncKey,
+    ) -> Option<&crate::taint::ssa_transfer::CalleeSsaBody> {
+        let e = self.bodies_by_key.get(key);
+        deps::note_keyed(KeyedRead::BodyShape, key, || {
+            e.map_or(deps::ABSENT, Stored::shape_fp)
+        });
+        e.map(|e| &e.v)
+    }
+
+    /// Record that the current analysis used the absolute positions of
+    /// `key`'s body, read earlier through [`Self::get_body_shape`].
+    pub fn note_body_positions(&self, key: &FuncKey) {
+        deps::note_keyed(KeyedRead::Body, key, || {
+            stored_fp(self.bodies_by_key.get(key))
+        });
+    }
+
     /// Count of cross-file bodies currently loaded.  Exposed for
     /// `tracing::debug!` observability, lets callers distinguish "no
     /// bodies available" from "bodies available but inline didn't fire".
@@ -1872,10 +1939,8 @@ impl GlobalSummaries {
         arity_hint: Option<usize>,
         caller_namespace: &str,
     ) -> Option<&crate::taint::ssa_transfer::CalleeSsaBody> {
-        match self.resolve_callee_key(name, lang, caller_namespace, arity_hint) {
-            CalleeResolution::Resolved(key) => self.get_body(&key),
-            CalleeResolution::NotFound | CalleeResolution::Ambiguous(_) => None,
-        }
+        let key = self.resolve_callee_key_unique(name, lang, caller_namespace, arity_hint)?;
+        self.get_body(&key)
     }
 
     #[allow(dead_code)] // used by tests and future call-graph consumers
@@ -2027,6 +2092,28 @@ impl GlobalSummaries {
         )
     }
 
+    /// [`Self::resolve_callee_key`] for a caller that only uses a unique
+    /// match.  Same decision, but an ambiguous call yields `None` without
+    /// building (or depending on) its candidate list.
+    pub fn resolve_callee_key_unique(
+        &self,
+        callee: &str,
+        caller_lang: Lang,
+        caller_namespace: &str,
+        arity_hint: Option<usize>,
+    ) -> Option<FuncKey> {
+        self.resolve_callee_unique(&CalleeQuery {
+            name: callee,
+            caller_lang,
+            caller_namespace,
+            caller_container: None,
+            receiver_type: None,
+            namespace_qualifier: None,
+            receiver_var: None,
+            arity: arity_hint,
+        })
+    }
+
     /// Resolve a bare (already-normalized) callee name to a [`FuncKey`].
     ///
     /// Thin wrapper around [`Self::resolve_callee`] that constructs a minimal
@@ -2142,10 +2229,59 @@ impl GlobalSummaries {
         }
     }
 
+    /// [`Self::resolve_callee_steps`], recorded by its outcome.
+    ///
+    /// The steps read name-index buckets that grow with every same-named
+    /// function in the project.  The caller only learns the outcome, so the
+    /// outcome is the dependency: adding `func Close()` in one package leaves
+    /// a `x.Close()` elsewhere that still resolves the same way valid.
+    fn resolve_callee_core(
+        &self,
+        q: &CalleeQuery<'_>,
+        want_candidates: bool,
+    ) -> BorrowedResolution<'_> {
+        if !deps::recording() {
+            return self.resolve_callee_steps(q, want_candidates);
+        }
+        let out = {
+            let _quiet = deps::Suppress::new();
+            self.resolve_callee_steps(q, want_candidates)
+        };
+        let mode = if want_candidates {
+            deps::ResolveMode::Candidates
+        } else {
+            deps::ResolveMode::Unique
+        };
+        deps::note_named(
+            || NamedRead::Resolve(resolve_read(q, mode)),
+            || resolution_fp(&out),
+        );
+        out
+    }
+
+    /// Replay a recorded resolution against the current state.
+    fn replayed_resolution_fp(&self, r: &deps::ResolveRead) -> Fp {
+        let q = CalleeQuery {
+            name: &r.name,
+            caller_lang: r.lang,
+            caller_namespace: &r.namespace,
+            caller_container: r.container.as_deref(),
+            receiver_type: r.receiver_type.as_deref(),
+            namespace_qualifier: r.namespace_qualifier.as_deref(),
+            receiver_var: r.receiver_var.as_deref(),
+            arity: r.arity,
+        };
+        match r.mode {
+            deps::ResolveMode::Unique => resolution_fp(&self.resolve_callee_steps(&q, false)),
+            deps::ResolveMode::Candidates => resolution_fp(&self.resolve_callee_steps(&q, true)),
+            deps::ResolveMode::Widened => deps::fp_keys(&self.resolve_callee_widened_steps(&q)),
+        }
+    }
+
     /// The resolution steps behind [`Self::resolve_callee`], with keys
     /// borrowed from the index. Candidate sets are counted in place, and the
     /// ambiguous list is only gathered when `want_candidates` is set.
-    fn resolve_callee_core(
+    fn resolve_callee_steps(
         &self,
         q: &CalleeQuery<'_>,
         want_candidates: bool,
@@ -2497,6 +2633,22 @@ impl GlobalSummaries {
     /// "subset of today's targets, never a superset" rule under
     /// hierarchy-aware resolution failure.
     pub fn resolve_callee_widened(&self, q: &CalleeQuery<'_>) -> Vec<FuncKey> {
+        if !deps::recording() {
+            return self.resolve_callee_widened_steps(q);
+        }
+        let out = {
+            let _quiet = deps::Suppress::new();
+            self.resolve_callee_widened_steps(q)
+        };
+        deps::note_named(
+            || NamedRead::Resolve(resolve_read(q, deps::ResolveMode::Widened)),
+            || deps::fp_keys(&out),
+        );
+        out
+    }
+
+    /// The steps behind [`Self::resolve_callee_widened`].
+    fn resolve_callee_widened_steps(&self, q: &CalleeQuery<'_>) -> Vec<FuncKey> {
         let arity_matches = |k: &FuncKey| match q.arity {
             Some(a) => k.arity == Some(a),
             None => true,
@@ -2534,10 +2686,10 @@ impl GlobalSummaries {
         };
         let qualified_lookup = |container: &str| -> Vec<FuncKey> {
             let qual = format!("{container}::{}", q.name);
-            self.lookup_qualified(q.caller_lang, &qual)
-                .into_iter()
-                .map(|(k, _)| k.clone())
-                .filter(|k| arity_matches(k))
+            self.keys_qualified(q.caller_lang, &qual)
+                .iter()
+                .filter(|k| self.by_key.contains_key(*k) && arity_matches(k))
+                .cloned()
                 .collect()
         };
         for k in qualified_lookup(rt) {
@@ -2618,6 +2770,10 @@ impl deps::DepOracle for GlobalSummaries {
             KeyedRead::Func => stored_fp(self.by_key.get(key)),
             KeyedRead::Ssa => stored_fp(self.ssa_by_key.get(key)),
             KeyedRead::Body => stored_fp(self.bodies_by_key.get(key)),
+            KeyedRead::BodyShape => self
+                .bodies_by_key
+                .get(key)
+                .map_or(deps::ABSENT, Stored::shape_fp),
             KeyedRead::Auth => stored_fp(self.auth_by_key.get(key)),
             KeyedRead::Called => deps::fp_bool(self.called_keys.contains(key)),
             KeyedRead::Interop => self.interop_fp(key),
@@ -2667,6 +2823,7 @@ impl deps::DepOracle for GlobalSummaries {
                 deps::fp_bool(self.named_fp(&NamedRead::MapLen(*id)) != deps::fp_usize(0))
             }
             NamedRead::SsaByName(name) => ssa_named_fp(&self.ssa_named_uncached(name)),
+            NamedRead::Resolve(r) => self.replayed_resolution_fp(r),
             NamedRead::MapLen(id) => deps::fp_usize(match id {
                 MapId::Funcs => self.by_key.len(),
                 MapId::Ssa => self.ssa_by_key.len(),
@@ -2688,6 +2845,33 @@ enum BorrowedResolution<'a> {
     Resolved(&'a FuncKey),
     NotFound,
     Ambiguous(Vec<&'a FuncKey>),
+}
+
+/// The owned form of a resolution query, for [`NamedRead::Resolve`].
+fn resolve_read(q: &CalleeQuery<'_>, mode: deps::ResolveMode) -> deps::ResolveRead {
+    deps::ResolveRead {
+        lang: q.caller_lang,
+        name: q.name.to_string(),
+        namespace: q.caller_namespace.to_string(),
+        container: q.caller_container.map(str::to_string),
+        receiver_type: q.receiver_type.map(str::to_string),
+        namespace_qualifier: q.namespace_qualifier.map(str::to_string),
+        receiver_var: q.receiver_var.map(str::to_string),
+        arity: q.arity,
+        mode,
+    }
+}
+
+/// Fingerprint of what a resolution tells its caller.  An ambiguous
+/// outcome carries its candidate list only when it was gathered.
+fn resolution_fp(r: &BorrowedResolution<'_>) -> Fp {
+    match r {
+        BorrowedResolution::Resolved(k) => deps::fp_value(&("resolved", deps::fp_keys([*k]))),
+        BorrowedResolution::NotFound => deps::fp_value(&"not-found"),
+        BorrowedResolution::Ambiguous(keys) => {
+            deps::fp_value(&("ambiguous", deps::fp_keys(keys.iter().copied())))
+        }
+    }
 }
 
 /// The keys of `keys` that pass `keep`, or nothing when the caller did not ask

@@ -264,3 +264,89 @@ fn settings_change_drops_the_cache() {
         "units from other settings must not be reused"
     );
 }
+
+#[test]
+fn line_inserted_above_a_callee_reanalyses_only_its_file() {
+    let _g = lock();
+    let p = Project::empty();
+    // A method call on an instance of another file's class is analysed by
+    // inlining the callee's body, which records the body as a dependency.
+    p.write(
+        "util.py",
+        "class Ctx:\n    def clean(self, s):\n        return s.strip()\n",
+    );
+    p.write(
+        "app.py",
+        "import os\nimport subprocess\nfrom util import Ctx\n\ndef run():\n    c = Ctx()\n    subprocess.call(c.clean(os.environ[\"X\"]), shell=True)\n",
+    );
+    p.step("cold");
+    assert!(!p.full().is_empty(), "the flow through clean must report");
+    let body = std::fs::read_to_string(p.root.join("util.py")).unwrap();
+    p.write("util.py", &format!("# moved down by a line\n{body}"));
+    let stats = p.step("after a line above clean");
+    assert_eq!(
+        stats.units_analysed, 1,
+        "moving clean without changing it must not re-run its caller: {stats:?}"
+    );
+}
+
+#[test]
+fn line_inserted_above_a_callee_with_its_own_source_keeps_parity() {
+    let _g = lock();
+    let p = Project::empty();
+    p.write(
+        "src.py",
+        "import os\n\ndef read_input():\n    return os.environ[\"INPUT\"]\n",
+    );
+    p.write(
+        "app.py",
+        "import subprocess\nfrom src import read_input\n\ndef run():\n    subprocess.call(read_input(), shell=True)\n",
+    );
+    p.step("cold");
+    let body = std::fs::read_to_string(p.root.join("src.py")).unwrap();
+    p.write("src.py", &format!("# moved down by a line\n{body}"));
+    p.step("after a line above read_input");
+}
+
+#[test]
+fn same_named_function_that_does_not_change_a_resolution_keeps_its_callers() {
+    let _g = lock();
+    let p = Project::empty();
+    p.write(
+        "app.py",
+        "import os\nfrom util import run_it\n\ndef handler():\n    data = os.environ[\"INPUT\"]\n    run_it(data)\n",
+    );
+    p.write(
+        "util.py",
+        "import subprocess\n\ndef run_it(cmd):\n    subprocess.call(cmd, shell=True)\n",
+    );
+    p.step("cold");
+    // Two parameters: `run_it(data)` still resolves to util.run_it.
+    p.write("other.py", "def run_it(a, b):\n    return a\n");
+    let stats = p.step("after a two-parameter run_it");
+    assert_eq!(
+        stats.units_analysed, 1,
+        "only the new file is analysed: {stats:?}"
+    );
+}
+
+#[test]
+fn resaving_one_of_two_same_named_definitions_reanalyses_only_it() {
+    let _g = lock();
+    let p = Project::empty();
+    p.write("a.py", "def helper(x):\n    return x\n");
+    p.write("b.py", "def helper(x):\n    return x + \"!\"\n");
+    p.write(
+        "app.py",
+        "import os\nimport subprocess\nfrom a import helper\n\ndef run():\n    subprocess.call(helper(os.environ[\"X\"]), shell=True)\n",
+    );
+    p.step("cold");
+    for round in 0..3 {
+        p.append("b.py", "\n# note\n");
+        let stats = p.step(&format!("after re-saving b.py, round {round}"));
+        assert_eq!(
+            stats.units_analysed, 1,
+            "re-saving b.py must not re-run app.py, which resolves helper the same way: {stats:?}"
+        );
+    }
+}

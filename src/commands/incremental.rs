@@ -37,7 +37,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Bump when the payload layout or the meaning of a cached unit changes.
-const PAYLOAD_VERSION: u32 = 1;
+const PAYLOAD_VERSION: u32 = 2;
 
 /// `nyx_metadata` key holding [`cache_key`] of the stored units.
 const CACHE_KEY_META: &str = "pass2_cache_key";
@@ -46,6 +46,7 @@ const CACHE_KEY_META: &str = "pass2_cache_key";
 const NEUTRAL_ENV: &[&str] = &[
     "NYX_INCREMENTAL_VERIFY",
     "NYX_INCREMENTAL_DUMP",
+    "NYX_INCREMENTAL_EXPLAIN",
     "NYX_CONVERGENCE_TELEMETRY",
     "NYX_PROBE_CLOSURE",
 ];
@@ -412,12 +413,30 @@ impl Pass2Cache {
         shape: u64,
         gs: &GlobalSummaries,
     ) -> Option<Reused> {
-        let unit = self.units.get(key)?;
+        let explain = std::env::var_os("NYX_INCREMENTAL_EXPLAIN").is_some();
+        let Some(unit) = self.units.get(key) else {
+            if explain {
+                tracing::info!(unit = key, "pass-2 miss: no stored unit");
+            }
+            return None;
+        };
         let h = &unit.header;
         if h.kind != kind || h.shape != shape || Some(&h.members) != self.members(files).as_ref() {
+            if explain {
+                tracing::info!(unit = key, "pass-2 miss: files or batch shape changed");
+            }
             return None;
         }
         if !h.trace.holds(gs) {
+            if explain {
+                let misses = h.trace.misses(gs);
+                tracing::info!(
+                    unit = key,
+                    count = misses.len(),
+                    reads = %misses.join(" | "),
+                    "pass-2 miss: read changed"
+                );
+            }
             return None;
         }
         let outputs = decode_outputs(&unit.outputs)?;

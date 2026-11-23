@@ -44,9 +44,13 @@ pub enum KeyedRead {
     Called,
     /// `get_for_interop` fallback scan for a key without `disambig`.
     Interop,
+    /// `CalleeSsaBody` by key, with positions taken relative to the body
+    /// (see [`fp_value_rebased`]).  Recorded by a reader that does not
+    /// carry the body's absolute positions into its results.
+    BodyShape,
 }
 
-const KEYED_KINDS: usize = 6;
+const KEYED_KINDS: usize = 7;
 
 impl KeyedRead {
     fn slot(self) -> usize {
@@ -97,6 +101,39 @@ pub enum NamedRead {
     SsaByName(String),
     /// Whether a path is a regular file.
     IsFile(String),
+    /// Outcome of one callee resolution (`GlobalSummaries::resolve_callee`
+    /// and its variants).  Recorded instead of the name-index reads the
+    /// resolver makes, so a new function that shares a name with the callee
+    /// only invalidates the analyses whose resolution it changes.
+    Resolve(ResolveRead),
+}
+
+/// The inputs of one callee resolution, owned so the resolution can be
+/// replayed against a later state.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ResolveRead {
+    pub lang: Lang,
+    pub name: String,
+    pub namespace: String,
+    pub container: Option<String>,
+    pub receiver_type: Option<String>,
+    pub namespace_qualifier: Option<String>,
+    pub receiver_var: Option<String>,
+    pub arity: Option<usize>,
+    pub mode: ResolveMode,
+}
+
+/// Which resolver entry point a [`ResolveRead`] replays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ResolveMode {
+    /// The single callee, or nothing (`resolve_callee_unique`).
+    Unique,
+    /// The resolution with the candidates of an ambiguous call
+    /// (`resolve_callee`).
+    Candidates,
+    /// The callee plus the overrides of its receiver type's subtypes
+    /// (`resolve_callee_widened`).
+    Widened,
 }
 
 /// The reads one analysis made, with the fingerprint of each answer.
@@ -130,6 +167,31 @@ impl DepTrace {
                 .named
                 .iter()
                 .all(|(read, fp)| replay_named(oracle, read) == *fp)
+    }
+
+    /// Every read whose answer differs from the recorded one, rendered for
+    /// diagnostics.  Empty when the trace holds.
+    pub fn misses(&self, oracle: &impl DepOracle) -> Vec<String> {
+        if self.opaque {
+            return vec!["opaque".to_string()];
+        }
+        let _quiet = Suppress::new();
+        let keyed = self
+            .keyed
+            .iter()
+            .filter(|(kind, key, fp)| oracle.keyed_fp(*kind, key) != *fp)
+            .map(|(kind, key, _)| {
+                format!(
+                    "{kind:?} {}::{}::{}",
+                    key.namespace, key.container, key.name
+                )
+            });
+        let named = self
+            .named
+            .iter()
+            .filter(|(read, fp)| replay_named(oracle, read) != *fp)
+            .map(|(read, _)| format!("{read:?}"));
+        keyed.chain(named).collect()
     }
 
     pub fn is_opaque(&self) -> bool {
@@ -179,7 +241,11 @@ impl DepTrace {
         self.keyed.retain(|(kind, key, _)| {
             !matches!(
                 kind,
-                KeyedRead::Func | KeyedRead::Ssa | KeyedRead::Body | KeyedRead::Auth
+                KeyedRead::Func
+                    | KeyedRead::Ssa
+                    | KeyedRead::Body
+                    | KeyedRead::BodyShape
+                    | KeyedRead::Auth
             ) || !written.contains(key)
         });
     }
@@ -223,6 +289,7 @@ const KEYED_FROM_SLOT: [KeyedRead; KEYED_KINDS] = [
     KeyedRead::Auth,
     KeyedRead::Called,
     KeyedRead::Interop,
+    KeyedRead::BodyShape,
 ];
 
 thread_local! {
@@ -421,16 +488,103 @@ pub fn fp_usize(n: usize) -> Fp {
     finish(&h)
 }
 
+/// Byte-offset fields of the analysis types: [`crate::ssa::ir::SsaInst`],
+/// [`crate::cfg::AstMeta`] and nested-call nodes carry `span`, and
+/// [`crate::cfg::CallMeta`] carries `callee_span`.
+pub const POSITION_FIELDS: &[&str] = &["span", "callee_span"];
+
+/// Fingerprint of a value with every position (an integer inside one of
+/// `fields`) taken relative to the smallest nonzero position in the value.
+///
+/// Two values that differ only by where they sit in their file, for example
+/// a function body moved down by an edit above it, get the same
+/// fingerprint.  Zero is kept as zero, since synthetic nodes use `(0, 0)`.
+pub fn fp_value_rebased<T: Serialize + ?Sized>(value: &T, fields: &'static [&'static str]) -> Fp {
+    let mut probe = FpWriter::rebasing(fields, None);
+    if value.serialize(&mut probe).is_err() {
+        return !ABSENT;
+    }
+    let base = probe.rb.map_or(0, |r| r.min);
+    let mut w = FpWriter::rebasing(fields, Some(base));
+    match value.serialize(&mut w) {
+        Ok(()) => finish(&w.h),
+        Err(_) => !ABSENT,
+    }
+}
+
+/// Position rebasing state of an [`FpWriter`].
+#[derive(Clone, Copy)]
+struct Rebase {
+    fields: &'static [&'static str],
+    /// `None` on the pass that finds the base, `Some` on the hashing pass.
+    base: Option<u64>,
+    /// Smallest nonzero position seen so far.
+    min: u64,
+    /// Nonzero while serializing inside a position field.
+    depth: u32,
+}
+
 /// Serializer that feeds a BLAKE3 hasher instead of producing bytes.
 struct FpWriter {
     h: blake3::Hasher,
+    rb: Option<Rebase>,
 }
 
 impl FpWriter {
     fn new() -> Self {
         FpWriter {
             h: blake3::Hasher::new(),
+            rb: None,
         }
+    }
+
+    fn rebasing(fields: &'static [&'static str], base: Option<u64>) -> Self {
+        FpWriter {
+            h: blake3::Hasher::new(),
+            rb: Some(Rebase {
+                fields,
+                base,
+                min: u64::MAX,
+                depth: 0,
+            }),
+        }
+    }
+
+    /// A writer for a nested map entry, in the same rebasing state.
+    fn child(&self) -> Self {
+        FpWriter {
+            h: blake3::Hasher::new(),
+            rb: self.rb.map(|r| Rebase { min: u64::MAX, ..r }),
+        }
+    }
+
+    /// Carry the smallest position a child writer saw back to this one.
+    fn absorb(&mut self, child: &FpWriter) {
+        if let (Some(a), Some(b)) = (self.rb.as_mut(), child.rb) {
+            a.min = a.min.min(b.min);
+        }
+    }
+
+    /// The value to hash for an unsigned integer: itself, or its rebased
+    /// form inside a position field.
+    fn position(&mut self, v: u64) -> u64 {
+        let Some(r) = self.rb.as_mut().filter(|r| r.depth > 0) else {
+            return v;
+        };
+        if v == 0 {
+            return 0;
+        }
+        match r.base {
+            None => {
+                r.min = r.min.min(v);
+                v
+            }
+            Some(base) => v.saturating_sub(base).saturating_add(1),
+        }
+    }
+
+    fn is_position_field(&self, key: &str) -> bool {
+        self.rb.is_some_and(|r| r.fields.contains(&key))
     }
 
     fn tag(&mut self, t: u8) {
@@ -493,9 +647,20 @@ impl<'a> ser::Serializer for &'a mut FpWriter {
     fp_num!(serialize_i128, i128, 6);
     fp_num!(serialize_u8, u8, 7);
     fp_num!(serialize_u16, u16, 8);
-    fp_num!(serialize_u32, u32, 9);
-    fp_num!(serialize_u64, u64, 10);
     fp_num!(serialize_u128, u128, 11);
+
+    fn serialize_u32(self, v: u32) -> Result<(), FpError> {
+        let v = self.position(u64::from(v));
+        self.tag(9);
+        self.h.update(&v.to_le_bytes());
+        Ok(())
+    }
+    fn serialize_u64(self, v: u64) -> Result<(), FpError> {
+        let v = self.position(v);
+        self.tag(10);
+        self.h.update(&v.to_le_bytes());
+        Ok(())
+    }
 
     fn serialize_f32(self, v: f32) -> Result<(), FpError> {
         self.tag(12);
@@ -630,6 +795,24 @@ impl FpSeq<'_> {
         v.serialize(&mut *self.w)
     }
 
+    /// A named struct field; position fields are serialized in rebasing
+    /// mode when the writer has one.
+    fn field<T: Serialize + ?Sized>(&mut self, key: &'static str, v: &T) -> Result<(), FpError> {
+        // Field names keep `skip_serializing_if` gaps unambiguous.
+        self.w.raw(key.as_bytes());
+        if !self.w.is_position_field(key) {
+            return self.element(v);
+        }
+        if let Some(r) = self.w.rb.as_mut() {
+            r.depth += 1;
+        }
+        let out = self.element(v);
+        if let Some(r) = self.w.rb.as_mut() {
+            r.depth -= 1;
+        }
+        out
+    }
+
     fn end_inner(self) -> Result<(), FpError> {
         self.w.tag(29);
         self.w.h.update(&self.n.to_le_bytes());
@@ -689,9 +872,7 @@ impl ser::SerializeStruct for FpSeq<'_> {
         key: &'static str,
         v: &T,
     ) -> Result<(), FpError> {
-        // Field names keep `skip_serializing_if` gaps unambiguous.
-        self.w.raw(key.as_bytes());
-        self.element(v)
+        self.field(key, v)
     }
     fn end(self) -> Result<(), FpError> {
         self.end_inner()
@@ -706,8 +887,7 @@ impl ser::SerializeStructVariant for FpSeq<'_> {
         key: &'static str,
         v: &T,
     ) -> Result<(), FpError> {
-        self.w.raw(key.as_bytes());
-        self.element(v)
+        self.field(key, v)
     }
     fn end(self) -> Result<(), FpError> {
         self.end_inner()
@@ -727,16 +907,18 @@ impl ser::SerializeMap for FpMap<'_> {
     type Ok = ();
     type Error = FpError;
     fn serialize_key<T: Serialize + ?Sized>(&mut self, k: &T) -> Result<(), FpError> {
-        let mut sub = FpWriter::new();
+        let mut sub = self.w.child();
         k.serialize(&mut sub)?;
+        self.w.absorb(&sub);
         self.key = Some(finish(&sub.h));
         Ok(())
     }
     fn serialize_value<T: Serialize + ?Sized>(&mut self, v: &T) -> Result<(), FpError> {
-        let mut sub = FpWriter::new();
+        let mut sub = self.w.child();
         let k = self.key.take().unwrap_or(ABSENT);
         sub.h.update(&k.to_le_bytes());
         v.serialize(&mut sub)?;
+        self.w.absorb(&sub);
         self.sum = self.sum.wrapping_add(finish(&sub.h));
         self.n += 1;
         Ok(())
@@ -790,6 +972,106 @@ mod tests {
         assert_ne!(
             fp_value(&vec![vec![1u32], vec![]]),
             fp_value(&vec![vec![], vec![1u32]])
+        );
+    }
+
+    #[derive(Serialize)]
+    struct Inst {
+        id: u32,
+        span: (usize, usize),
+    }
+
+    #[derive(Serialize)]
+    struct Node {
+        span: (usize, usize),
+        callee_span: Option<(usize, usize)>,
+        weight: usize,
+    }
+
+    #[derive(Serialize)]
+    struct Body {
+        insts: Vec<Inst>,
+        meta: HashMap<u32, Node>,
+    }
+
+    fn body(shift: usize, second_len: usize) -> Body {
+        let mut meta = HashMap::new();
+        meta.insert(
+            0,
+            Node {
+                span: (120 + shift, 140 + shift),
+                callee_span: Some((120 + shift, 126 + shift)),
+                weight: 7,
+            },
+        );
+        meta.insert(
+            1,
+            Node {
+                span: (0, 0),
+                callee_span: None,
+                weight: 3,
+            },
+        );
+        Body {
+            insts: vec![
+                Inst {
+                    id: 1,
+                    span: (100 + shift, 110 + shift),
+                },
+                Inst {
+                    id: 2,
+                    span: (112 + shift, 112 + shift + second_len),
+                },
+            ],
+            meta,
+        }
+    }
+
+    #[test]
+    fn rebased_fingerprint_ignores_a_uniform_shift() {
+        let at = |shift, len| fp_value_rebased(&body(shift, len), POSITION_FIELDS);
+        assert_eq!(at(0, 5), at(37, 5), "moving the body must not change it");
+        assert_ne!(
+            fp_value(&body(0, 5)),
+            fp_value(&body(37, 5)),
+            "the plain fingerprint still sees positions"
+        );
+        assert_ne!(at(0, 5), at(0, 6), "a span that grew is a change");
+    }
+
+    #[test]
+    fn rebased_fingerprint_keeps_non_position_numbers() {
+        let mut b = body(0, 5);
+        b.insts[0].id = 9;
+        assert_ne!(
+            fp_value_rebased(&b, POSITION_FIELDS),
+            fp_value_rebased(&body(0, 5), POSITION_FIELDS)
+        );
+        let mut c = body(0, 5);
+        c.meta.get_mut(&0).unwrap().weight = 8;
+        assert_ne!(
+            fp_value_rebased(&c, POSITION_FIELDS),
+            fp_value_rebased(&body(0, 5), POSITION_FIELDS),
+            "a non-position field inside a map entry is compared as is"
+        );
+    }
+
+    #[test]
+    fn rebased_fingerprint_sees_the_minimum_inside_map_entries() {
+        // The smallest position lives only in a map entry; a shift that
+        // moves only it relative to the rest is a change.
+        let mut a = body(0, 5);
+        a.meta.get_mut(&0).unwrap().span = (50, 140);
+        let mut b = body(10, 5);
+        b.meta.get_mut(&0).unwrap().span = (60, 150);
+        assert_eq!(
+            fp_value_rebased(&a, POSITION_FIELDS),
+            fp_value_rebased(&b, POSITION_FIELDS)
+        );
+        b.meta.get_mut(&0).unwrap().span = (55, 150);
+        assert_ne!(
+            fp_value_rebased(&a, POSITION_FIELDS),
+            fp_value_rebased(&b, POSITION_FIELDS)
         );
     }
 

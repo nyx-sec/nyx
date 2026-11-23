@@ -914,10 +914,13 @@ fn resolve_callee_symbolically(
 
         // Attempt 1: Exact lookup under type-qualified name.
         // Arity=None to avoid receiver-in-operands vs formal-param mismatch.
-        let resolution =
-            ctx.global_summaries
-                .resolve_callee_key(&qualified, ctx.lang, ctx.namespace, None);
-        if let CalleeResolution::Resolved(key) = resolution
+        let resolution = ctx.global_summaries.resolve_callee_key_unique(
+            &qualified,
+            ctx.lang,
+            ctx.namespace,
+            None,
+        );
+        if let Some(key) = resolution
             && let Some(summary) = ctx.global_summaries.get_ssa(&key)
         {
             return model_from_summary(summary, arg_syms, all_operands, state, result_value);
@@ -943,17 +946,12 @@ fn resolve_callee_symbolically(
 
     // Existing bare-name resolution path
     let normalized = crate::callgraph::callee_leaf_name(callee);
-    let resolution = ctx.global_summaries.resolve_callee_key(
+    let key = ctx.global_summaries.resolve_callee_key_unique(
         normalized,
         ctx.lang,
         ctx.namespace,
         Some(all_operands.len()),
-    );
-
-    let key = match resolution {
-        CalleeResolution::Resolved(k) => k,
-        CalleeResolution::NotFound | CalleeResolution::Ambiguous(_) => return None,
-    };
+    )?;
 
     let summary = ctx.global_summaries.get_ssa(&key)?;
     model_from_summary(summary, arg_syms, all_operands, state, result_value)

@@ -4371,6 +4371,9 @@ fn inline_analyse_callee_with_seeds(
         .as_ref()
         .and_then(|k| transfer.callee_bodies.and_then(|cb| cb.get(k)));
 
+    // Set when the body came from another file.  Inline analysis reads
+    // such a body by its rebased shape; see `note_inline_positions`.
+    let mut xfile_source: Option<&crate::summary::GlobalSummaries> = None;
     let (callee_key, callee_body) = if let (Some(k), Some(b)) = (intra_key, intra_body) {
         (k, b)
     } else {
@@ -4405,7 +4408,8 @@ fn inline_analyse_callee_with_seeds(
         };
         let key = gs.resolve_callee_unique(&query)?;
         let xfile_bodies = transfer.cross_file_bodies?;
-        let body = xfile_bodies.get_body(&key)?;
+        let body = xfile_bodies.get_body_shape(&key)?;
+        xfile_source = Some(xfile_bodies);
         // Indexed-scan bodies deserialized from SQLite
         // arrive with `body_graph: None`, but the load path
         // ([`rebuild_body_graph`] in `load_all_ssa_bodies`)
@@ -4463,6 +4467,7 @@ fn inline_analyse_callee_with_seeds(
         let cache = cache_ref.borrow();
         if let Some(cached) = cache.get(&(callee_key.clone(), sig.clone())) {
             record_engine_note(crate::engine_notes::EngineNote::InlineCacheReused);
+            note_inline_positions(xfile_source, &callee_key, cached);
             return Some(apply_cached_shape(
                 cached,
                 args,
@@ -4688,6 +4693,7 @@ fn inline_analyse_callee_with_seeds(
     // step -1 callback resolution, which is invisible to the
     // `(FuncKey, ArgTaintSig)` key, so caching would poison sibling call
     // sites that pass a different callback.
+    note_inline_positions(xfile_source, &callee_key, &shape);
     if cacheable {
         let mut cache = cache_ref.borrow_mut();
         cache.insert((callee_key, sig), shape.clone());
@@ -4700,6 +4706,28 @@ fn inline_analyse_callee_with_seeds(
         state,
         call_inst.cfg_node,
     ))
+}
+
+/// Record that this analysis depends on where a cross-file callee body sits
+/// in its file, when its inline result carries positions from that body.
+///
+/// The body itself was read by its rebased shape.  The only absolute
+/// positions an inline result hands back are the `source_span`s of origins
+/// that arose inside the callee; with none, the result is the same wherever
+/// the callee's function sits in its file.
+fn note_inline_positions(
+    xfile_source: Option<&crate::summary::GlobalSummaries>,
+    callee_key: &FuncKey,
+    shape: &CachedInlineShape,
+) {
+    if let Some(gs) = xfile_source
+        && shape
+            .0
+            .as_ref()
+            .is_some_and(|s| !s.internal_origins.is_empty())
+    {
+        gs.note_body_positions(callee_key);
+    }
 }
 
 /// Per-NodeIndex provenance bits for the callee's Param/SelfParam ops.

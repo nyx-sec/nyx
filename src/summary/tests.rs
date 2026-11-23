@@ -5555,3 +5555,85 @@ mod resolve_callee_oracle_tests {
         assert_eq!(gs.lookup_same_lang(Lang::Java, "run").len(), 2);
     }
 }
+
+fn go_key(ns: &str, container: &str, name: &str) -> FuncKey {
+    let kind = if container.is_empty() {
+        FuncKind::Function
+    } else {
+        FuncKind::Method
+    };
+    FuncKey::from_parts(Lang::Go, ns, container, name, Some(0), None, kind)
+}
+
+#[test]
+fn name_index_order_ignores_insertion_order() {
+    let keys = [
+        go_key("b.go", "", "run"),
+        go_key("a.go", "T", "run"),
+        go_key("c.go", "", "run"),
+    ];
+    let mut fwd = GlobalSummaries::new();
+    for k in &keys {
+        fwd.insert(k.clone(), make("run", 0, 0, 0));
+    }
+    let mut rev = GlobalSummaries::new();
+    for k in keys.iter().rev() {
+        rev.insert(k.clone(), make("run", 0, 0, 0));
+    }
+    assert_eq!(
+        fwd.keys_same_lang(Lang::Go, "run"),
+        rev.keys_same_lang(Lang::Go, "run")
+    );
+    let files: Vec<&str> = fwd
+        .keys_same_lang(Lang::Go, "run")
+        .iter()
+        .map(|k| k.namespace.as_str())
+        .collect();
+    assert_eq!(files, ["a.go", "b.go", "c.go"]);
+}
+
+#[test]
+fn resolution_read_depends_on_its_outcome_only() {
+    let mut gs = GlobalSummaries::new();
+    gs.insert(go_key("io.go", "File", "Close"), make("Close", 0, 0, 0));
+    gs.insert(go_key("net.go", "Conn", "Close"), make("Close", 0, 0, 0));
+    let typed = CalleeQuery {
+        name: "Close",
+        caller_lang: Lang::Go,
+        caller_namespace: "main.go",
+        caller_container: None,
+        receiver_type: Some("File"),
+        namespace_qualifier: None,
+        receiver_var: None,
+        arity: Some(0),
+    };
+    let bare = CalleeQuery {
+        receiver_type: None,
+        caller_namespace: "util.go",
+        ..typed
+    };
+
+    let guard = deps::start_trace();
+    let resolved = gs.resolve_callee_unique(&typed);
+    let unresolved = gs.resolve_callee_unique(&bare);
+    let trace = guard.finish();
+    assert_eq!(resolved.map(|k| k.container), Some("File".to_string()));
+    assert_eq!(unresolved, None, "two methods, no same-file candidate");
+
+    let guard = deps::start_trace();
+    let _ = gs.resolve_callee_unique(&typed);
+    let typed_only = guard.finish();
+
+    // A new free `Close` in util.go: `f.Close()` on a File still resolves
+    // to File::Close, but a bare `Close()` inside util.go now resolves to
+    // the new function.
+    gs.insert(go_key("util.go", "", "Close"), make("Close", 0, 0, 0));
+    assert!(
+        typed_only.holds(&gs),
+        "a resolution the new function does not change stays valid"
+    );
+    assert!(
+        !trace.holds(&gs),
+        "a resolution the new function changes is invalidated"
+    );
+}
