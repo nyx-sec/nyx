@@ -45,7 +45,7 @@ jobs:
         with:
           tool: cargo-fuzz
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
@@ -178,7 +178,7 @@ jobs:
             .
             fuzz/dynamic_corpus
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: npm
