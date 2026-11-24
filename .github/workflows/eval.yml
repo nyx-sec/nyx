@@ -82,7 +82,7 @@ jobs:
 
       - name: Cache OWASP BenchmarkJava (1.2beta)
         id: cache-owasp
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: .eval-corpus/owasp_benchmark_v1.2
           key: owasp-benchmark-1.2beta
@@ -164,7 +164,7 @@ jobs:
 
       - name: Cache ${{ matrix.corpus.name }}
         id: cache-corpus
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: .eval-corpus/${{ matrix.corpus.name }}
           key: jsts-${{ matrix.corpus.name }}-${{ matrix.corpus.ref }}
@@ -300,7 +300,7 @@ jobs:
 
       - name: Cache ${{ matrix.corpus.name }}
         id: cache-corpus
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: .eval-corpus/${{ matrix.corpus.name }}
           key: polyglot-${{ matrix.corpus.name }}-${{ matrix.corpus.ref }}
