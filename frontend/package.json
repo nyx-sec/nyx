@@ -23,7 +23,7 @@
     "graphology": "^0.26.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "react-router-dom": "^7.17.0",
+    "react-router-dom": "^7.18.2",
     "sigma": "^3.0.3"
   },
   "devDependencies": {
