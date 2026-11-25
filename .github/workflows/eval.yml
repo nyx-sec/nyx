@@ -288,7 +288,7 @@ jobs:
 
       - name: Set up Python
         if: matrix.corpus.lang == 'python'
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
