@@ -40,7 +40,7 @@ jobs:
         fixture:
           - tests/repro_fixtures/python-3.11/repro
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Block host language toolchains
         run: |

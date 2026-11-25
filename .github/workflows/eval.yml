@@ -63,7 +63,7 @@ jobs:
       # dev reference stays 10 min — override locally to tighten.
       NYX_OWASP_WALLCLOCK_BUDGET_SECONDS: "1200"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -146,7 +146,7 @@ jobs:
       # CI wall-clock budget: 15 min.  Override locally to tighten.
       NYX_JSTS_WALLCLOCK_BUDGET_SECONDS: "900"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -260,7 +260,7 @@ jobs:
       # CI wall-clock budget: 15 min.  Override locally to tighten.
       NYX_POLYGLOT_WALLCLOCK_BUDGET_SECONDS: "900"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:

@@ -48,7 +48,7 @@ jobs:
       # docker-unavailable paths cannot accidentally hide a regression.
       NYX_SANDBOX_BACKEND: process
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -81,7 +81,7 @@ jobs:
     name: dynamic / linux-with-docker
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -121,7 +121,7 @@ jobs:
       # pick up a stray Lima/Colima daemon and confuse the matrix.
       NYX_SANDBOX_BACKEND: process
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
